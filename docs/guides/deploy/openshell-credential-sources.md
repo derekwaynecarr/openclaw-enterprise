@@ -8,7 +8,7 @@ OpenShell keeps its own copy of the key and substitutes it on requests to
 [credential source reference](../../reference/credential-sources.md) defines the
 API behavior.
 
-Stock OpenShell `v0.1.3-pre.1` still rejects the Agent's app-server token projection,
+Stock OpenShell `v0.1.3-pre.2` still rejects the Agent's app-server token projection,
 so the deployment in this profile fails closed before a Sandbox starts. The
 procedure proves registration, authorization, and admission. For a real model
 turn with the injected key, run the
