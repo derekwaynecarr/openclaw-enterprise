@@ -18,20 +18,21 @@ DNS, approved gateway clients, and required communication between an Agent's
 gateway and dedicated Harness. Cross-tenant traffic, traffic between different
 Agents, Kubernetes API access, and cloud metadata access remain denied.
 
-For Compute-owned startup failure evidence, plugin reporting, and on-demand
-deployment diagnostics, set
-`network.pluginStatusProxySourceCidrs` to the precise source addresses used by the
-Kubernetes API server when proxying requests to workload Pods. The policy allows
-those sources only to the private status port, TCP/18791. Both worker and API
-ServiceAccounts need namespace-local `get` on `pods/proxy` for their respective
-reads. The ingress rule also applies when an Agent has no enabled plugins.
-Prefer individual `/32` or `/128` addresses. On an
-overlay network, the observed source may be the control-plane node's overlay
-address rather than its node IP. Verify it across nodes with enforced policies.
-An omitted list adds no API-proxy ingress rule and leaves status unavailable
-where the cluster blocks that traffic. It also restarts the Gateway once on each
-dedicated Codex first deploy. This setting does not expose the native
-gateway or grant workloads Kubernetes API access.
+A provisioning Sandbox Driver may own the dedicated Harness endpoint. Configure
+`network.providerHarness` with its namespace, Pod labels, Service ClusterIP in
+`address`, and `port`. Compute maps the advertised hostname to that address,
+limits Gateway egress to the peer, and leaves its direct Harness route inactive.
+This ClusterIP bridge is only for owned k3d profiles advertising
+`*.openshell.localhost`; it is not production configuration. Drivers without
+the endpoint capability retain ordinary Service or private routing.
+
+For startup evidence, plugin reporting, and diagnostics, set
+`network.pluginStatusProxySourceCidrs` to the API server's exact Pod-proxy source
+addresses. It admits only TCP/18791; API and worker ServiceAccounts also need
+namespace-local `get` on `pods/proxy`. Prefer `/32` or `/128` addresses and
+verify overlay sources across nodes. Omitting the list may leave status
+unavailable and cause one extra Gateway restart on first dedicated Codex deploy.
+It does not expose the native Gateway or grant workload API access.
 
 When private Agent routing is enabled, Compute derives the only allowed peer
 from `gatewayRouting`: the Envoy namespace and the Gateway's exact owning name
@@ -62,11 +63,10 @@ Readiness uses a Pod-local HTTP request to
 readiness probes remain unchanged. Docker and SSH default to managed password
 authentication and also support explicit trusted proxy.
 
-Operators must verify that the configured CIDRs contain the proxy's actual
-source addresses and exclude untrusted sources. CIDRs do not authenticate a
-proxy: retain the exact Envoy NetworkPolicy peer, TLS verification, service-key
-authentication, and identity/header sanitization. Direct embedded access still
-requires a trusted proxy or the optional operator loopback password.
+Verify that trusted CIDRs include only actual proxy sources. CIDRs do not
+authenticate the proxy: retain its exact NetworkPolicy peer, TLS, service key,
+and identity/header sanitization. Direct access still requires a trusted proxy
+or the operator loopback password.
 
 For repository-bearing revisions, Compute grants credential-service egress to
 the embedded gateway/Harness or dedicated Codex Pod. The separate dedicated

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-30
-last_updated_session: authoring-run/6c4c7a4c-4674-456a-b1c4-69cec0c52c70
+updated: 2026-10-02
+last_updated_session: authoring-run/3bf937d5-c422-419e-af2d-754abe024ca4
 ---
 
 # Compose development startup
@@ -11,7 +11,7 @@ Trace host preflight, database initialization, and API/worker startup. See the [
 ## Overview
 
 From a checkout, `scripts/dev-up` selects Docker or Kubernetes Compute and
-starts the requested development topology. Docker Compute and Compose-backed
+starts the development topology. Docker Compute and Compose-backed
 Kubernetes profiles run PostgreSQL, migration, bootstrap, API, and worker in
 Compose. The explicitly selected Kubernetes-only profile runs them in the owned
 k3d cluster. This flow ends after authenticated Installation and bootstrap
@@ -197,14 +197,14 @@ configuration volume.
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers`,
 `internal/occdev/repository_k3d.go:enableDevelopmentRepository`.
 
-Both profiles use legacy iptables and honor the explicit IPv4 node DNS resolver
-without changing host DNS. Kubernetes-only startup imports matching OCE images
+Both profiles use legacy iptables and the configured IPv4 node DNS resolver.
+Kubernetes-only startup imports matching OCE images
 and runs PostgreSQL, migration, bootstrap, API and worker in Kubernetes.
 
 Without OpenShell, it verifies the pinned cert-manager and Envoy Gateway
-manifests. It waits for the k3s-owned Gateway API CRDs to be created and
-established before installing Envoy, and prints k3s add-on status before rollback
-if that wait fails. Before configuring gateway proxy trust,
+manifests. It polls each required CRD until `Established=True`; a missing initial
+`status.conditions` remains pending. It prints k3s add-on status before rollback
+if a Gateway API wait fails. Before configuring gateway proxy trust,
 `internal/occdev/network_k3d.go:verifyDevelopmentNetworkPolicy`
 checks allowed and denied direct Pod traffic with credential-free Pods and a
 temporary policy. After bootstrap creates the initial Gateway Namespace, it
@@ -373,6 +373,8 @@ external key if a later OpenShell readiness step fails.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-02: Treated an absent initial CRD condition as pending.
 
 - 2026-09-30 00:26: Tightened startup prose without changing its behavior. (authoring-run/6c4c7a4c-4674-456a-b1c4-69cec0c52c70 - 282ab1031ff2dd86af00c0c3ff304c9ad442fec1)
 

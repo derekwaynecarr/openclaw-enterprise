@@ -44,6 +44,7 @@ const ALLOWED_FIELDS = new Set([
   "deployPasses",
   "durationMs",
   "elapsedMs",
+  "errorClass",
   "event",
   "host",
   "keyHash",
@@ -225,7 +226,11 @@ function sanitizedEvent(
     if (key === "event" || !ALLOWED_FIELDS.has(key)) {
       continue;
     }
-    if (key === "message" && eventName !== "compute.preflight-warning") {
+    if (
+      key === "message" &&
+      eventName !== "compute.preflight-warning" &&
+      eventName !== "worker.compute-prepare-failed"
+    ) {
       continue;
     }
     const safe =
