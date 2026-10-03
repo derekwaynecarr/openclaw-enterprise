@@ -9,16 +9,19 @@ export function createQaReport(path, metadata) {
   function save() {
     const snapshot = JSON.stringify({ ...metadata, outcomes }, null, 2) + "\n";
     // Workers finish independently. Serialize immutable snapshots and publish
-    // each complete file atomically so observers never see partial JSON.
-    writing = writing.then(async () => {
-      const temporary = `${path}.${randomUUID()}.tmp`;
-      try {
-        await writeFile(temporary, snapshot, { mode: 0o600, flag: "wx" });
-        await rename(temporary, path);
-      } finally {
-        await rm(temporary, { force: true });
-      }
-    });
+    // each complete file atomically so observers never see partial JSON. A
+    // failed write is reported only to its own caller; later snapshots still run.
+    writing = writing
+      .catch(() => {})
+      .then(async () => {
+        const temporary = `${path}.${randomUUID()}.tmp`;
+        try {
+          await writeFile(temporary, snapshot, { mode: 0o600, flag: "wx" });
+          await rename(temporary, path);
+        } finally {
+          await rm(temporary, { force: true });
+        }
+      });
     return writing;
   }
   async function stage(parent, cell, name, work, scenario) {
