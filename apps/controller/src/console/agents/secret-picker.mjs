@@ -172,9 +172,6 @@ export function createSecretReferenceField({
   const status = element("p", { id: `${id}-status`, className: "hint", role: "status" });
   const metadataLink = credentialLink("#", metadataLabel);
   const secrets = [];
-  let loaded = false;
-  let loading = false;
-  let selectedSecret = null;
   let manuallyDisabled = disabled;
   let requiredWhenEnabled = required;
   let listboxOpen = false;
@@ -370,7 +367,6 @@ export function createSecretReferenceField({
     input.disabled = true;
     closeListbox({ restoreSelection: false });
     status.className = "hint";
-    selectedSecret = secret;
     try {
       await onSecretSelected(secret);
       if (!secrets.some((item) => item.id === secret.id)) {
@@ -581,7 +577,6 @@ export function createSecretReferenceField({
   } else {
     setSecretOptions();
     status.textContent = "Loading available Secrets...";
-    loading = true;
     context
       .request(`${namespacePath(context.namespaceId)}/secrets`)
       .then((items) => {
@@ -595,8 +590,6 @@ export function createSecretReferenceField({
             ? items.filter((item) => isSecretMetadata(item, context.namespaceId))
             : []),
         );
-        loaded = true;
-        loading = false;
         setSecretOptions({ preserveSearch: true });
         status.className = "hint";
         status.textContent = secrets.length
@@ -608,7 +601,6 @@ export function createSecretReferenceField({
         if (!isCurrent()) {
           return;
         }
-        loading = false;
         status.className = "error";
         status.textContent =
           error.status === 401
@@ -701,18 +693,6 @@ export function createSecretReferenceField({
     refresh() {
       setSecretOptions();
       updateValidity();
-    },
-    get selectedSecret() {
-      return selectedSecret;
-    },
-    get selectedSecretId() {
-      return currentSecretId();
-    },
-    get loaded() {
-      return loaded;
-    },
-    get loading() {
-      return loading;
     },
   };
 }
