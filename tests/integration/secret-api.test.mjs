@@ -18,6 +18,7 @@ import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
@@ -84,6 +85,7 @@ async function createFixture(options = {}) {
               controller = new OpenClawController(installation, {
                 state: new InMemoryPlatformState({ auditSink }),
                 recordOperations: options.recordOperations ?? false,
+                ...(options.now === undefined ? {} : { now: options.now }),
               });
               return controller;
             },
@@ -367,17 +369,11 @@ test("Agent model discovery requires namespace Agent-create permission before pr
   const fixture = await createModelDiscoveryFixture();
   const namespace = await bootstrapNamespace(fixture);
   const { principal: reader, app: readerApp } = await fixture.createPrincipal("model-reader");
-  fixture.state.roles.push({
+  grantRole(fixture.state, reader.id, {
     id: "role-model-reader",
+    bindingId: "binding-model-reader",
     namespaceId: namespace.id,
-    permissions: [{ action: "read", resourceKind: "namespace" }],
-  });
-  fixture.state.bindings.push({
-    id: "binding-model-reader",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: reader.id,
-    roleId: "role-model-reader",
+    permissions: { namespace: ["read"] },
   });
   const transport = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
   const apiKey = `denied-discovery-key-${randomUUID()}`;
@@ -749,17 +745,11 @@ test("Secret API denial and storage failures return value-free errors", async ()
   assert.equal(created.status, 201);
 
   const { principal: reader, app: readerApp } = await fixture.createPrincipal("secret-reader");
-  fixture.state.roles.push({
+  grantRole(fixture.state, reader.id, {
     id: "role-secret-reader-without-secret",
+    bindingId: "binding-secret-reader-without-secret",
     namespaceId: namespace.id,
-    permissions: [{ action: "read", resourceKind: "namespace" }],
-  });
-  fixture.state.bindings.push({
-    id: "binding-secret-reader-without-secret",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: reader.id,
-    roleId: "role-secret-reader-without-secret",
+    permissions: { namespace: ["read"] },
   });
 
   const denied = await request(
@@ -919,19 +909,11 @@ for (const [model, method, executionMode] of [
     assert.deepEqual(agentDenial.details.resource, key.data.ref);
     assert.equal(agentDenial.details.iamEvidence, undefined);
     assert.equal(agentDenial.details.servicePrincipalEvidence.identityId, servicePrincipalId);
-    fixture.state.roles.push({
+    grantRole(fixture.state, servicePrincipalId, {
       id: "harness-key-delivery",
       namespaceId: namespace.id,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    fixture.state.bindings.push({
-      id: "harness-key-delivery",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: servicePrincipalId,
-      roleId: "harness-key-delivery",
-      resourceKind: "secret",
-      resourceId: key.data.id,
+      permissions: { secret: ["operate"] },
+      resource: { kind: "secret", id: key.data.id },
     });
     const admitted = await request(fixture.app, "POST", `${path}/deploy`);
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
@@ -990,36 +972,17 @@ test("Changing Harness Secret bindings requires grants on both removed and repla
     200,
   );
   const { principal, app } = await fixture.createPrincipal("harness-editor");
-  fixture.state.roles.push({
+  grantRole(fixture.state, principal.id, {
     id: "harness-editor",
     namespaceId: namespace.id,
-    permissions: [
-      { action: "update", resourceKind: "agent" },
-      { action: "read", resourceKind: "configuration" },
-    ],
+    permissions: { agent: ["update"], configuration: ["read"] },
   });
-  fixture.state.bindings.push({
-    id: "harness-editor",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: principal.id,
-    roleId: "harness-editor",
-  });
-  fixture.state.roles.push({
+  const { binding: grant } = grantRole(fixture.state, principal.id, {
     id: "harness-source",
     namespaceId: namespace.id,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
+    permissions: { secret: ["operate"] },
+    resource: { kind: "secret", id: secrets[0].id },
   });
-  const grant = {
-    id: "harness-source",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: principal.id,
-    roleId: "harness-source",
-    resourceKind: "secret",
-    resourceId: secrets[0].id,
-  };
-  fixture.state.bindings.push(grant);
   const patch = (harnessAuth) =>
     request(app, "PATCH", path, { body: { configurationId: configuration.id, harnessAuth } });
   assert.equal((await patch(replacement)).status, 403); // Missing replacement authority.
@@ -1095,7 +1058,18 @@ test("Harness source admission rejects foreign references and superseded model s
     },
   });
   assert.equal(malformed.status, 400);
-  for (const destination of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) {
+  // Provider keys, reserved prefixes and process-control names, in any letter case.
+  for (const destination of [
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "openclaw_gateway_token",
+    "LD_PRELOAD",
+    "KUBECONFIG",
+    "PATH",
+    "path",
+    "HTTPS_PROXY",
+  ]) {
     const reserved = await request(
       fixture.app,
       "POST",
@@ -1146,4 +1120,113 @@ test("Contract messages give no bound hint for keywords inherited from Object.pr
       "The request does not match the operation contract: body /x has an unsupported value.",
     );
   }
+});
+
+/** Records gateway copies; OCC admission, IAM and the audit rows under test stay real. */
+function createRecordingCredentialGateway() {
+  const stored = new Map();
+  return {
+    id: "credential-gateway-secret-api",
+    capability: "credential_gateway",
+    implementation: "test-recording-gateway",
+    stored,
+    async listSourceTypes() {
+      return [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ];
+    },
+    async registerSource(context, input) {
+      stored.set(context.source.id, input.secrets);
+      return { state: "ready" };
+    },
+    async updateSource(context, input) {
+      stored.set(context.source.id, input.secrets);
+      return { state: "ready" };
+    },
+    async rotateSource() {
+      throw new Error("not exercised");
+    },
+    async sourceStatus(context) {
+      return stored.has(context.source.id) ? { state: "ready" } : { state: "absent" };
+    },
+    async removeSource(context) {
+      stored.delete(context.source.id);
+    },
+    async attachForRevision() {
+      throw new Error("not exercised");
+    },
+    async attachmentStatus() {
+      throw new Error("not exercised");
+    },
+    async withdraw() {
+      throw new Error("not exercised");
+    },
+  };
+}
+
+test("credential source writes commit one value-free audit row each", async () => {
+  let now = Date.now();
+  const fixture = await createFixture({
+    now: () => new Date(now),
+    computeDriver: {
+      ...createReadyComputeDriver("compute-secret-api"),
+      async resolveSandboxNamespace(namespace) {
+        return { ...namespace, name: `placed-${namespace.id.slice(-12)}` };
+      },
+    },
+  });
+  const namespace = await bootstrapNamespace(fixture);
+  const gateway = createRecordingCredentialGateway();
+  fixture.controller().registerDriver(gateway);
+  fixture.controller().selectDriver("credential_gateway", gateway.id);
+  const value = `credential-source-value-${randomUUID()}`;
+  const rotated = `credential-source-rotated-${randomUUID()}`;
+  const secret = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "Source key", value },
+  });
+  assert.equal(secret.status, 201);
+  const sources = `/namespaces/${namespace.id}/credential-sources`;
+
+  const created = await request(fixture.app, "POST", sources, {
+    body: { name: "openai", type: "openai", secrets: { api_key: secret.data.ref } },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(gateway.stored.get(created.data.id), { api_key: value });
+  const updatedSecret = await request(
+    fixture.app,
+    "PATCH",
+    `/namespaces/${namespace.id}/secrets/${secret.data.id}`,
+    { body: { value: rotated } },
+  );
+  assert.equal(updatedSecret.status, 200);
+  const updated = await request(fixture.app, "PATCH", `${sources}/${created.data.id}`, {
+    body: {},
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.deepEqual(gateway.stored.get(created.data.id), { api_key: rotated });
+  // Past the registration fence: no timed-out registration could still create a gateway copy.
+  now += 71_000;
+  const deleted = await request(fixture.app, "DELETE", `${sources}/${created.data.id}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.equal(gateway.stored.has(created.data.id), false);
+
+  const mutations = fixture.auditSink.events.filter(
+    (event) => event.kind === "mutation" && event.resource.kind === "credential_source",
+  );
+  assert.deepEqual(
+    mutations.map((event) => [event.action, event.resource]),
+    ["create", "update", "delete"].map((verb) => [
+      `openclaw.credential_sources.${verb}`,
+      { kind: "credential_source", id: created.data.id, namespaceId: namespace.id },
+    ]),
+  );
+  const audit = JSON.stringify(fixture.auditSink.events);
+  assert.equal(audit.includes(value), false);
+  assert.equal(audit.includes(rotated), false);
 });

@@ -747,8 +747,39 @@ function credentialSourceFieldsMatch(
   }
 }
 
+/**
+ * Names as many unsupported Permissions as fit the 256-character error message contract; a
+ * Role of 64 Permissions can hold far more than fit.
+ */
+function unsupportedPermissionsMessage(unsupported: readonly string[]): string {
+  return fittedList(
+    "No operation checks these Permissions, so they would grant nothing: ",
+    unsupported,
+    ". See the per-kind actions in the permissions reference.",
+  );
+}
+
+/**
+ * Renders `prefix`, as many `items` as fit and `suffix` within the 256-character
+ * ErrorResponse.message cap, so the guidance after a long list is never cut off.
+ * At least one item is always shown.
+ */
+function fittedList(prefix: string, items: readonly string[], suffix: string): string {
+  const render = (shown: number): string => {
+    const more = items.length - shown;
+    return `${prefix}${items.slice(0, shown).join(", ")}${more === 0 ? "" : ` and ${more} more`}${suffix}`;
+  };
+  let shown = items.length;
+  while (shown > 1 && render(shown).length > 256) {
+    shown -= 1;
+  }
+  return render(shown);
+}
+
+// At most 200 characters counted as code points, as the API contract (JSON Schema
+// maxLength) and PostgreSQL char_length count them, not UTF-16 code units.
 function validName(value: unknown): value is string {
-  return isNonEmptyString(value) && value.length <= 200;
+  return isNonEmptyString(value) && Array.from(value).length <= 200;
 }
 
 type PluginDiscoveryCredential = {
@@ -763,6 +794,12 @@ function frozenValues(value: unknown): Readonly<OpenClawConfigurationDocument> {
   }
   return immutableCopy(value as OpenClawConfigurationDocument);
 }
+
+/** Product names for Harness ids that appear in caller-facing refusals. */
+const HARNESS_DISPLAY_NAMES: Readonly<Record<string, string>> = Object.freeze({
+  codex: "Codex",
+  openclaw: "OpenClaw",
+});
 
 function validExecutionMode(value: unknown): value is HarnessExecutionMode {
   return value === "embedded" || value === "dedicated";
@@ -926,14 +963,20 @@ function assertAccessBindingRoleApplies(role: Readonly<Role>, resourceKind: Reso
   const creates = role.permissions.filter((permission) => permission.action === "create");
   if (creates.length > 0) {
     throw new IAMAccessBindingRoleError(
-      `Role ${role.id} has Permissions that no AccessBinding can grant: ${creates.map(label).join(", ")}. ` +
-        "No AccessBinding grants create: only Installation administrators can create Agents, Configurations, Secrets and other resources. Remove these Permissions from the Role.",
+      fittedList(
+        `Role ${role.id} has Permissions that no AccessBinding can grant: `,
+        creates.map(label),
+        ". No AccessBinding grants create: only Installation administrators create resources; remove them from the Role.",
+      ),
     );
   }
   if (!role.permissions.some((permission) => permission.resourceKind === resourceKind)) {
     throw new IAMAccessBindingRoleError(
-      `Role ${role.id} grants nothing on the ${resourceKind} target: its Permissions (${role.permissions.map(label).join(", ")}) ` +
-        `apply only to other resource kinds. Bind it to a resource of one of those kinds, or add ${resourceKind} Permissions.`,
+      fittedList(
+        `Role ${role.id} grants nothing on the ${resourceKind} target: its Permissions (`,
+        role.permissions.map(label),
+        `) apply only to other kinds; bind it to one of those or add ${resourceKind} Permissions.`,
+      ),
     );
   }
 }
@@ -5513,6 +5556,17 @@ export class OpenClawController {
       }
       const configuredHarnessId = resolveConfiguredHarnessId(configuration.values);
       const approvedHarness = resolveHarness(configuredHarnessId, lockedAgent.executionMode);
+      const otherMode = lockedAgent.executionMode === "dedicated" ? "embedded" : "dedicated";
+      if (
+        approvedHarness === undefined &&
+        resolveHarness(configuredHarnessId, otherMode)?.id === configuredHarnessId
+      ) {
+        // A Harness/mode mismatch is a request the caller can fix, not a missing dependency.
+        const harnessName = HARNESS_DISPLAY_NAMES[configuredHarnessId] ?? configuredHarnessId;
+        throw new ConfigurationHarnessError(
+          `The Configuration selects the ${harnessName} Harness, which needs ${otherMode} execution; this Agent uses ${lockedAgent.executionMode} execution. Change the Agent's execution mode or its Configuration.`,
+        );
+      }
       if (
         approvedHarness === undefined ||
         !isNonEmptyString(approvedHarness.id) ||
@@ -8019,8 +8073,7 @@ export class OpenClawController {
     if (unsupported.length > 0) {
       throw new IAMPolicyValidationError(
         "/permissions",
-        `No operation checks these Permissions, so they would grant nothing: ${unsupported.join(", ")}. ` +
-          "See the per-kind actions in the permissions reference.",
+        unsupportedPermissionsMessage(unsupported),
       );
     }
     return Object.freeze(checked);
@@ -8391,47 +8444,6 @@ export class OpenClawController {
       );
     }
     return immutableCopy(snapshot);
-  }
-
-  private currentHarness(
-    configuration: Readonly<OpenClawConfigurationDocument>,
-    agent: Readonly<Agent>,
-    resolveHarness: HarnessResolver,
-  ) {
-    const configuredHarnessId = resolveConfiguredHarnessId(configuration);
-    const harness = resolveHarness(configuredHarnessId, agent.executionMode);
-    if (
-      harness === undefined ||
-      !isNonEmptyString(harness.id) ||
-      !isNonEmptyString(harness.version)
-    ) {
-      throw new DependencyUnavailableError("The selected Harness runtime is not approved.");
-    }
-    if (harness.id !== configuredHarnessId) {
-      throw new ScopeViolationError("The approved Harness does not match the native runtime.");
-    }
-    return Object.freeze({ id: harness.id, version: harness.version, mode: agent.executionMode });
-  }
-
-  private async currentAgentConfiguration(
-    state: PlatformReadView,
-    namespace: Readonly<Namespace>,
-    agent: Readonly<Agent>,
-  ): Promise<Readonly<Configuration>> {
-    const metadata = await state.configurations.findConfiguration(
-      namespace.id,
-      agent.configurationId,
-    );
-    if (!metadata || metadata.kind !== "agent") {
-      throw new ScopeViolationError(
-        "The Agent Configuration must belong to the exact Namespace and configure an Agent.",
-      );
-    }
-    const driver = this.configurationDriver();
-    return this.exactConfiguration(
-      await this.driverOperation(() => driver.read({ id: metadata.id, namespaceId: namespace.id })),
-      metadata,
-    );
   }
 
   private async driverOperation<T>(

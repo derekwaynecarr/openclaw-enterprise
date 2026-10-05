@@ -550,6 +550,16 @@ test(
       [namespace.id],
     );
     assert.ok(audit.rowCount > 0, "provisioning admission must append durable audit evidence");
+    // The HTTP request is audited too, keyed by the accepted work item.
+    const requestAudit = await fixture.pool.query(
+      `SELECT action, outcome
+       FROM occ.audit_events
+       WHERE namespace_id = $1 AND resource_kind = 'agent' AND resource_id = $2`,
+      [namespace.id, admitted.data.provisioning.workId],
+    );
+    assert.deepEqual(requestAudit.rows, [
+      { action: "openclaw.agents.provision", outcome: "success" },
+    ]);
 
     const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.equal(row.work_id, admitted.data.provisioning.workId);
@@ -1131,6 +1141,77 @@ test(
       configurations: 0,
       audits: 0,
     });
+  },
+);
+
+test(
+  "provisioning requires Installation administer on top of every Namespace grant",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context);
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const provision = () =>
+      fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+        body: provisioningBody(namespace.id, secrets),
+      });
+
+    // The caller keeps every action on every Namespace resource kind, inside this Namespace
+    // only, and loses its Installation grants.
+    const principalId = await fixture.revokeCurrentPrincipal();
+    const kinds = ["agent", "configuration", "secret", "service_account", "credential_source"];
+    const actions = ["create", "read", "update", "delete", "deploy", "operate"];
+    const policy = [
+      [
+        null,
+        [
+          { action: "read", resourceKind: "namespace" },
+          { action: "read", resourceKind: "preset" },
+          ...kinds.flatMap((resourceKind) => actions.map((action) => ({ action, resourceKind }))),
+        ],
+        namespace.id,
+      ],
+      [null, [{ action: "administer", resourceKind: "installation" }], null],
+    ].map(([roleNamespace, permissions, bindingNamespace]) => ({
+      roleId: `role-provisioning-${randomUUID()}`,
+      bindingId: `binding-provisioning-${randomUUID()}`,
+      roleNamespace,
+      permissions,
+      bindingNamespace,
+    }));
+    const grant = async ({ roleId, bindingId, roleNamespace, permissions, bindingNamespace }) => {
+      await fixture.pool.query(
+        "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, $2, $3, $4::jsonb)",
+        [roleId, roleNamespace, `Provisioning ${randomUUID()}`, JSON.stringify(permissions)],
+      );
+      await fixture.pool.query(
+        `INSERT INTO occ.iam_access_bindings
+         (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id)
+         VALUES ($1, $2, $3, NULL, $4, NULL, NULL)`,
+        [bindingId, bindingNamespace, principalId, roleId],
+      );
+    };
+    try {
+      await grant(policy[0]);
+      const denied = await provision();
+      assert.equal(denied.status, 403, JSON.stringify(denied.body));
+      assert.equal(denied.error.code, "FORBIDDEN");
+      const plans = await fixture.pool.query(
+        "SELECT count(*)::integer AS plans FROM occ.agent_provisioning_work WHERE namespace_id = $1",
+        [namespace.id],
+      );
+      assert.equal(plans.rows[0].plans, 0);
+
+      // Installation administer is the only grant the refused caller lacked.
+      await grant(policy[1]);
+      const admitted = await provision();
+      assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    } finally {
+      for (const { roleId, bindingId } of policy) {
+        await fixture.pool.query("DELETE FROM occ.iam_access_bindings WHERE id = $1", [bindingId]);
+        await fixture.pool.query("DELETE FROM occ.iam_roles WHERE id = $1", [roleId]);
+      }
+    }
   },
 );
 
@@ -1986,6 +2067,39 @@ test(
       `/namespaces/${namespace.id}/configurations/${failed.configurationId}`,
     );
     assert.equal(configuration.status, 200, JSON.stringify(configuration.body));
+
+    // Another Agent cannot take over the reserved Configuration either.
+    const otherConfiguration = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/configurations`,
+      { body: { kind: "agent", values: {} } },
+    );
+    assert.equal(otherConfiguration.status, 201, JSON.stringify(otherConfiguration.body));
+    const other = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: { name: "unreserved-agent", configurationId: otherConfiguration.data.id },
+    });
+    assert.equal(other.status, 201, JSON.stringify(other.body));
+    const borrowed = [
+      await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+        body: { name: "borrowing-agent", configurationId: failed.configurationId },
+      }),
+      await fixture.request("PATCH", `/namespaces/${namespace.id}/agents/${other.data.id}`, {
+        body: { configurationId: failed.configurationId },
+      }),
+    ];
+    assert.deepEqual(
+      borrowed.map(({ status, body }) => [status, body.error?.message]),
+      [
+        [
+          409,
+          "The Configuration is reserved for provisioning and is not available for this operation.",
+        ],
+        [
+          409,
+          "The Configuration is reserved for provisioning and is not available for this operation.",
+        ],
+      ],
+    );
 
     const reserved = [
       await fixture.request(

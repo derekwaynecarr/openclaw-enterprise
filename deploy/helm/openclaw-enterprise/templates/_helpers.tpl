@@ -53,7 +53,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if not (hasPrefix "https://" .Values.auth.baseUrl) -}}{{- fail "auth.github requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.github requires agentNativeAdmin.enabled: false; GitHub sign-in supports host-only cookies only" -}}{{- end -}}
-{{- if not (kindIs "slice" (default list $github.egressCidrs)) -}}{{- fail "auth.github.egressCidrs must be a list of IPv4 CIDRs; leave it empty for HTTPS egress to any address" -}}{{- end -}}
+{{- if not (kindIs "slice" (default list $github.egressCidrs)) -}}{{- fail "auth.github.egressCidrs must be a list of IPv4 CIDRs; leave it empty for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $github.egressCidrs -}}
 {{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.github.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
 {{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}
@@ -75,7 +75,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if not (hasPrefix "https://" .Values.auth.baseUrl) -}}{{- fail "auth.google requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google sign-in supports host-only cookies only" -}}{{- end -}}
-{{- if not (kindIs "slice" (default list $google.egressCidrs)) -}}{{- fail "auth.google.egressCidrs must be a list of IPv4 CIDRs; leave it empty for HTTPS egress to any address" -}}{{- end -}}
+{{- if not (kindIs "slice" (default list $google.egressCidrs)) -}}{{- fail "auth.google.egressCidrs must be a list of IPv4 CIDRs; leave it empty for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $google.egressCidrs -}}
 {{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.google.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
 {{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}

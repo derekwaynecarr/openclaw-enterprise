@@ -11,13 +11,20 @@ import { availablePort } from "./available-port.mjs";
  * resolves once it logs the port it bound. By default OCC_SLACK_PROXY_PORT is 0; with
  * `fixedPort` the helper picks a free port, passes it, and requires the proxy to bind exactly
  * that port (another process can take a picked port first, so EADDRINUSE picks again). The
- * test's cleanup sends the proxy SIGTERM. With `upstreamPort`, the child resolves slack.com to
- * 127.0.0.1 and its connections to slack.com:443 reach that loopback port instead. Returns
- * the child, the listening port and `stderr()`, what the proxy has written so far.
+ * test's cleanup sends the proxy SIGTERM. With `upstreamPort`, the child resolves each of
+ * `upstreamHosts` (default slack.com) to 127.0.0.1 and its connections to those hosts on port
+ * 443 reach that loopback port instead; a connection to any other host throws in the child, so
+ * a test can never reach the network. Returns the child, the listening port and `stderr()`,
+ * what the proxy has written so far.
  */
-export async function startSlackProxy(t, { fixedPort = false, upstreamPort } = {}) {
+export async function startSlackProxy(
+  t,
+  { fixedPort = false, upstreamPort, upstreamHosts = ["slack.com"] } = {},
+) {
   const preload =
-    upstreamPort === undefined ? [] : ["--import", await writeDnsFixture(t, upstreamPort)];
+    upstreamPort === undefined
+      ? []
+      : ["--import", await writeDnsFixture(t, upstreamPort, upstreamHosts)];
   for (let attempt = 1; ; attempt += 1) {
     const port = fixedPort ? await availablePort({ host: "0.0.0.0" }) : 0;
     const proxy = await spawnSlackProxy(t, preload, port);
@@ -61,16 +68,17 @@ async function spawnSlackProxy(t, preload, port) {
   return { child, port: listening, stderr: () => stderr };
 }
 
-async function writeDnsFixture(t, upstreamPort) {
+async function writeDnsFixture(t, upstreamPort, upstreamHosts) {
   const directory = await mkdtemp(join(tmpdir(), "openclaw-slack-proxy-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, "dns-fixture.mjs");
   await writeFile(
     path,
     `import dns from "node:dns";
+const upstreamHosts = new Set(${JSON.stringify(upstreamHosts)});
 const originalLookup = dns.lookup;
 dns.lookup = (hostname, options, callback) => {
-  if (hostname !== "slack.com") {
+  if (!upstreamHosts.has(hostname)) {
     return originalLookup(hostname, options, callback);
   }
   if (typeof options === "function") {
@@ -86,8 +94,11 @@ dns.lookup = (hostname, options, callback) => {
 import net from "node:net";
 const originalConnect = net.connect;
 net.connect = (...args) => {
-  if (args[0]?.host === "slack.com" && args[0]?.port === 443) {
+  if (upstreamHosts.has(args[0]?.host) && args[0]?.port === 443) {
     return originalConnect({ ...args[0], host: "127.0.0.1", port: ${upstreamPort} }, ...args.slice(1));
+  }
+  if (typeof args[0]?.host === "string") {
+    throw new Error(\`test fixture refuses a connection to \${args[0].host}:\${args[0].port}\`);
   }
   return originalConnect(...args);
 };

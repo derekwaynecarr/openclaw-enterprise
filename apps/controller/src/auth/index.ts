@@ -161,7 +161,7 @@ import type {
   AdmittedCaller,
   AdmittedSession,
 } from "../admission/admission-verifier.ts";
-import { AdmissionFailure } from "../admission/admission-verifier.ts";
+import { AdmissionFailure, UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
 import { betterAuthIssuer, validHttpBaseURL } from "./configuration.ts";
 
 export { betterAuthIssuer, OCC_BETTER_AUTH_ISSUER_PREFIX } from "./configuration.ts";
@@ -765,7 +765,16 @@ async function sendAuthEndpoint(
       reply.header("retry-after", String(error.retryAfterSeconds));
     }
     reply.status(failure.status).send({
-      error: { code: failure.code, message: failureMessage },
+      error: {
+        code: failure.code,
+        // Every caller checks the Origin before it reads any credential, so naming the refused
+        // Origin reveals nothing about the session or password; keep it that way, because the
+        // endpoint's own message would misdirect a CLI user.
+        message:
+          error instanceof AdmissionFailure && error.reason === "untrusted_origin"
+            ? UNTRUSTED_ORIGIN_MESSAGE
+            : failureMessage,
+      },
       meta: { requestId: request.id },
     });
   }

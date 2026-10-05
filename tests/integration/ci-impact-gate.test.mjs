@@ -33,7 +33,7 @@ function needsFor(mode) {
   return {
     impact: { result: "success", outputs: { mode } },
     audit: { result: "success", outputs: {} },
-    "docs-checks": { result: mode === "docs" ? "success" : "skipped", outputs: {} },
+    "static-checks": { result: "success", outputs: {} },
     "pr-safe": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
     "runtime-image-fixture": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
   };
@@ -132,7 +132,7 @@ function testNeeds(lanes) {
   return {
     impact: { result: "success", outputs: { mode: "tests", lanes: json } },
     audit: { result: "success", outputs: {} },
-    "docs-checks": { result: "skipped", outputs: {} },
+    "static-checks": { result: "success", outputs: {} },
     "pr-safe": { result: "success", outputs: {} },
     "runtime-image-fixture": {
       result: lanes.includes("runtime-image-fixture") ? "success" : "skipped",

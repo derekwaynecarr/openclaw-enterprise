@@ -532,6 +532,39 @@ test("bootstrap fails closed when default Namespace creation is denied and later
   await bootstrappedDefaultNamespace(fixture);
 });
 
+test("bootstrap without Installation administer is refused and audited", async () => {
+  const restrictions = [
+    {
+      id: "restriction-no-installation-administer",
+      action: "administer",
+      resourceKind: "installation",
+      effect: "deny",
+    },
+  ];
+  const fixture = await createFixture({ restrictions });
+
+  const eventsBefore = fixture.auditSink.events.length;
+  const denied = await request(fixture.app, "/installation/bootstrap", {
+    body: { name: "Refused Installation" },
+  });
+  assert.equal(denied.response.status, 403);
+  assert.equal(denied.payload.error.code, "FORBIDDEN");
+  assert.equal(fixture.controller, undefined);
+  assert.equal(fixture.auditSink.events.length, eventsBefore + 1);
+  const deniedEvent = fixture.auditSink.events.at(-1);
+  assert.equal(deniedEvent.kind, "authorization_denial");
+  assert.equal(deniedEvent.actorId, fixture.administrator.id);
+  assert.deepEqual(deniedEvent.details.iamEvidence.restrictionIds, [
+    "restriction-no-installation-administer",
+  ]);
+
+  restrictions.length = 0;
+  const bootstrapped = await request(fixture.app, "/installation/bootstrap", {
+    body: { name: "Allowed Installation" },
+  });
+  assert.equal(bootstrapped.response.status, 201);
+});
+
 test("concurrent streaming bootstrap creates one audited Installation", async () => {
   const fixture = await createFixture();
   let releaseBodies;
@@ -656,6 +689,146 @@ test("malformed, non-JSON, invalid, and oversized inputs fail without mutations"
     ).length,
     0,
   );
+});
+
+test("NUL characters and unpaired surrogates are refused in bodies and path parameters", async () => {
+  // PostgreSQL text and jsonb cannot store either one: they answered 500 or 503 there, while
+  // the in-memory State accepted them. A lone surrogate in a name was stored as U+FFFD.
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const namespace = await createNamespace(fixture, "Unstorable text tenant");
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const nul = ["a NUL character", "INVALID_FORMAT"];
+  const surrogate = ["an unpaired UTF-16 surrogate", "INVALID_VALUE"];
+  // A deep body inside the 64 KiB limit; its detail path keeps whole leading segments.
+  const deep = 30_000;
+  const deepPath = `/values/x${"/0".repeat((512 - "/values/x".length) >> 1)}`;
+  const cases = [
+    ["/namespaces", '{"name":"lone \\ud800 surrogate"}', "/name", surrogate],
+    ["/namespaces", '{"name":"trailing \\udc00"}', "/name", surrogate],
+    [configurations, '{"kind":"agent","values":{"x":"a\\u0000b"}}', "/values/x", nul],
+    [configurations, '{"kind":"agent","values":{"a\\u0000~/":"x"}}', "/values/a?~0~1", nul],
+    [configurations, '{"kind":"agent","values":{"\\udbff":"x"}}', "/values/?", surrogate],
+    // The first offender in document order is named.
+    [
+      configurations,
+      '{"kind":"agent","values":{"first":["ok","\\ud800"],"second":"\\u0000"}}',
+      "/values/first/1",
+      surrogate,
+    ],
+    // Keys and values share document order.
+    [configurations, '{"kind":"agent","values":{"a":"\\u0000","b\\ud800":1}}', "/values/a", nul],
+    // A first segment too long for the 512-character detail path is cut, not dropped.
+    [configurations, `{"${"k".repeat(600)}\\u0000":1}`, `/${"k".repeat(511)}`, nul],
+    [
+      configurations,
+      `{"kind":"agent","values":{"x":${"[".repeat(deep)}"\\u0000"${"]".repeat(deep)}}}`,
+      deepPath,
+      nul,
+    ],
+  ];
+  for (const [pathname, body, path, [problem, code]] of cases) {
+    const result = await request(fixture.app, pathname, { body });
+    assert.equal(result.response.status, 400, body.slice(0, 80));
+    assert.equal(result.payload.error.code, "INVALID_REQUEST");
+    assert.deepEqual(result.payload.error.details, [{ path, code }]);
+    const expected = `The request does not match the operation contract: body ${path} contains ${problem}.`;
+    // The deep path is cut to the 256-character message cap.
+    assert.equal(
+      result.payload.error.message,
+      expected.length <= 256 ? expected : `${expected.slice(0, 255)}…`,
+    );
+  }
+  // A surrogate pair is one well-formed character.
+  const paired = await request(fixture.app, "/namespaces", { body: { name: "Paired \u{1F600}" } });
+  assert.equal(paired.response.status, 201);
+
+  const role = await request(fixture.app, `/namespaces/${namespace.id}/iam/roles/role%00x`);
+  assert.equal(role.response.status, 400);
+  assert.deepEqual(role.payload.error.details, [{ path: "/roleId", code: "INVALID_FORMAT" }]);
+  assert.equal(
+    role.payload.error.message,
+    "The request does not match the operation contract: params /roleId contains a NUL character.",
+  );
+
+  const namespaces = await request(fixture.app, "/namespaces");
+  assert.deepEqual(
+    namespaces.payload.data.map(({ name }) => name),
+    ["default", "Unstorable text tenant", "Paired \u{1F600}"],
+  );
+  assert.equal(
+    fixture.auditSink.events.filter(
+      (event) => event.kind === "mutation" && event.resource.kind === "configuration",
+    ).length,
+    0,
+  );
+});
+
+test("router failures answer the error envelope without echoing the path", async () => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const namespace = await createNamespace(fixture, "Router failure tenant");
+  const roles = `/namespaces/${namespace.id}/iam/roles`;
+  const contract = "The request does not match the operation contract";
+  for (const [pathname, status, code, message] of [
+    // Fastify answered these itself: its own body naming FST_ERR_* and the submitted path,
+    // no meta.requestId, x-request-id, cache-control or nosniff, and 414 for a long parameter.
+    [
+      "/namespaces/%ZZ",
+      400,
+      "INVALID_REQUEST",
+      "The request path has a malformed percent-encoding.",
+    ],
+    [
+      `${roles}/role%ED%A0%80x`,
+      400,
+      "INVALID_REQUEST",
+      "The request path has a malformed percent-encoding.",
+    ],
+    [
+      `${roles}/${"r".repeat(401)}`,
+      400,
+      "INVALID_REQUEST",
+      `${contract}: a path parameter is too long.`,
+    ],
+    // Role IDs may hold 200 characters, so a long one reaches the route.
+    [
+      `${roles}/${"r".repeat(200)}`,
+      404,
+      "NOT_FOUND",
+      "The requested platform resource was not found.",
+    ],
+    [
+      `${roles}/${"%F0%9F%98%80".repeat(200)}`,
+      404,
+      "NOT_FOUND",
+      "The requested platform resource was not found.",
+    ],
+  ]) {
+    const { response, payload } = await request(fixture.app, pathname);
+    assert.equal(response.status, status, pathname.slice(0, 80));
+    assert.deepEqual(payload.error, { code, message });
+    assert.deepEqual(Object.keys(payload).sort(), ["error", "meta"]);
+    assert.doesNotMatch(JSON.stringify(payload), /FST_ERR|%ZZ|%ED|rrrr/);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  }
+});
+
+test("names are measured in characters, not UTF-16 code units", async () => {
+  // 200 emoji fit the 200-character contract (and PostgreSQL char_length), but each is two
+  // UTF-16 code units; the controller answered 404 NOT_FOUND for such a Namespace or Agent.
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const name = "\u{1F600}".repeat(200);
+  const namespace = await createNamespace(fixture, name);
+  assert.equal(namespace.name, name);
+  const agent = await createAgent(fixture, namespace, name);
+  assert.equal(agent.name, name);
+
+  const tooLong = await request(fixture.app, "/namespaces", { body: { name: `${name}x` } });
+  assert.equal(tooLong.response.status, 400);
+  assert.deepEqual(tooLong.payload.error.details, [{ path: "/name", code: "TOO_LONG" }]);
 });
 
 test("exact Namespace ownership prevents cross-tenant access and resource traversal", async () => {
@@ -833,6 +1006,33 @@ test("a caller without a grant gets the same audited denial whether or not the t
     }
   }
   assert.deepEqual(leaks, []);
+});
+
+test("a denial whose audit cannot be written answers 503, not 403", async () => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  await createNamespace(fixture, "Tenant A");
+  const namespace = await createNamespace(fixture, "Tenant B");
+  const readerApp = fixture.createApp(fixture.tenantAReader);
+  const read = () => request(readerApp, `/namespaces/${namespace.id}`);
+
+  const append = fixture.auditSink.append;
+  fixture.auditSink.append = async (event) => {
+    if (event.kind === "authorization_denial") {
+      throw new Error("audit sink unavailable");
+    }
+    return append.call(fixture.auditSink, event);
+  };
+  try {
+    const unaudited = await read();
+    assert.equal(unaudited.response.status, 503);
+    assert.equal(unaudited.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+  } finally {
+    fixture.auditSink.append = append;
+  }
+  const audited = await read();
+  assert.equal(audited.response.status, 403);
+  assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
 });
 
 test("Namespace deletion authorizes the exact target and rejects nonempty resources", async () => {
@@ -1715,6 +1915,8 @@ test("runtime log downloads use the log tier and are audited once per download",
   );
   assert.equal(withCursor.status, 400);
   assert.equal(withCursor.body.error.code, "INVALID_REQUEST");
+  assert.match(withCursor.body.error.message, /\/cursor cannot be combined with \/download/);
+  assert.deepEqual(withCursor.body.error.details, [{ path: "/cursor", code: "INVALID_VALUE" }]);
   assert.equal(driverReads(fixture).length, readsBefore);
   assert.equal(granted().length, 2);
 

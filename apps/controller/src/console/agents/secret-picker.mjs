@@ -538,7 +538,7 @@ export function createSecretReferenceField({
             "Secret creation outcome could not be confirmed. Refresh before trying again.";
         } else if (error.status === 409 && error.code === "NAMESPACE_NOT_READY") {
           feedback.textContent =
-            "This Namespace is not ready for Secret creation. Refresh the Namespace status before trying again.";
+            "This Namespace is not ready, so it cannot store Secrets yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
         } else if (error.status === 409) {
           feedback.textContent =
             "Secret creation conflicted. A Secret with this name may already exist in this Namespace. Check the name and Namespace state before trying again.";

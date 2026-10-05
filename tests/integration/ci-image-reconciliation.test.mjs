@@ -59,6 +59,9 @@ test("image lanes use separate cache scopes without exposing credentials or comp
       OCC_YQ_BIN: "/usr/bin/true",
       OCC_DOCKER_BIN: docker,
       COMMANDS_PATH: commandsPath,
+      // Image Runtime Startup creates its k3d cluster while the image builds;
+      // a missing k3d stops that before any cluster is recorded or created.
+      OPENCLAW_CI_K3D_BIN: join(directory, "no-k3d"),
     });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /42/, result.stderr);

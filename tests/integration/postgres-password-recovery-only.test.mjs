@@ -37,6 +37,7 @@ const secrets = {
 };
 const memberSubject = 8_100_001;
 const strandedSubject = 8_100_002;
+const operatorSubject = 8_100_003;
 const googleMemberSubject = "118100000000000000001";
 
 const recoveryOnly = (settings) =>
@@ -73,13 +74,17 @@ test(
       password,
       remoteAddress: address(),
       accounts: Object.fromEntries(
-        ["member", "stranded", "disabled"].map((name) => [
+        ["member", "stranded", "disabled", "operator"].map((name) => [
           name,
-          { email: `recovery-only-${name}@example.test` },
+          {
+            email: `recovery-only-${name}@example.test`,
+            // An administrator other than the recovery account, with a GitHub identity.
+            ...(name === "operator" ? { role: "admin" } : {}),
+          },
         ]),
       ),
     });
-    const { member, stranded, disabled } = accounts;
+    const { member, stranded, disabled, operator } = accounts;
     let adminHeaders;
 
     async function attach(provider, account, subject) {
@@ -112,8 +117,9 @@ test(
       const signedIn = await passwordSignIn(app, origin, member, address());
       assert.equal(signedIn.statusCode, 200, signedIn.body);
       assert.deepEqual(warnings(log), [], "no warning without recovery-only");
-      // Only the member gets a GitHub identity; the disabled account is switched off.
+      // The member and the operator get GitHub identities; the disabled account is switched off.
       await attach("github", member, memberSubject);
+      await attach("github", operator, operatorSubject);
       const current = await readAccount(app, adminHeaders, disabled.id);
       const changed = await app.inject({
         method: "POST",
@@ -135,7 +141,8 @@ test(
         secrets,
         logger: log.logger,
       });
-      // The recovery account, the member with GitHub and the disabled account are not listed.
+      // The recovery account, the member and operator with GitHub and the disabled account
+      // are not listed.
       const [warning, ...rest] = warnings(log);
       assert.deepEqual(rest, []);
       assert.equal(warning.severity, "WARN");
@@ -151,14 +158,14 @@ test(
       });
     });
 
+    const denials = async () =>
+      (await state.transact((unit) => unit.audit.list())).filter(
+        ({ action, outcome, reasonCode }) =>
+          action === "authentication.login" &&
+          outcome === "denied" &&
+          reasonCode === "INVALID_CREDENTIALS",
+      ).length;
     await t.test("ordinary passwords get the bad-credential answer", async () => {
-      const denials = async () =>
-        (await state.transact((unit) => unit.audit.list())).filter(
-          ({ action, outcome, reasonCode }) =>
-            action === "authentication.login" &&
-            outcome === "denied" &&
-            reasonCode === "INVALID_CREDENTIALS",
-        ).length;
       const before = await denials();
       const unknown = { email: "recovery-only-nobody@example.test", password };
       const bodies = [];
@@ -172,6 +179,24 @@ test(
       // No answer distinguishes an existing account, or a right password, from anything else.
       assert.equal(new Set(bodies.map((body) => JSON.stringify(body))).size, 1);
       assert.equal((await denials()) - before, 4, "each refusal is audited as a denied login");
+    });
+
+    await t.test("a spent administrator lane is refused without reading the password", async () => {
+      // Recovery-only reserves the recovery account alone, so once another administrator's
+      // email budget is spent its attempts are refused unread: the email lane admits ten
+      // audited failures, and the eleventh never reaches the password endpoint.
+      const before = await denials();
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const refused = await passwordSignIn(app, origin, operator, address());
+        assert.equal(refused.statusCode, 401, refused.body);
+      }
+      const limited = await passwordSignIn(app, origin, operator, address());
+      assert.equal(limited.statusCode, 429, limited.body);
+      assert.equal(
+        (await denials()) - before,
+        10,
+        "the refused attempt never reached the password endpoint",
+      );
     });
 
     await t.test("the recovery account still signs in with its password", async () => {
@@ -230,7 +255,10 @@ test(
       });
       const [warning] = warnings(googleLog);
       // State orders ids by database collation, which need not match JavaScript's sort.
-      assert.deepEqual([...warning.skippedUserIds].sort(), [member.id, stranded.id].sort());
+      assert.deepEqual(
+        [...warning.skippedUserIds].sort(),
+        [member.id, stranded.id, operator.id].sort(),
+      );
       assert.deepEqual(await providers(app), {
         github: false,
         google: true,

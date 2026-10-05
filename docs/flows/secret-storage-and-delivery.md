@@ -85,7 +85,7 @@ request/driver memory, never in the reconciliation queue or resource metadata.
 `apps/controller/src/drivers/secret/kubernetes/index.ts:KubernetesSecretDriver.create`
 
 [KubernetesSecretDriver.create](../../apps/controller/src/drivers/secret/kubernetes/index.ts)
-uses Compute-owned tenant control-plane placement. It creates a mutable Opaque Secret with
+uses Compute-owned verified tenant storage placement. It creates a mutable Opaque Secret with
 a Namespace-derived name, exact Namespace ownership metadata, and a fixed
 `value` key. Its result contains only backend identity, including UID. [OCC state](../../packages/occ/src/state/postgres-state.ts)
 persists immutable Namespace, driver, and backend metadata while public metadata
@@ -177,8 +177,8 @@ does not add backend metadata to the revision. Its Compute Driver performs
 the physical Secret reads and scoped runtime delivery.
 
 [KubernetesComputeDriver.prepareRevision](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
-checks the revision, source UIDs, projection identities and verified CP Namespace.
-Dedicated Gateways directly reference admitted canonical CP Secrets. It renders `env[].valueFrom.secretKeyRef` with `optional: false` only in each
+checks the revision, source UIDs, projection identities and verified storage Namespace.
+Dedicated Gateways directly reference admitted canonical Secrets. It renders `env[].valueFrom.secretKeyRef` with `optional: false` only in each
 selected consuming gateway. Model-auth projections are prepared separately from
 Agent `harnessAuth`. ConfigMaps retain native references only. A missing
 Secret/key prevents startup; normal readiness and cutover rules still control
@@ -200,7 +200,7 @@ per-Agent channel Secret injects additional values. Dedicated gateways receive
 channel bytes; the dedicated Harness receives only its separately admitted model
 authentication. Embedded channel credentials remain unsupported.
 
-The trusted worker reads CP sources and manages DP runtime projections; workload
+The trusted worker reads canonical sources and manages Harness runtime projections; workload
 ServiceAccounts have no Secret API verbs. A trusted workload writer can still
 project namespace Secrets, so controller compromise remains outside workload isolation.
 
@@ -224,14 +224,14 @@ no multi-Secret transaction or rollback of stored bytes.
 
 For model-key replacement, update the OCC Secret and explicitly deploy each
 consuming Agent through OCE. The new revision's preparation calls
-`KubernetesComputeDriver.deliverHarnessAuth`, which reads the current CP source
+`KubernetesComputeDriver.deliverHarnessAuth`, which reads the current canonical source
 and writes the revision-owned DP Secret before the Harness starts. Wait for
 activation and verify a real model request before revoking the old key upstream.
 A Harness Pod recreation reads its existing DP projection; it does not deliver
-current CP values. This remains true when the Configuration and Secret reference
+current source values. This remains true when the Configuration and Secret reference
 are unchanged.
 
-Dedicated Gateway infrastructure restarts read canonical CP channel Secrets
+Dedicated Gateway infrastructure restarts read canonical channel Secrets
 directly. Failed cutover does not restore old source values. Revoking `operate`
 blocks new OCC admission, not kubelet process starts or already delivered bytes.
 
@@ -281,6 +281,7 @@ credential at its issuer.
 ## Changelog
 
 - 2026-10-05 13:27: Keep first-Agent container-engine calls on the recorded Unix socket without inherited Docker TLS settings. (authoring-run/c743ee6e-95f7-43d3-813d-4496b4b2fb19 - 469d2fef447ecdf2565d3991db1e1ce5c95d880e)
+- 2026-10-02: Canonical sources and role-specific projections share the single-cluster tenant namespace. (01a0fe72-58b2-7cc3-b770-7310f5401deb)
 
 - 2026-09-25 14:57: Align first-Agent admission and its real fixture with v3 development state, and reject the unsupported OpenShell profile before external calls. (authoring-run/6556d897-be75-463f-b50c-73f3b1fb6d72 - 189c62c993066d52703d2cd7eb896e2c2c01bdc4)
 

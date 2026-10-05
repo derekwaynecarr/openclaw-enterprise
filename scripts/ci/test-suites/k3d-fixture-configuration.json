@@ -15,6 +15,13 @@
   },
   "files": [
     {
+      "path": "tests/integration/kubernetes-plugin-status-real.test.mjs",
+      "expectedTests": [
+        "real Kubernetes Compute reads plugin runtime status from the exact gateway Pod",
+        "real Kubernetes Compute reports plugin install warnings and disables failed plugin config"
+      ]
+    },
+    {
       "path": "tests/integration/kubernetes-compute-real.test.mjs",
       "expectedTests": [
         "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",

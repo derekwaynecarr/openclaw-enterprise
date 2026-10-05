@@ -199,13 +199,13 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
           return;
         }
         if (message.error !== undefined) {
-          const error = asRecord(message.error);
+          // The app-server's own message can name paths under the Codex home, and this
+          // text becomes the 501 response body, so only our request method is named.
+          // The reader has no logger to keep the detail server-side.
           finish(
             new NotImplementedError(
               "codex-plugin-catalog-discovery",
-              `Codex plugin catalog discovery failed during ${requests[next]?.method}: ${
-                error?.message ?? "unknown error"
-              }`,
+              `Codex plugin catalog discovery failed during ${requests[next]?.method}.`,
             ),
           );
           return;

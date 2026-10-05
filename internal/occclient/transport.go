@@ -73,10 +73,15 @@ func (err *APIError) Error() string {
 			err.Status, err.Location, err.redirectOrigin,
 		)
 	}
-	if err.Code == "" {
-		return fmt.Sprintf("OCC operation failed (HTTP %d)", err.Status)
+	message := fmt.Sprintf("OCC operation failed (HTTP %d)", err.Status)
+	if err.Code != "" {
+		message = fmt.Sprintf("%s: %s: %s", message, err.Code, err.Message)
 	}
-	return fmt.Sprintf("OCC operation failed (HTTP %d): %s: %s", err.Status, err.Code, err.Message)
+	if err.RetryAfter > 0 {
+		// OCC's rate-limit messages say to wait for Retry-After; name the delay.
+		message = fmt.Sprintf("%s. Retry after %ds.", strings.TrimSuffix(message, "."), int(err.RetryAfter/time.Second))
+	}
+	return message
 }
 
 type errorEnvelope struct {

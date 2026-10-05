@@ -781,6 +781,11 @@ const historySelectors = [
 const requiresHistoryPostgres = {
   skip: historySelectors.every((value) => value === undefined) && requiresOwnedPostgres.skip,
 };
+// The subtests of these cases run four at a time (`void context.test`): each owns its
+// database and migration subprocesses, the migration lock is a per-database advisory
+// lock, and every fixture changes only that database's catalogs and ACLs, never roles.
+// node:test still waits for every subtest and fails the parent if one fails.
+const concurrentHistoryPostgres = { ...requiresHistoryPostgres, concurrency: 4 };
 
 async function migrationHistoryFixture() {
   if (historySelectors.every((value) => value === undefined)) {
@@ -1435,11 +1440,11 @@ async function canonicalData(db) {
 
 test(
   "Canonical migration commands preserve main data and serialize fresh/repeat runners",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     for (const schemas of [false, true]) {
-      await context.test(
+      void context.test(
         `fresh ${schemas ? "owner-only schemas" : "absent schemas"}`,
         async (child) => {
           const db = await historyDatabase(child, fixture, "fresh", { schemas });
@@ -1493,7 +1498,7 @@ test(
       [46, "preProvisioningConfigurationRelease"],
       [47, "preAdministratorCredentialSourceGrants"],
     ]) {
-      await context.test(`populated canonical ${history}`, async (child) => {
+      void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
         await seedCanonicalData(db, { preset: prefix >= 25 });
         const before = await canonicalData(db);
@@ -1727,7 +1732,7 @@ test(
 
 test(
   "Canonical migration completes a Provider lineage after later canonical migrations",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     for (const [prefix, history] of [
@@ -1748,7 +1753,7 @@ test(
       [46, "preProvisioningConfigurationRelease"],
       [47, "preAdministratorCredentialSourceGrants"],
     ]) {
-      await context.test(history, async (child) => {
+      void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
         await installProviderCompletedHistory(db);
         // Stock Drizzle appends later canonical migrations while retaining Provider fingerprints.
@@ -1795,7 +1800,7 @@ test(
 
 test(
   "Canonical migration rollback preserves receipts and retries through the other command",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     for (const [prefix, history] of [
@@ -1824,7 +1829,7 @@ test(
       [46, "preProvisioningConfigurationRelease"],
       // Prefix 47 is omitted: 0048 only updates rows, so it has no DDL for the trigger to abort.
     ]) {
-      await context.test(`prefix ${prefix} transaction`, async (child) => {
+      void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
         if (prefix) {
           await seedCanonicalData(db, { preset: prefix >= 25 });
@@ -1871,7 +1876,7 @@ test(
 
 test(
   "Canonical migration refuses unexplained histories before mutation",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     const manifest = JSON.parse(
@@ -1902,7 +1907,7 @@ test(
       ["ledger-grant", 25, "GRANT SELECT ON drizzle.__drizzle_migrations TO occ_app"],
     ];
     for (const [label, prefix, sql] of cases) {
-      await context.test(label, async (child) => {
+      void context.test(label, async (child) => {
         const db = await historyDatabase(child, fixture, "refuse", { prefix });
         if (sql) {
           await db.migrator.query(sql);
@@ -1910,7 +1915,7 @@ test(
         await assertHistoryRefused(db);
       });
     }
-    await context.test("published premerge credential history", async (child) => {
+    void context.test("published premerge credential history", async (child) => {
       const db = await historyDatabase(child, fixture, "premerge");
       const journal = JSON.parse(
         await readFile(join(migrationsDirectory, "meta/_journal.json"), "utf8"),
@@ -1933,7 +1938,7 @@ test(
       assert.deepEqual(await canonicalData(db), before);
     });
     for (const slot of [30, 31, 34, 35, 36]) {
-      await context.test(
+      void context.test(
         `unpublished authentication at occupied migration slot ${slot}`,
         async (child) => {
           const db = await historyDatabase(child, fixture, "oldauth");
@@ -1958,7 +1963,7 @@ test(
         },
       );
     }
-    await context.test("application credential", async (child) => {
+    void context.test("application credential", async (child) => {
       const db = await historyDatabase(child, fixture, "app");
       const before = await historySnapshot(db);
       const url = new URL(db.migrationUrl);
@@ -1975,7 +1980,7 @@ test(
 
 test(
   "Canonical migration refuses empty default ACLs on installed histories",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     for (const history of ["main", "completed"]) {
@@ -1985,7 +1990,7 @@ test(
         ["TABLES", "r"],
         ["SEQUENCES", "S"],
       ]) {
-        await context.test(`${history} ${kind}`, async (child) => {
+        void context.test(`${history} ${kind}`, async (child) => {
           const db = await historyDatabase(child, fixture, "defaults", { prefix: 25 });
           await seedCanonicalData(db, { preset: true });
           if (history === "completed") {
@@ -2024,7 +2029,7 @@ test(
 
 test(
   "Canonical initial schemas admit only finite owner ACL states",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     for (const [label, setup] of [
@@ -2035,7 +2040,7 @@ test(
         "CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; GRANT CREATE,USAGE ON SCHEMA occ,drizzle TO occ_migrator",
       ],
     ]) {
-      await context.test(label, async (child) => {
+      void context.test(label, async (child) => {
         const db = await historyDatabase(child, fixture, "initial", { schemas: false });
         await db.migrator.query(setup);
         assert.deepEqual(await runHistoryMigration(db, "production"), {
@@ -2082,7 +2087,7 @@ test(
           `CREATE TEXT SEARCH DICTIONARY ${schema}.unexpected (TEMPLATE=pg_catalog.simple)`,
         ],
       ]) {
-        await context.test(`${schema} ${label}`, async (child) => {
+        void context.test(`${schema} ${label}`, async (child) => {
           const db = await historyDatabase(child, fixture, "acl");
           await historyAdmin(db, db.name, setup);
           await assertHistoryRefused(db);
@@ -2102,7 +2107,7 @@ test(
       ["database-create", (name) => `REVOKE CREATE ON DATABASE ${name} FROM occ_migrator`],
       ["application-create", (name) => `GRANT CREATE ON DATABASE ${name} TO occ_app`],
     ]) {
-      await context.test(label, async (child) => {
+      void context.test(label, async (child) => {
         const db = await historyDatabase(child, fixture, "roles");
         await historyAdmin(db, db.name, setup(db.name));
         await assertHistoryRefused(db);

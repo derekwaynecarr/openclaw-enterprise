@@ -13,8 +13,7 @@ Every release stops the OCC API and worker during migration and rollout. Runtime
 upgrades also restart the fleet concurrently. Schedule an interruption window
 and provide enough capacity for old and replacement revisions to overlap.
 Before either kind of release, complete the
-[upgrade migration checklist](upgrade-checklist.md) so persisted control-plane,
-Driver, runtime, and cluster-owned state has an explicit disposition.
+[upgrade checklist](upgrade-checklist.md).
 
 To release reviewed settings with an image, pass separate candidate values
 and Installation files as described below. The baseline files must match live
@@ -44,7 +43,13 @@ Prepare:
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
 - Node.js, which builds the startup preflight Pods; its Kubernetes identity must
-  create and delete Pods and Secrets and read Pod logs in the release namespace;
+  create and delete Pods, Secrets and NetworkPolicies and read Pod logs in the
+  release namespace;
+- with the bundled Collector enabled, its config Secret
+  [refreshed](../observability.md#refresh-the-collector-configuration-on-upgrade)
+  from this checkout and the Collector restarted, even for an image-only
+  release. Helm does not update the Secret, and the helper stops before mutation
+  when its `collector.yaml` or `kubernetes.yaml` differs;
 - a PostgreSQL backup before a controller release whose migrations may require
   data restoration; and
 - Agent-volume backups before a runtime release whose recovery may require
@@ -104,9 +109,6 @@ test -z "$(git status --porcelain)" || echo 'The release checkout is not clean.'
 ```
 
 The evidence directory must not exist. The command creates it with mode `0700`.
-Run `scripts/upgrade-production-images` from this checkout. Only
-[other Installation changes](#apply-other-installation-changes) use the
-installed release's checkout instead.
 
 ### Include reviewed settings
 
@@ -124,9 +126,9 @@ These copies may change the
 [Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 Other configuration changes are not supported by this upgrade command.
-Review compatibility with the selected images and existing Agent drafts and
-credentials before the maintenance window. Rendering and the Helm dry run do
-not validate the Installation's Driver configuration or prove external access.
+Review compatibility with the selected images, Agent drafts and credentials
+before the maintenance window; the startup preflight below does not prove
+external access.
 The command does not change IAM, authentication, Installation identity, database,
 bootstrap, native administration, Compute identity or cluster trust, or repository
 settings through these candidate files. Repository settings include the GitHub
@@ -136,10 +138,9 @@ image fields or the managed Installation checksum in the copies.
 
 Keep the referenced repository registry ConfigMap, broker trust Secrets, and
 other external credential-service configuration unchanged through the release
-and recovery. The helper compares their configured references, not the contents
-of those Kubernetes resources. Follow the
-[repository installation guide](../repository-credentials/installation.md) to
-review their identity and policies before upgrading.
+and recovery. The helper compares their references, not their contents; review
+them with the [repository installation guide](../repository-credentials/installation.md)
+before upgrading.
 
 Add either or both flags to any upgrade command below:
 
@@ -154,12 +155,6 @@ baseline paths during the upgrade. An Installation change also updates its
 Secret and restarts OCC with the new checksum. A controller-only release still
 does not deploy Agents; plan any Agent changes separately. Keep candidate files
 unchanged and available at the same paths for recovery.
-
-With the bundled Collector enabled, [refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
-from the release source and restart the Collector before upgrading; Helm does
-not update it. The command reads that Secret and stops before mutation when its
-`collector.yaml` or `kubernetes.yaml` differs from the checkout. Add
-`--collector-config-reviewed` only to keep a reviewed custom configuration.
 
 ### Apply other Installation changes
 
@@ -205,15 +200,18 @@ The new checksum restarts the API and worker so they read the new Installation.
 This path has no startup preflight, and the API stops before its replacement
 starts: an Installation the controller rejects keeps the API down, with a
 `startup-error` code such as `PRESET_FILE_INVALID`, until you undo the change.
-The loop above stops on a `presets.files` entry the running image cannot read.
+The Preset loop checks file readability, not contents. Helm reports a rejection
+only after its 5-minute timeout; the API log shows `startup-error` sooner, but
+let Helm return before you undo.
 The patch replaces only the Installation key and keeps the Secret's
 `openclaw.dev/installation-id` annotation. Do not re-create the Secret with
 `kubectl apply`: if its last applied configuration carries that annotation,
 apply deletes it and the next upgrade refuses the Secret. Settings that
 shape Agent Pods, such as Gateway resources, apply only to Pods created
 afterward; deploy an Agent to apply them to it. To undo, restore the `.before`
-file and repeat the commands. The edited files are the baseline for the next
-upgrade.
+file and rerun the Secret patch, checksum and `helm upgrade` commands; skip the
+loop, which needs a running API container. The edited files are the baseline for
+the next upgrade.
 
 ## Bind the Installation once
 
@@ -236,6 +234,11 @@ Do not replace a different existing ID. Investigate why the cluster and
 bootstrap record disagree.
 
 ## Upgrade the control plane
+
+Releases with the shared tenant namespace refuse to start on a single-cluster
+Installation with
+[split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations);
+check before the maintenance window.
 
 Set the controller image and run the command without `--runtime-image`:
 
@@ -264,15 +267,16 @@ before cluster mutation and verifies the deployed pair and broker capability.
 Before it stops anything, the command runs a startup preflight: one-shot API and
 worker Pods on the selected controller image, built from the rendered chart (same
 environment, mounts and service account), with the candidate Installation in a
-temporary Secret. Each loads the Installation, Drivers and `presets.files` as
-startup does, without opening the database. If either fails, as when a listed
-Preset file is missing from the image, the command waits for both Pods, prints
-each failure, deletes the Pods and Secret, and stops; the old release keeps
-serving. Each Pod's log and status are saved as `preflight-<api|worker>.log` and
-`preflight-<api|worker>-status.json`; saving them can run up to about 90 seconds
-past `--timeout-seconds`. Runtime upgrades run it on the current controller image. If
-the helper is killed first, delete what it left with
-`kubectl delete pod,secret -n <namespace> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=upgrade-preflight`.
+temporary Secret and the chart's API and worker dependency egress in a temporary
+NetworkPolicy. Each loads the Installation, Drivers and `presets.files`, then
+runs the bundled Kubernetes Compute Driver's preflight as startup does, without
+opening the database. If either fails, as when a listed Preset file is missing
+from the image or split-layout tenants remain, the command prints each failure,
+deletes these resources, and stops; the old release keeps serving. Logs and
+status are saved as `preflight-<api|worker>.log` and `-status.json`, taking up
+to about 90 seconds past `--timeout-seconds`. Runtime upgrades use the current
+controller image. If the helper is killed, delete its leftovers with
+`kubectl delete pod,secret,networkpolicy.networking.k8s.io -n <namespace> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=upgrade-preflight`.
 
 The command then applies reviewed settings, scales the API and worker to zero, and
 waits for their Pods to terminate. Helm restores the candidate Deployments after

@@ -11,6 +11,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 
 async function createFixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), "occ-presets-"));
@@ -83,19 +84,12 @@ test("Preset CRUD keeps Namespace names unique and filters reads by exact Native
   let limitedPrincipalId;
   const limited = await fixture.createAccountWithPolicy("preset-reader", (principal) => {
     limitedPrincipalId = principal.id;
-    fixture.policy.roles.push({
+    grantRole(fixture.policy, principal.id, {
       id: "preset-reader",
+      bindingId: "read-one-preset",
       namespaceId: alpha.id,
-      permissions: [{ action: "read", resourceKind: "preset" }],
-    });
-    fixture.policy.bindings.push({
-      id: "read-one-preset",
-      namespaceId: alpha.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "preset-reader",
-      resourceKind: "preset",
-      resourceId: visible.id,
+      permissions: { preset: ["read"] },
+      resource: { kind: "preset", id: visible.id },
     });
   });
   const session = await fixture.signIn(limited.credentials);
@@ -103,17 +97,11 @@ test("Preset CRUD keeps Namespace names unique and filters reads by exact Native
   // does not open the collection, so a refusal looks the same as for a missing Namespace.
   const unlisted = await fixture.request("GET", collection(alpha.id), { session });
   assert.equal(unlisted.status, 403, JSON.stringify(unlisted.body));
-  fixture.policy.roles.push({
+  grantRole(fixture.policy, limitedPrincipalId, {
     id: "alpha-namespace-reader",
+    bindingId: "read-alpha",
     namespaceId: alpha.id,
-    permissions: [{ action: "read", resourceKind: "namespace" }],
-  });
-  fixture.policy.bindings.push({
-    id: "read-alpha",
-    namespaceId: alpha.id,
-    subjectKind: "identity",
-    subjectId: limitedPrincipalId,
-    roleId: "alpha-namespace-reader",
+    permissions: { namespace: ["read"] },
   });
   const readable = await fixture.request("GET", collection(alpha.id), { session });
   assert.equal(readable.status, 200, JSON.stringify(readable.body));
@@ -140,6 +128,16 @@ test("Preset CRUD keeps Namespace names unique and filters reads by exact Native
   assert.equal(otherNamespace.status, 403);
   const wrongOwner = await fixture.request("GET", `${collection(beta.id)}/${visible.id}`);
   assert.equal(wrongOwner.status, 404);
+  // Writes addressed through the wrong Namespace are a scope miss, not a write conflict.
+  for (const method of ["PATCH", "DELETE"]) {
+    const misdirected = await fixture.request(
+      method,
+      `${collection(beta.id)}/${visible.id}`,
+      method === "PATCH" ? { body: { name: "Moved" } } : {},
+    );
+    assert.equal(misdirected.status, 404, `${method}: ${JSON.stringify(misdirected.body)}`);
+    assert.equal(misdirected.body.error.code, "NOT_FOUND", method);
+  }
 
   const renamed = await fixture.request("PATCH", `${collection(alpha.id)}/${visible.id}`, {
     body: { name: "Renamed" },
@@ -150,13 +148,22 @@ test("Preset CRUD keeps Namespace names unique and filters reads by exact Native
   await deletePreset(fixture, alpha.id, visible.id);
   const removed = await fixture.request("GET", `${collection(alpha.id)}/${visible.id}`);
   assert.equal(removed.status, 404);
-  assert.ok(
-    fixture.audit.events.some(
-      (event) =>
-        event.resource.kind === "preset" &&
-        event.resource.id === visible.id &&
-        event.outcome === "success",
-    ),
+  // Each successful write leaves exactly one attributable mutation row.
+  assert.deepEqual(
+    fixture.audit.events
+      .filter(
+        (event) =>
+          event.kind === "mutation" &&
+          event.resource.kind === "preset" &&
+          event.resource.id === visible.id &&
+          event.outcome === "success",
+      )
+      .map((event) => [event.action, event.resource.namespaceId]),
+    [
+      ["openclaw.presets.create", alpha.id],
+      ["openclaw.presets.update", alpha.id],
+      ["openclaw.presets.delete", alpha.id],
+    ],
   );
 });
 
@@ -347,20 +354,10 @@ test("Preset admission rejects malformed templates and credential leaks while pr
   const reader = await fixture.createAccountWithPolicy(
     "preset-user-without-secret",
     (principal) => {
-      fixture.policy.roles.push({
+      grantRole(fixture.policy, principal.id, {
         id: "preset-consumer",
         namespaceId: alpha.id,
-        permissions: [
-          { action: "read", resourceKind: "preset" },
-          { action: "create", resourceKind: "configuration" },
-        ],
-      });
-      fixture.policy.bindings.push({
-        id: "preset-consumer",
-        namespaceId: alpha.id,
-        subjectKind: "identity",
-        subjectId: principal.id,
-        roleId: "preset-consumer",
+        permissions: { preset: ["read"], configuration: ["create"] },
       });
     },
   );
@@ -558,6 +555,17 @@ test("Presets block Namespace deletion and deleting one removes only its managed
     bindings.push(binding.data);
   }
   await deletePreset(fixture, namespace.id, target.id);
+  const deletion = fixture.audit.events.filter(
+    (event) =>
+      event.action === "openclaw.presets.delete" &&
+      event.resource.id === target.id &&
+      event.outcome === "success",
+  );
+  assert.equal(deletion.length, 1);
+  assert.deepEqual(
+    deletion[0].details.removedAccessBindings.map((binding) => binding.id),
+    [bindings[0].id],
+  );
   const remaining = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
   assert.equal(remaining.status, 200);
   assert.deepEqual(
@@ -1004,6 +1012,11 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
       createdAt: new Date().toISOString(),
     }),
   );
+  // A Namespace that is being deleted is skipped and does not fail startup. Its unmodified
+  // defaults from creation do not block the deletion request.
+  const leaving = await fixture.createNamespace("Leaving namespace", { ready: true });
+  const leave = await fixture.request("DELETE", `/namespaces/${leaving.id}`);
+  assert.equal(leave.status, 202, JSON.stringify(leave.body));
   await Promise.all([
     fixture.controller.initializeDefaultPresets(principal.id),
     fixture.controller.initializeDefaultPresets(principal.id),
@@ -1024,15 +1037,9 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
 
   // Namespace creation must roll back if its caller cannot create the defaults.
   const limited = await fixture.createAccountWithPolicy("namespace-only", (identity) => {
-    fixture.policy.roles.push({
+    grantRole(fixture.policy, identity.id, {
       id: "namespace-only",
-      permissions: [{ action: "create", resourceKind: "namespace" }],
-    });
-    fixture.policy.bindings.push({
-      id: "namespace-only",
-      subjectKind: "identity",
-      subjectId: identity.id,
-      roleId: "namespace-only",
+      permissions: { namespace: ["create"] },
     });
   });
   const session = await fixture.signIn(limited.credentials);
@@ -1054,12 +1061,21 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
     body: { name: "Denied defaults" },
   });
   assert.equal(permitted.status, 201);
-  assert.deepEqual(
-    (await fixture.request("GET", collection(permitted.data.id))).data
-      .map((preset) => preset.name)
-      .sort(),
-    defaultNames,
-  );
+  const provisioningPresets = (await fixture.request("GET", collection(permitted.data.id))).data;
+  assert.deepEqual(provisioningPresets.map((preset) => preset.name).sort(), defaultNames);
+  // Startup seeds the defaults while the Namespace provisions; callers wait until it is ready.
+  for (const [method, path, body] of [
+    ["POST", collection(permitted.data.id), { name: "Too early", template: {} }],
+    [
+      "PATCH",
+      `${collection(permitted.data.id)}/${provisioningPresets[0].id}`,
+      { name: "Too early" },
+    ],
+  ]) {
+    const early = await fixture.request(method, path, { body });
+    assert.equal(early.status, 409, `${method}: ${JSON.stringify(early.body)}`);
+    assert.equal(early.body.error.code, "NAMESPACE_NOT_READY", method);
+  }
   // Startup must skip a persisted non-administrator even when it is returned first.
   await initializeInstallationPresets(
     fixture.controller,
@@ -1104,13 +1120,10 @@ test("startup seeds default Presets with an administrator who can create them wh
   // The administrator Role bound to the Installation resource only: it administers the
   // Installation but grants nothing inside a Namespace.
   const scoped = await fixture.createAccountWithPolicy("installation-only", (identity) => {
-    fixture.policy.bindings.push({
+    bindRole(fixture.policy, identity.id, {
       id: "installation-only-admin",
-      subjectKind: "identity",
-      subjectId: identity.id,
       roleId: adminRoleId,
-      resourceKind: "installation",
-      resourceId: installationId,
+      resource: { kind: "installation", id: installationId },
     });
   });
   const administers = await iam.authorize({
@@ -1506,13 +1519,10 @@ test("startup skips and warns about a default refresh the policy refuses instead
   const { principal: scoped } = await fixture.createAccountWithPolicy(
     "installation-only",
     (identity) => {
-      fixture.policy.bindings.push({
+      bindRole(fixture.policy, identity.id, {
         id: "installation-only-admin",
-        subjectKind: "identity",
-        subjectId: identity.id,
         roleId: adminRoleId,
-        resourceKind: "installation",
-        resourceId: installationId,
+        resource: { kind: "installation", id: installationId },
       });
     },
   );

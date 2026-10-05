@@ -121,8 +121,11 @@ notice names the newer revision to pass. `runtime` accepts `-o table|json|yaml`
 and needs Agent `operate` and `read` plus `read` on the revision. Its table output
 ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
 `LAST SEEN`, `MESSAGE`); `CONTAINER` is `-` for Pod-level Events. `logs` needs
-Agent `read_logs` (or `administer`) and `read` plus `read` on the revision, and each view is
-audited.
+Agent `read_logs` (or `administer`) and `read`, which cover every revision, and
+each view is audited. Default revision selection lists only revisions you can
+`read`: without revision grants, `logs` reads the active revision without
+checking for a newer one, and an Agent with no active revision needs
+`--revision ID`.
 
 | `occ agent logs` flag  | Meaning                                                                                                                                                                                                    |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -138,7 +141,9 @@ audited.
 
 Text output prints `TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value` per line.
 Gap and withheld records are printed to stderr as `notice:` lines; in JSON mode
-they are also records on stdout. With `--follow`, the CLI waits for
+they are also records on stdout. Text lines and notices show an invisible or
+control character, such as a bidirectional override, as an escape like
+`\u202e`; a field value holding one is quoted. JSON records are unchanged. With `--follow`, the CLI waits for
 `Retry-After` after a `429`, retries after a `504`, starts a new audited view
 when the cursor is rejected, and exits cleanly on Ctrl-C. `501`, `503` and
 permission errors end the command with a nonzero exit. `--follow` cannot be
@@ -153,13 +158,16 @@ occ agent logs agt_... --source gateway --follow -o json | jq -r .message
 ## Output and errors
 
 Table output is meant for people; it prints `-` for unset fields and `No
-resources found.` for an empty list. JSON and YAML print the resource or array
+resources found.` for an empty list. A cell holding an invisible or control
+character, such as a bidirectional override in a name, is printed quoted with
+that character escaped; so is a value that starts with `"`. JSON and YAML print the exact resource or array
 without the HTTP envelope. Deleting a Configuration prints
 `Deleted configuration ID.` in table mode; structured output contains
 `deleted`, `kind`, and `id`.
 
 Failures go to stderr and the CLI exits nonzero. For HTTP errors, the CLI prints
-the status and, when present, the API error code and message. It does not print
+the status and, when present, the API error code and message, and the
+`Retry-After` delay in seconds. It does not print
 the server's request ID. To capture that ID for a failed request, use the
 [HTTP API directly](../guides/http-api.md#troubleshoot).
 
@@ -181,3 +189,6 @@ printed by startup so it selects the same profile and state directory.
 The explicitly selected Kubernetes-only profile rejects Compose options. Use
 `scripts/dev-up` and `scripts/dev-down` as the common entry points for every
 profile; the Compute and Sandbox Driver settings select the implementation.
+When `scripts/dev-up` fails on the Docker profile, `occ dev up` exits with the
+script's status (`2` for a usage or configuration error) and prints nothing
+beyond the script's own message.

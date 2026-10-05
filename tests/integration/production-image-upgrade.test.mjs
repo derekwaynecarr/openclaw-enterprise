@@ -22,6 +22,11 @@ test("production image upgrades preserve controller/runtime ownership and wait f
 
   const bin = join(directory, "bin");
   await mkdir(bin);
+  // The fixture commands below answer at once, and the readiness polls end on their
+  // counters, not on time, so the helper's 2 s poll interval only adds wall time.
+  const sleep = join(bin, "sleep");
+  await writeFile(sleep, "#!/usr/bin/env bash\nexit 0\n");
+  await chmod(sleep, 0o755);
   const stat = join(bin, "stat");
   await writeFile(
     stat,

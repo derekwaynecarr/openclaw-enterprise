@@ -16,6 +16,7 @@ import {
   validatePolicies,
 } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts";
+import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { NotImplementedError } from "../../packages/occ/src/index.ts";
 
 const OCC_DIFFS_DIGEST =
@@ -301,6 +302,39 @@ test("Plugin Drivers refuse two selection keys for the same native plugin", () =
   validatePolicies("openclaw", { diffs: { enabled: true }, "occ-plugin:diffs": { enabled: true } });
 });
 
+test("Plugin Drivers name themselves when a selection names a plugin they do not offer", () => {
+  const occ = new OCCPluginDriver();
+  const codex = new CodexPluginDriver();
+  const unknownFor = (driverId) => (error) =>
+    error.name === "PluginPolicyValidationError" &&
+    error.message.includes(`selected Plugin Driver (${driverId}) does not offer`);
+  // The other Driver's plugin, as after an Installation switches its single Plugin Driver.
+  assert.throws(() => codex.validatePolicies(occSelection()), unknownFor("codex-plugin"));
+  assert.throws(
+    () => occ.validatePolicies(codexSelection(linearPluginId)),
+    unknownFor("occ-plugin"),
+  );
+  assert.throws(
+    () => occ.validatePolicies({ "occ-plugin:unknown": { enabled: true } }),
+    unknownFor("occ-plugin"),
+  );
+  assert.throws(
+    () => codex.validatePolicies({ "codex-plugin:linear": { enabled: true } }),
+    unknownFor("codex-plugin"),
+  );
+  // The ID mismatch wins over a policy field the selected Driver does not support.
+  assert.throws(
+    () =>
+      occ.validatePolicies(codexSelection(linearPluginId, { toolDefaults: { reviewer: "human" } })),
+    unknownFor("occ-plugin"),
+  );
+  // Policy errors on an offered plugin keep their own message.
+  assert.throws(
+    () => occ.validatePolicies(occSelection({ toolDefaults: { approval: "all_actions" } })),
+    { name: "PluginPolicyValidationError", message: "The supplied plugin policies are invalid." },
+  );
+});
+
 test("OpenClaw plugin startup translation rejects unsupported policies", () => {
   // Each selection breaks exactly one admission rule, named by its message.
   for (const [selection, message] of [
@@ -544,6 +578,49 @@ setTimeout(() => {}, 2_000);
     uncaught.map((error) => error.code ?? error.message),
     [],
   );
+});
+
+test("native Codex catalog reader does not echo the Codex app-server error message", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-codex-plugin-reader-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const executable = join(directory, "codex-fixture.mjs");
+  const leaked = join(directory, "home", "operator", ".codex", "auth.json");
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import { createInterface } from "node:readline";
+
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialized") return;
+  if (message.method === "initialize") {
+    console.log(JSON.stringify({ id: message.id, result: {} }));
+    return;
+  }
+  console.log(JSON.stringify({
+    id: message.id,
+    error: { code: -32603, message: ${JSON.stringify(`failed to read ${leaked}: permission denied`)} },
+  }));
+});
+`,
+  );
+  await chmod(executable, 0o755);
+
+  const reader = new NativeCodexPluginCatalogReader({
+    codexExecutable: executable,
+    codexHome: directory,
+    requestTimeoutMs: 5_000,
+  });
+  const error = await reader.listCatalog().then(
+    () => assert.fail("the catalog read must fail"),
+    (rejection) => rejection,
+  );
+  assert.ok(error instanceof NotImplementedError, String(error));
+  // The 501 body carries this message; it names the request, never the app-server's text.
+  const body = requestFailure(error);
+  assert.equal(body.status, 501);
+  assert.equal(body.message, "Codex plugin catalog discovery failed during account/read.");
+  assert.ok(!body.message.includes(directory));
 });
 
 test("native Codex catalog reader kills a Codex process that ignores SIGTERM after an abort", async (context) => {

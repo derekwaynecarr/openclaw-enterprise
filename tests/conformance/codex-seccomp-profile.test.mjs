@@ -38,7 +38,7 @@ async function writeJson(path, value) {
 }
 
 test("codex seccomp profile derivation preserves RuntimeDefault and adds only reviewed bwrap rules", () => {
-  const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, { codexVersion: "0.158.0" });
+  const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, { codexVersion: "0.160.0" });
   const added = profile.syscalls.slice(runtimeDefaultBaseline.syscalls.length);
 
   assert.deepEqual(profile.architectures, runtimeDefaultBaseline.architectures);
@@ -160,7 +160,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.158.0",
+      "0.160.0",
       "--out",
       profilePath,
       "--provenance-out",
@@ -178,7 +178,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
   assert.deepEqual(profile.syscalls.slice(0, runtimeDefaultBaseline.syscalls.length), [
     ...runtimeDefaultBaseline.syscalls,
   ]);
-  assert.equal(provenance.codexVersion, "0.158.0");
+  assert.equal(provenance.codexVersion, "0.160.0");
   assert.equal(provenance.runtimeDefaultSha256, summary.runtimeDefaultSha256);
   assert.equal(provenance.profileSha256, summary.profileSha256);
   assert.equal(provenance.addedRules, 78);
@@ -191,7 +191,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.158.0",
+      "0.160.0",
       "--out",
       profilePath,
       "--provenance-out",
@@ -252,6 +252,39 @@ test("offline codex seccomp generator rejects invalid arguments before writing o
   }
 });
 
+// The helper sleeps 750 ms between Pod reads and measures its deadline with
+// Date.now(). A mocked clock fires each armed poll delay at once and moves
+// Date.now() forward by the same 750 ms, so every deadline and read count below
+// is the one a real wait would produce, without the wall time.
+async function withMockedPollClock(t, operation) {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  try {
+    let settled = false;
+    const result = operation();
+    result.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    // performance.now() is not mocked. A helper that polls without arming its
+    // delay never advances the mocked clock, so fail fast instead of spinning;
+    // each run settles within milliseconds otherwise.
+    const started = performance.now();
+    while (!settled) {
+      assert.ok(
+        performance.now() - started < 5_000,
+        "the helper made no progress on the mocked clock within 5 s",
+      );
+      // setImmediate is not mocked: let file and injected-command work run, then
+      // fire whichever poll delay the helper armed meanwhile.
+      await new Promise((resolve) => setImmediate(resolve));
+      t.mock.timers.runAll();
+    }
+    return await result;
+  } finally {
+    t.mock.timers.reset();
+  }
+}
+
 // Exercise the real preparation/cleanup path with injected command responses.
 // These ordered API observations are synthetic, not a claimed live Pod transition.
 async function missingProfileFixture(t, observations, options = {}) {
@@ -269,6 +302,10 @@ async function missingProfileFixture(t, observations, options = {}) {
   let missingReads = 0;
   let cleanupCalls = 0;
   const execFile = async (command, args) => {
+    // Like a real child process, every injected command completes on a later turn.
+    // This also lets withMockedPollClock's guard run between polls: a poll loop
+    // that stayed on the microtask queue would starve it.
+    await new Promise((resolve) => setImmediate(resolve));
     if (command === "kubectl") {
       if (args.includes("create")) {
         return { stdout: "", stderr: "" };
@@ -365,12 +402,14 @@ async function missingProfileFixture(t, observations, options = {}) {
   };
   return {
     run: () =>
-      prepareCodexSeccompProfile({
-        cluster,
-        image: `registry.invalid/runtime@sha256:${"a".repeat(64)}`,
-        execFile,
-        timeoutMs: options.timeoutMs ?? 2_000,
-      }),
+      withMockedPollClock(t, () =>
+        prepareCodexSeccompProfile({
+          cluster,
+          image: `registry.invalid/runtime@sha256:${"a".repeat(64)}`,
+          execFile,
+          timeoutMs: options.timeoutMs ?? 2_000,
+        }),
+      ),
     reads: () => missingReads,
     async assertCleanup() {
       assert.equal(cleanupCalls, 1);

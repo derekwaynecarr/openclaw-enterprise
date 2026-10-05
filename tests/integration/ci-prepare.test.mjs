@@ -1432,6 +1432,139 @@ assert.equal(finalState.resources.length, 1);
   assert.equal((await readFile(logPath, "utf8")).trim().split("\n").length, 8);
 });
 
+test("prepareFile copies a per-test database from a ready template it owns without migrating", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state.json");
+  const logPath = join(root, "fake-commands.log");
+  const dockerPath = join(root, "fake-docker.mjs");
+  const corepackPath = join(root, "fake-corepack.mjs");
+  const prefix = "openclaw-ci-synthetic";
+  const server = {
+    id: "compose-postgres-synthetic",
+    kind: "compose-postgres",
+    owner: prefix,
+    status: "ready",
+    name: "openclaw_ci_pg_synthetic",
+    composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+    port: 45431,
+  };
+  const database = (name, extra = {}) => ({
+    id: `postgres-database-${name}`,
+    kind: "postgres-database",
+    owner: prefix,
+    status: "ready",
+    name,
+    composeProject: server.name,
+    port: server.port,
+    ...extra,
+  });
+  await writeState(statePath, {
+    version: 1,
+    repositoryRoot,
+    lane: "postgres-application",
+    prefix,
+    statePath,
+    resources: [
+      server,
+      database("openclaw_ci_foreign_owner", { owner: "openclaw-ci-other" }),
+      database("openclaw_ci_planned", { status: "planned" }),
+      database("openclaw_ci_other_project", { composeProject: "openclaw_ci_pg_other" }),
+      database("openclaw_ci_other_port", { port: 45432 }),
+    ],
+  });
+  await writeFile(
+    dockerPath,
+    `#!${process.execPath}
+import assert from "node:assert/strict";
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+assert.deepEqual(args.slice(5, 9), ["exec", "-T", "postgres", "psql"]);
+appendFileSync(process.env.CI_SYNTHETIC_LOG, "docker-exec\\t" + args.at(-3) + "\\t" + args.at(-1) + "\\n");
+`,
+    { mode: 0o700 },
+  );
+  await writeFile(
+    corepackPath,
+    `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+appendFileSync(process.env.CI_SYNTHETIC_LOG, "migrate\\t" + new URL(process.env.OCC_MIGRATION_DATABASE_URL).pathname + "\\n");
+`,
+    { mode: 0o700 },
+  );
+  const program = `
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+const { prepareFile } = await import(process.argv[1]);
+const statePath = process.argv[2];
+const options = {
+  lane: "postgres-application",
+  file: "tests/integration/postgres-worker-agent-revision.test.mjs",
+  statePath,
+};
+const template = await prepareFile(options);
+const url = (name) => template.env.OCC_TEST_DATABASE_URL.replace(/[^/]+$/, name);
+for (const refused of [url("openclaw_ci_foreign_owner"), url("openclaw_ci_planned"), url("openclaw_ci_other_project"), url("openclaw_ci_other_port"), url("openclaw_ci_absent"), "not a url"]) {
+  await assert.rejects(() => prepareFile({ ...options, template: refused }), /template must be/);
+}
+await assert.rejects(
+  () => prepareFile({ ...options, lane: "checks-baseline-1", template: template.env.OCC_TEST_DATABASE_URL }),
+  /requires a prepared PostgreSQL lane state/,
+);
+const copy = await prepareFile({ ...options, template: template.env.OCC_TEST_DATABASE_URL });
+const copied = new URL(copy.env.OCC_TEST_DATABASE_URL);
+assert.equal(copied.username, "occ_app");
+assert.notEqual(copied.pathname, new URL(template.env.OCC_TEST_DATABASE_URL).pathname);
+assert.match(copied.pathname, /^\\/openclaw_ci_postgres_worker_agent_revision_[a-f0-9]{12}$/);
+const prepared = JSON.parse(await readFile(statePath, "utf8"));
+assert.deepEqual(
+  prepared.resources.filter((resource) => resource.kind === "postgres-database" && resource.owner === prepared.prefix && resource.status === "ready" && resource.name.startsWith("openclaw_ci_postgres_")).map((resource) => "/" + resource.name),
+  [new URL(template.env.OCC_TEST_DATABASE_URL).pathname, copied.pathname],
+);
+// A refused template is rejected before a resource is recorded.
+assert.deepEqual(
+  prepared.resources.filter((resource) => resource.status === "planned").map((resource) => resource.name),
+  ["openclaw_ci_planned"],
+);
+await copy.cleanup();
+await template.cleanup();
+console.error(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " " + copied.pathname.slice(1));
+`;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      program,
+      new URL("../../scripts/ci/prepare.mjs", import.meta.url).href,
+      statePath,
+    ],
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      timeout: 20_000,
+      env: {
+        PATH: root,
+        LANG: "C",
+        OCC_DOCKER_BIN: dockerPath,
+        OPENCLAW_CI_COREPACK_BIN: corepackPath,
+        CI_SYNTHETIC_LOG: logPath,
+      },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const [templateName, copyName] = result.stderr.trim().split(" ");
+  assert.deepEqual((await readFile(logPath, "utf8")).trim().split("\n"), [
+    `docker-exec\tpostgres\tCREATE DATABASE "${templateName}"`,
+    `docker-exec\t${templateName}\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+    `migrate\t/${templateName}`,
+    // The copy keeps the template's schemas and migrations; only the database grant is new.
+    `docker-exec\tpostgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"`,
+    `docker-exec\t${copyName}\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
+    `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${copyName}" WITH (FORCE)`,
+    `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${templateName}" WITH (FORCE)`,
+  ]);
+});
+
 test("repository platform preparation refuses a public relay gateway before importing images", async (t) => {
   const commands = await fixtureImageCommands(
     t,
@@ -1765,7 +1898,7 @@ test("codex seccomp preparation requires a namespace/seccomp RuntimeDefault deni
         cluster,
         image: immutableImage,
         // The current runtime must still reject unrelated setup failures before node writes.
-        codexVersion: "0.158.0",
+        codexVersion: "0.160.0",
         execFile: execFileForRuntimeDefaultFailure((command, args) => {
           const commandText = `${command} ${args.join(" ")}`;
           assert.match(commandText, /--namespace/);
@@ -1947,7 +2080,7 @@ test("codex seccomp preparation publishes a reviewed Docker profile for native s
   assert.match(seccomp.profileSha256, /^[a-f0-9]{64}$/);
   assert.equal(
     seccomp.dockerProfilePath,
-    join(clusterDirectory, "docker-seccomp", `codex-0.158.0-${seccomp.profileSha256}.json`),
+    join(clusterDirectory, "docker-seccomp", `codex-0.160.0-${seccomp.profileSha256}.json`),
   );
   const profileData = await readFile(seccomp.dockerProfilePath, "utf8");
   assert.deepEqual(JSON.parse(profileData), installedProfile);

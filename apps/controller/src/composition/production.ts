@@ -1,4 +1,4 @@
-import type { AuditEvent, ComputeDriver } from "@openclaw-enterprise/contracts";
+import type { AuditEvent } from "@openclaw-enterprise/contracts";
 import {
   validateAuthAccountPrincipalSeed,
   validatePersistedNativeIAMState,

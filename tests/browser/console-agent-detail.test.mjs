@@ -1754,7 +1754,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   await page.route(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
   await dialog.getByLabel("Name", { exact: true }).fill("Namespace not ready picker Secret");
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-  await dialog.getByRole("alert").filter({ hasText: "not ready for Secret creation" }).waitFor();
+  await dialog.getByRole("alert").filter({ hasText: "cannot store Secrets yet" }).waitFor();
   assert.equal(
     await dialog.getByLabel("Name", { exact: true }).inputValue(),
     "Namespace not ready picker Secret",

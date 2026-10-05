@@ -542,10 +542,34 @@ async function postgresExec(resource, args, stage) {
   );
 }
 
+// A template must be a ready database this state owns on the same server. Nothing may
+// stay connected to it: PostgreSQL refuses to copy a database that has other sessions.
+function templateDatabase(state, server, templateUrl) {
+  let name;
+  try {
+    name = new URL(templateUrl).pathname.slice(1);
+  } catch {
+    throw new Error("The template must be a PostgreSQL URL that prepareFile returned.");
+  }
+  const template = state.resources.find(
+    (resource) =>
+      resource.kind === "postgres-database" &&
+      resource.name === name &&
+      resource.owner === state.prefix &&
+      resource.status === "ready" &&
+      resource.composeProject === server.name &&
+      resource.port === server.port,
+  );
+  if (!template) {
+    throw new Error("The template must be a ready database prepared in this state.");
+  }
+  return template.name;
+}
+
 async function createAndMigrateDatabase(
   statePath,
   state,
-  { kind = "ci", label, requireExistingServer = false },
+  { kind = "ci", label, requireExistingServer = false, template },
 ) {
   const existingServer = postgresResource(state);
   if (requireExistingServer && !existingServer) {
@@ -554,6 +578,7 @@ async function createAndMigrateDatabase(
     );
   }
   const server = existingServer ?? (await ensurePostgresServer(statePath, state));
+  const source = template === undefined ? undefined : templateDatabase(state, server, template);
   const name = databaseName(kind, label);
   const resource = addResource(state, "postgres-database", {
     name,
@@ -573,10 +598,12 @@ async function createAndMigrateDatabase(
       "-d",
       "postgres",
       "-c",
-      `CREATE DATABASE ${quoteIdentifier(name)}`,
+      `CREATE DATABASE ${quoteIdentifier(name)}${source === undefined ? "" : ` TEMPLATE ${quoteIdentifier(source)}`}`,
     ],
     "database-create",
   );
+  // A copy carries the template's schemas, their ACLs and every migration, but not the
+  // database-level grant, which lives in pg_database.
   await postgresExec(
     server,
     [
@@ -588,15 +615,17 @@ async function createAndMigrateDatabase(
       "-d",
       name,
       "-c",
-      `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+      `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator;${source === undefined ? " CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;" : ""}`,
     ],
     "database-schema",
   );
   const migrationUrl = postgresUrl("occ_migrator", "occ-migrator-local", server.port, name);
-  await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
-    env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
-    stage: "database-migrate",
-  });
+  if (source === undefined) {
+    await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
+      env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
+      stage: "database-migrate",
+    });
+  }
   await markResourceReady(statePath, state, resource);
   return {
     name,
@@ -1772,10 +1801,11 @@ async function prepareK3dRuntimeImages(
   }
 }
 
-async function prepareRuntimeSmokeCodexSeccompProfile(statePath, state, env) {
-  const cluster = await timedPreparation(state.lane, "k3d-create", () =>
-    ensureK3dCluster(statePath, state),
-  );
+// The CI lane passes a cluster it created alongside the runtime image build.
+async function prepareRuntimeSmokeCodexSeccompProfile(statePath, state, env, created) {
+  const cluster =
+    created ??
+    (await timedPreparation(state.lane, "k3d-create", () => ensureK3dCluster(statePath, state)));
   const runtimeImage = await timedPreparation(state.lane, "runtime-image-import", () =>
     registerImageInK3d(
       statePath,
@@ -1970,22 +2000,34 @@ async function prepareLane({ lane, statePath }) {
       );
       break;
     case "images-runtime-startup":
-    case "images-runtime-startup-2":
+    case "images-runtime-startup-2": {
       // Runtime image smoke tests run apart from packaging, in two lanes, to
       // shorten CI wall time. Only the lane whose tests run the Codex sandbox
-      // sets codexSeccomp; the other skips the k3d cluster it needs.
-      Object.assign(
-        env,
-        (
-          await timedPreparation(name, "runtime-image-build", () =>
-            buildRuntimeImages(resolvedStatePath, state, { runtime: true }),
-          )
-        ).env,
+      // sets codexSeccomp; the other skips the k3d cluster it needs. The
+      // cluster needs no image, so it is created while the image builds.
+      const codexSeccomp = lanePrepare(name).codexSeccomp;
+      const [built, cluster] = await timedPreparation(name, "runtime-image-build-cluster", () =>
+        prepareTogether([
+          () =>
+            timedPreparation(name, "runtime-image-build", () =>
+              buildRuntimeImages(resolvedStatePath, state, { runtime: true }),
+            ),
+          ...(codexSeccomp
+            ? [
+                () =>
+                  timedPreparation(name, "k3d-create", () =>
+                    ensureK3dCluster(resolvedStatePath, state),
+                  ),
+              ]
+            : []),
+        ]),
       );
-      if (lanePrepare(name).codexSeccomp) {
-        await prepareRuntimeSmokeCodexSeccompProfile(resolvedStatePath, state, env);
+      Object.assign(env, built.env);
+      if (codexSeccomp) {
+        await prepareRuntimeSmokeCodexSeccompProfile(resolvedStatePath, state, env, cluster);
       }
       break;
+    }
     case "images-packaging":
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       await commandAvailable(process.env.OCC_YQ_BIN ?? "yq", ["--version"]);
@@ -2426,7 +2468,11 @@ async function prepareK3dModelLane(statePath, state, env, options) {
   return cluster;
 }
 
-async function prepareFile({ lane, file, statePath }) {
+// `template` (optional) is an OCC_TEST_DATABASE_URL that an earlier prepareFile call
+// returned for this state. The file's database is then a copy of that database
+// (CREATE DATABASE ... TEMPLATE) instead of a freshly migrated one. A suite that
+// prepares a database per test uses it to migrate once per file.
+async function prepareFile({ lane, file, statePath, template }) {
   const name = assertLane(lane);
   if (!file) {
     throw new Error("prepareFile requires a file.");
@@ -2440,6 +2486,9 @@ async function prepareFile({ lane, file, statePath }) {
     throw new Error(
       `prepareFile for ${name} requires a prior prepareLane call using the same state path.`,
     );
+  }
+  if (template !== undefined && (!prepare.postgres || !state)) {
+    throw new Error("A template database requires a prepared PostgreSQL lane state.");
   }
   const effectiveState = state ?? baseState(name, resolvedStatePath);
   const env = baseEnv(resolvedStatePath, effectiveState);
@@ -2488,6 +2537,7 @@ async function prepareFile({ lane, file, statePath }) {
       kind: dbKind,
       label: fileStem(relativeFile),
       requireExistingServer: true,
+      template,
     });
     resourceIds.push(database.resourceId);
     env.OCC_TEST_DATABASE_URL = database.appUrl;

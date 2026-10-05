@@ -321,7 +321,7 @@ export class NamespaceNotEmptyError extends ResourceConflictError {
 }
 
 export class NamespaceNotReadyError extends ResourceConflictError {
-  constructor(message = "The Namespace is not ready for deployment.") {
+  constructor(message = "The Namespace is not ready.") {
     super(message);
     this.name = "NamespaceNotReadyError";
   }
@@ -331,7 +331,7 @@ export class NamespaceNotReadyError extends ResourceConflictError {
 export class NativeWorkerSupportError extends Error {
   constructor() {
     super(
-      "Dedicated native OpenClaw is unavailable: the pinned OpenClaw runtime does not support required worker placement (cloudWorkers.requiredProfile) or native worker inference. See https://docs-enterprise.openclaw.org/reference/harness-execution/#native-worker-support",
+      "Dedicated native OpenClaw is unavailable: the pinned runtime does not support required worker placement (cloudWorkers.requiredProfile) or native worker inference. See https://docs-enterprise.openclaw.org/reference/harness-execution/#native-worker-support",
     );
     this.name = "NativeWorkerSupportError";
   }
@@ -592,10 +592,21 @@ export class RuntimeLogsError extends Error {
 
 export class PluginPolicyValidationError extends Error {
   constructor(
-    field?: "toolDefaults.reviewer" | "tools[id].reviewer" | "approvers" | "aliasedPlugin",
+    field?:
+      | "toolDefaults.reviewer"
+      | "tools[id].reviewer"
+      | "approvers"
+      | "aliasedPlugin"
+      | "unknownPlugin",
+    driverId?: string,
   ) {
     let message = "The supplied plugin policies are invalid.";
-    if (field === "aliasedPlugin") {
+    if (field === "unknownPlugin") {
+      // driverId comes from trusted Installation configuration, never from the request.
+      message = `A plugin selection names a plugin that the selected Plugin Driver${
+        driverId === undefined ? "" : ` (${driverId})`
+      } does not offer. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.`;
+    } else if (field === "aliasedPlugin") {
       message =
         'Two plugin selections name the same plugin (a native ID and its driver-prefixed ID, such as "diffs" and "occ-plugin:diffs"). Keep one selection per plugin.';
     } else if (field === "approvers") {

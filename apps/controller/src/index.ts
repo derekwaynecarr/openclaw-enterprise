@@ -103,6 +103,7 @@ import {
   RequestFailure,
   requestFailure,
   responseHeaders,
+  unstorableTextFailure,
   type ErrorDetail,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
@@ -213,6 +214,10 @@ const DEFAULT_BODY_LIMIT = 64 * 1024;
 const AGENT_CREATE_BODY_LIMIT = 448 * 1024;
 const WORKSPACE_FILE_BODY_LIMIT = 48 * 1024;
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
+// Path parameters such as IAM Role and AccessBinding IDs hold up to 200 characters (code
+// points). The router compares a parameter's decoded UTF-16 length, so 200 characters need
+// at most 400 units; its default of 100 refused contract-valid IDs before any handler ran.
+const MAX_PATH_PARAMETER_LENGTH = 400;
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 const RESOURCE_ID_PREFIX = {
@@ -1013,6 +1018,33 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     trustProxy: false,
     requestIdHeader: false,
     genReqId: () => `req_${randomUUID()}`,
+    routerOptions: { maxParamLength: MAX_PATH_PARAMETER_LENGTH },
+    // Router failures happen before routing, so no hook or error handler runs; without this
+    // Fastify answers its own body (echoing the path) with no request ID or security headers.
+    frameworkErrors: (error, request, reply) => {
+      const mapped =
+        error.code === "FST_ERR_BAD_URL"
+          ? failure(400, "INVALID_REQUEST", "The request path has a malformed percent-encoding.")
+          : error.code === "FST_ERR_MAX_PARAM_LENGTH"
+            ? failure(
+                400,
+                "INVALID_REQUEST",
+                "The request does not match the operation contract: a path parameter is too long.",
+              )
+            : // FST_ERR_ASYNC_CONSTRAINT; this app registers no async route constraints.
+              failure(500, "INTERNAL_ERROR", "The platform request could not be completed.");
+      // No hook runs for these, so record them as the onResponse hook records other requests,
+      // with no measured duration.
+      options.metrics?.observeHttp("unmatched", request.method, mapped.status, 0);
+      options.logger?.info({
+        event: "http.completed",
+        requestId: request.id,
+        method: request.method,
+        route: "unmatched",
+        status: mapped.status,
+      });
+      canonicalFailure(reply, mapped);
+    },
     ajv: {
       customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false },
       plugins: [formatsPlugin],
@@ -2343,7 +2375,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           throw failure(
             400,
             "INVALID_REQUEST",
-            "The request does not match the operation contract.",
+            "The request does not match the operation contract: querystring /cursor cannot be combined with /download; a download always starts a new view.",
+            [{ path: "/cursor", code: "INVALID_VALUE" }],
           );
         }
         const page = await controller!.readAgentRuntimeLogs(
@@ -3648,6 +3681,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               "INVALID_REQUEST",
               "The request does not match the operation contract.",
             );
+          }
+          const unstorable =
+            unstorableTextFailure("params", request.params) ??
+            unstorableTextFailure("body", request.body);
+          if (unstorable !== undefined) {
+            throw unstorable;
           }
         },
         preHandler: async (request) => resolveIdentity(request, operation),
