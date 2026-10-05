@@ -62,6 +62,7 @@ interface NativeAdminOptions {
   readonly auth: ControllerAuth;
   readonly nativeAdmin: NativeAdminAccessConfig | undefined;
   readonly nativeAdminGatewayApiKey: (() => Promise<string>) | undefined;
+  readonly webSocketLeaseIntervalMs: number | undefined;
   readonly auditSink: AuditSink;
 }
 
@@ -878,6 +879,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       head,
       context,
       connectionId,
+      ...(options.webSocketLeaseIntervalMs === undefined
+        ? {}
+        : { leaseIntervalMs: options.webSocketLeaseIntervalMs }),
       lease: async () => {
         const renewed = await boundedNativeAdminAdmission(
           nativeAdminProxyContext(request, hostname, admission.revisionId),

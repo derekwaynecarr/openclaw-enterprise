@@ -409,7 +409,11 @@
                 ]
               }
             ],
-            "hidden": ["guides/repository-credentials/standalone-service"]
+            "hidden": [
+              "guides/repository-credentials/standalone-service",
+              "guides/repository-credentials/development-token",
+              "reference/repository-credentials/development-token"
+            ]
           },
           {
             "tab": "Operate",

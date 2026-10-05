@@ -2225,5 +2225,16 @@ test(
     assert.equal(events[started].signal, "SIGTERM");
     assert.equal(events[completed].severity, "INFO");
     assert.equal(typeof events[completed].durationMs, "number");
+
+    // The listening line times the boot from process start and names each phase.
+    const listening = events.find(({ event }) => event === "listening");
+    assert.ok(Number.isSafeInteger(listening?.startupMs), `no startup time:\n${api.output()}`);
+    assert.deepEqual(Object.keys(listening.phasesMs), [
+      "modules",
+      "configuration",
+      "composition",
+      "ready",
+      "listen",
+    ]);
   },
 );

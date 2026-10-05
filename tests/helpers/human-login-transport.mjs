@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
+import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { APIError, betterAuth } = await import(require.resolve("better-auth"));
@@ -23,10 +23,12 @@ export function createLoginFixture({
   state: stateOverrides = {},
   trustedClientAddress = true,
   recoveryEmail,
+  providerDeadlineMs,
 }) {
   const attempts = [];
   const subjects = [];
   const denials = [];
+  const unmatched = [];
   const errors = [];
   const authLogs = [];
   const operationalLines = [];
@@ -52,8 +54,14 @@ export function createLoginFixture({
       subjects.push([providerId, subject]);
     },
     snapshotPassword: async () => undefined,
-    recordDenied: async (reason, deniedProvider) => {
-      denials.push(deniedProvider === undefined ? [reason] : [reason, deniedProvider]);
+    recordDenied: async (reason, deniedProvider, details) => {
+      denials.push(
+        deniedProvider === undefined
+          ? [reason]
+          : details === undefined
+            ? [reason, deniedProvider]
+            : [reason, deniedProvider, details],
+      );
     },
     ...stateOverrides,
   };
@@ -64,6 +72,8 @@ export function createLoginFixture({
     {
       trustedClientAddress,
       onOperationalEvent: (event) => emitOccLogEvent(logger, event),
+      ...(providerDeadlineMs === undefined ? {} : { providerDeadlineMs }),
+      onUnmatchedCallback: (name) => unmatched.push(name),
     },
   );
   if (recoveryEmail !== undefined) {
@@ -109,6 +119,7 @@ export function createLoginFixture({
     attempts,
     subjects,
     denials,
+    unmatched,
     errors,
     authLogs,
     // Operational log records without their timestamp.
@@ -215,18 +226,6 @@ export async function startProviderServer(t, handle) {
 
 // RS256 ID tokens signed by a fresh key that the returned JWKS publishes as "fixture-kid".
 export function createIdTokenSigner() {
-  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const jwks = {
-    keys: [
-      { ...publicKey.export({ format: "jwk" }), kid: "fixture-kid", alg: "RS256", use: "sig" },
-    ],
-  };
-  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  return {
-    jwks,
-    sign(claims) {
-      const input = `${encode({ alg: "RS256", kid: "fixture-kid", typ: "JWT" })}.${encode(claims)}`;
-      return `${input}.${sign("sha256", Buffer.from(input), privateKey).toString("base64url")}`;
-    },
-  };
+  const key = rsaSigningKey("fixture-kid");
+  return { jwks: { keys: [key.jwk] }, sign: idTokenSigner(key) };
 }

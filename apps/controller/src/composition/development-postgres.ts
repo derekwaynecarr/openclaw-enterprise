@@ -160,6 +160,12 @@ export async function composePostgresDevelopment(
             onWarning: (warning) => emitOccLogEvent(config.logger!, warning),
             onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event),
           }),
+      ...(config.metrics === undefined
+        ? {}
+        : {
+            onUnmatchedCallback: (provider) =>
+              config.metrics!.observeUnmatchedSignInCallback(provider),
+          }),
       secureCookies: config.nativeAdmin?.enabled === true,
       ...(config.nativeAdmin?.enabled === true
         ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
@@ -217,6 +223,8 @@ export async function composePostgresDevelopment(
       state,
       recordOperations: true,
       defaultPresets: drivers?.defaultPresets ?? [],
+      bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
+      refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,
       ...(loggingLevel === undefined ? {} : { loggingLevel }),
       ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
       ...(drivers?.installation.runtime === undefined
@@ -262,6 +270,9 @@ export async function composePostgresDevelopment(
       iamDriver,
       iamState.identities,
       drivers?.defaultPresets ?? [],
+      config.logger === undefined
+        ? undefined
+        : (warning) => emitOccLogEvent(config.logger!, warning),
     );
 
     let workspaceFilesAccess = config.workspaceFilesAccess;

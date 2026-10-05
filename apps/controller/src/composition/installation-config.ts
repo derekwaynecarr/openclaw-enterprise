@@ -26,9 +26,11 @@ import {
   AuthorizationDeniedError,
   DependencyUnavailableError,
   validateBackendDefinitions,
+  type BundledPresetVersion,
   type NativeWorkerSupport,
   type OpenClawController,
   type PostgresPlatformState,
+  type SkippedDefaultPresetRefresh,
 } from "@openclaw-enterprise/occ";
 import { Check, Errors } from "typebox/value";
 import { validatePresetTemplate } from "@openclaw-enterprise/contracts";
@@ -102,6 +104,8 @@ export type ServiceAccountDriverFactory = (
 
 export interface InstallationRuntimeDrivers {
   readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
+  /** Shipped versions of the bundled defaults, loaded even when they are not seeded. */
+  readonly bundledPresetVersions?: readonly BundledPresetVersion[];
   readonly installation: InstallationStartupConfiguration;
   readonly computeDriver: ComputeDriver;
   readonly configurationDriver: ConfigurationDriver;
@@ -119,17 +123,26 @@ export interface InstallationRuntimeDrivers {
   readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
 }
 
-/** Resolve an authorized startup actor without depending on persisted identity order. */
+/**
+ * Resolve an authorized startup actor without depending on persisted identity order.
+ *
+ * A refresh the policy refuses never stops startup: the copy stays and `onWarning` receives
+ * one `presets.default-refresh-skipped` event naming it. The first pass skips only refusals
+ * from a deny Restriction, which binds every administrator alike, so an administrator without
+ * a Namespace grant never stands in for one who could refresh. If none can, the second pass
+ * skips every refusal. Missing defaults still need an administrator who can create them.
+ */
 export async function initializeInstallationPresets(
   controller: OpenClawController,
   iam: IAMDriver,
   identities: readonly Identity[],
   defaults: readonly Pick<Preset, "name" | "template">[],
+  onWarning?: (event: Readonly<Record<string, unknown>>) => void,
 ): Promise<void> {
   if (defaults.length === 0) {
     return;
   }
-  let denied: AuthorizationDeniedError | undefined;
+  const administrators: string[] = [];
   for (const identity of identities) {
     if (identity.kind !== "principal") {
       continue;
@@ -139,24 +152,41 @@ export async function initializeInstallationPresets(
       action: "administer",
       resource: { kind: "installation", id: controller.installation.id },
     });
-    if (!decision.allowed) {
-      continue;
+    if (decision.allowed) {
+      administrators.push(identity.id);
     }
-    try {
-      await controller.initializeDefaultPresets(identity.id);
-      return;
-    } catch (error) {
-      // An administrator whose grant stops at the Installation (for example the admin Role
-      // bound to the installation resource only) cannot create Presets in a Namespace. Each
-      // attempt is one rolled-back transaction, so the next administrator starts clean.
-      // Outages are not denials: they stop startup with their own error.
-      if (
-        !(error instanceof AuthorizationDeniedError) ||
-        error instanceof DependencyUnavailableError
-      ) {
-        throw error;
+  }
+  let denied: AuthorizationDeniedError | undefined;
+  for (const skipRefusedRefresh of ["restricted", "denied"] as const) {
+    for (const principalId of administrators) {
+      let skipped: readonly SkippedDefaultPresetRefresh[];
+      try {
+        skipped = await controller.initializeDefaultPresets(principalId, { skipRefusedRefresh });
+      } catch (error) {
+        // An administrator whose grant stops at the Installation (for example the admin Role
+        // bound to the installation resource only) cannot create Presets in a Namespace. Each
+        // attempt is one rolled-back transaction, so the next administrator starts clean.
+        // Outages are not denials: they stop startup with their own error.
+        if (
+          !(error instanceof AuthorizationDeniedError) ||
+          error instanceof DependencyUnavailableError
+        ) {
+          throw error;
+        }
+        denied = error;
+        continue;
       }
-      denied = error;
+      for (const refresh of skipped) {
+        onWarning?.({
+          event: "presets.default-refresh-skipped",
+          namespaceId: refresh.namespaceId,
+          presetId: refresh.presetId,
+          presetName: refresh.presetName,
+          reason: refresh.reason,
+          restrictionIds: refresh.restrictionIds,
+        });
+      }
+      return;
     }
   }
   throw new Error(
@@ -431,6 +461,46 @@ async function loadPresetDefinition(
   return presetDefinition(parsed, `Preset file ${path}`);
 }
 
+const bundledPresetDirectory = new URL("../../../../deploy/presets/", import.meta.url);
+
+/**
+ * Load every shipped version of the bundled defaults. `archive/versions.json` lists each
+ * bundled file's versions oldest first; the last is the file itself and the others are
+ * archived as `archive/<file stem>/<version>.json`. A conformance test keeps it complete.
+ */
+async function loadBundledPresetVersions(): Promise<readonly BundledPresetVersion[]> {
+  const indexPath = new URL("archive/versions.json", bundledPresetDirectory);
+  let index: unknown;
+  try {
+    index = JSON.parse(await readFile(indexPath, "utf8"));
+  } catch (cause) {
+    throw new Error(
+      `Bundled Preset version index ${fileURLToPath(indexPath)} is unavailable or invalid.`,
+      { cause },
+    );
+  }
+  const versions: BundledPresetVersion[] = [];
+  for (const [file, history] of Object.entries(object(index, "Bundled Preset versions"))) {
+    if (
+      !/^[a-z0-9-]+\.json$/.test(file) ||
+      !Array.isArray(history) ||
+      history.length === 0 ||
+      history.some((version) => typeof version !== "string" || !/^[0-9a-f]{16}$/.test(version))
+    ) {
+      throw new Error(`Bundled Preset versions for ${file} are invalid.`);
+    }
+    const stem = file.slice(0, -".json".length);
+    for (const [position, version] of (history as string[]).entries()) {
+      const current = position === history.length - 1;
+      const preset = await loadPresetDefinition(
+        new URL(current ? file : `archive/${stem}/${version}.json`, bundledPresetDirectory),
+      );
+      versions.push(Object.freeze({ ...preset, file, version, current }));
+    }
+  }
+  return Object.freeze(versions);
+}
+
 function appendDefaultPreset(
   presets: Pick<Preset, "name" | "template">[],
   names: Set<string>,
@@ -574,17 +644,15 @@ export async function loadInstallationConfiguration(options: {
   const includeDefaults = presets.includeDefaults === true;
   const defaultPresets: Pick<Preset, "name" | "template">[] = [];
   const defaultPresetNames = new Set<string>();
+  const bundledPresetVersions = await loadBundledPresetVersions();
   if (includeDefaults) {
-    for (const preset of [
-      "../../../../deploy/presets/default-codex.json",
-      "../../../../deploy/presets/standard-codex.json",
-      "../../../../deploy/presets/standard-openclaw.json",
-    ]) {
-      appendDefaultPreset(
-        defaultPresets,
-        defaultPresetNames,
-        await loadPresetDefinition(new URL(preset, import.meta.url)),
-      );
+    for (const version of bundledPresetVersions) {
+      if (version.current) {
+        appendDefaultPreset(defaultPresets, defaultPresetNames, {
+          name: version.name,
+          template: version.template,
+        });
+      }
     }
   }
   const presetFiles = (presets.files ?? []) as readonly string[];
@@ -973,6 +1041,7 @@ export async function loadInstallationConfiguration(options: {
   }
   return Object.freeze({
     defaultPresets: Object.freeze(defaultPresets),
+    bundledPresetVersions,
     installation,
     computeDriver,
     configurationDriver,

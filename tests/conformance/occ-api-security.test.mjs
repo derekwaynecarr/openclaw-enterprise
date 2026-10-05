@@ -1,23 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { createControllerApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   createRuntimeLogCursorCodec,
-  InMemoryPlatformState,
-  OpenClawController,
   RuntimeLogsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
-import {
-  authenticatedHeaders,
-  createTestAuthPrincipal,
-  signInToControllerApp,
-} from "../helpers/auth-session.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
   administerGrants,
@@ -25,11 +15,11 @@ import {
   createRuntimeLogFixture,
   operateGrants,
 } from "../helpers/runtime-logs.mjs";
+import { createTenantReaderFixture, tenantANamespaceId } from "../helpers/tenant-reader-app.mjs";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
 const bootstrapDefaultNamespaceId = "ns_00000000-0000-4000-8000-000000000001";
-const tenantANamespaceId = "ns_00000000-0000-4000-8000-000000000002";
 
 const permissions = [
   { action: "administer", resourceKind: "installation" },
@@ -49,164 +39,52 @@ const permissions = [
   { action: "administer", resourceKind: "agent" },
 ];
 
-async function createFixture(options = {}) {
-  const adminAuth = await createTestAuthPrincipal({
-    installationId,
-    name: "Security Administrator",
-  });
-  const administrator = adminAuth.seed.principal;
-  const readerEmail = `tenant-a-reader-${randomUUID()}@example.com`;
-  const readerPassword = `generated-password-${randomUUID()}`;
-  const readerAccount = await adminAuth.auth.createAccount({
-    email: readerEmail,
-    password: readerPassword,
-    name: "Tenant A Reader",
-  });
-  const readerSeed = adminAuth.auth.principalSeed(readerAccount, { grant: "none" });
-  const tenantAReader = readerSeed.principal;
-  const identities = options.identities ?? [administrator, tenantAReader];
-  const identityIds = new Set(identities.map(({ id }) => id));
-  const state = {
-    identities,
-    groups: [],
-    memberships: [],
-    roles: [
-      {
-        id: "role-administrator",
-        permissions: [...permissions],
-      },
-      {
-        id: "role-tenant-a-reader",
-        namespaceId: tenantANamespaceId,
-        permissions: [
-          { action: "read", resourceKind: "namespace" },
-          { action: "read", resourceKind: "agent" },
-          { action: "read", resourceKind: "agent_revision" },
-        ],
-      },
-    ],
-    bindings: [
-      {
-        id: "binding-administrator",
-        subjectKind: "identity",
-        subjectId: administrator.id,
-        roleId: "role-administrator",
-      },
-      {
-        id: "binding-tenant-a-reader",
-        namespaceId: tenantANamespaceId,
-        subjectKind: "identity",
-        subjectId: tenantAReader.id,
-        roleId: "role-tenant-a-reader",
-      },
-    ].filter(({ subjectId }) => identityIds.has(subjectId)),
-    restrictions: options.restrictions ?? [],
-  };
-  const iamDriver = new NativeIAMDriver(
-    { loadNativeIAMState: async () => state },
-    { id: "iam-security" },
-  );
-  const computeDriver = {
-    id: "compute-security",
-    capability: "compute",
-    implementation: "deterministic-test",
-    async ensureNamespace(namespace) {
-      return {
-        namespaceId: namespace.id,
-        namespaceReady: true,
-      };
-    },
-    async deleteNamespace(namespace) {
-      return {
-        namespaceId: namespace.id,
-        namespaceDeleted: true,
-      };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-  };
-  const auditSink = new InMemoryAuditSink();
-  const configurationDriver = createTestConfigurationDriver({ id: "configuration-security" });
-  const sessions = new Map();
-  let controller;
-  let sequence = 0;
-  let configurationSequence = 0;
+// A Compute Driver whose Namespaces and Revisions are always ready.
+const createComputeDriver = () => ({
+  id: "compute-security",
+  capability: "compute",
+  implementation: "deterministic-test",
+  async ensureNamespace(namespace) {
+    return {
+      namespaceId: namespace.id,
+      namespaceReady: true,
+    };
+  },
+  async deleteNamespace(namespace) {
+    return {
+      namespaceId: namespace.id,
+      namespaceDeleted: true,
+    };
+  },
+  async prepareRevision(revision) {
+    return {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+      ready: true,
+    };
+  },
+  async retireRevision() {},
+});
 
-  function createApp(principal = administrator, overrides = {}, factory = createControllerApp) {
-    const app = factory({
-      ...(controller
-        ? { controller }
-        : {
-            createController(installation) {
-              controller = new OpenClawController(installation, {
-                state: new InMemoryPlatformState({ auditSink }),
-                recordOperations: true,
-                createId(kind) {
-                  if (kind === "configuration") {
-                    configurationSequence += 1;
-                    return `cfg_10000000-0000-4000-8000-${String(configurationSequence).padStart(12, "0")}`;
-                  }
-                  sequence += 1;
-                  const prefix = {
-                    namespace: "ns",
-                    agent: "agt",
-                    agent_revision: "rev",
-                  }[kind];
-                  return `${prefix}_00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
-                },
-              });
-              return controller;
-            },
-          }),
-      iamDriver,
-      computeDriver,
-      configurationDriver,
-      resolveHarness: resolveApprovedDevelopmentHarness,
-      auditSink,
-      development: {
-        enabled: true,
-        installationId,
-        ...overrides.development,
-      },
-      auth: adminAuth.auth,
+function createFixture(options = {}) {
+  return createTenantReaderFixture({
+    installationId,
+    label: "security",
+    administratorName: "Security Administrator",
+    readerName: "Tenant A Reader",
+    administratorPermissions: permissions,
+    computeDriver: createComputeDriver(),
+    recordOperations: true,
+    appOptions: (overrides) => ({
       ...(overrides.maxBodyBytes === undefined ? {} : { maxBodyBytes: overrides.maxBodyBytes }),
       ...(overrides.gatewayRequestTimeoutMs === undefined
         ? {}
         : { gatewayRequestTimeoutMs: overrides.gatewayRequestTimeoutMs }),
       ...(overrides.publicOrigin === undefined ? {} : { publicOrigin: overrides.publicOrigin }),
-    });
-    app.defaultSession = sessions.get(principal.id);
-    return app;
-  }
-
-  const app = createApp(administrator, options);
-  sessions.set(administrator.id, await signInToControllerApp(app, adminAuth));
-  sessions.set(
-    tenantAReader.id,
-    await signInToControllerApp(app, { email: readerEmail, password: readerPassword }),
-  );
-  app.defaultSession = sessions.get(administrator.id);
-
-  return {
-    app,
-    administrator,
-    tenantAReader,
-    auditSink,
-    createApp,
-    auth: adminAuth.auth,
-    iamDriver,
-    state,
-    get controller() {
-      return controller;
-    },
-  };
+    }),
+    options,
+  });
 }
 
 async function request(app, pathname, options = {}) {

@@ -136,7 +136,8 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     const before = requests.length;
     await expectDenied(await fixture.callback(`state=${callbackState}&code=${"c".repeat(4097)}`));
     assert.equal(requests.length, before);
-    assert.deepEqual(fixture.denials, [["INVALID_ATTEMPT", "oidc"]]);
+    assert.deepEqual(fixture.denials, []);
+    assert.deepEqual(fixture.unmatched, ["oidc"]);
   });
 
   await t.test("tokens for another issuer, client or nonce are rejected", async () => {

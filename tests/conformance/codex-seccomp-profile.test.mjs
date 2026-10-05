@@ -299,7 +299,8 @@ async function missingProfileFixture(t, observations, options = {}) {
         const profile =
           applied.get(name).spec.containers[0].securityContext.seccompProfile?.localhostProfile;
         if (profile?.includes("missing-")) {
-          const observation = observations[Math.min(missingReads, observations.length - 1)];
+          const entry = observations[Math.min(missingReads, observations.length - 1)];
+          const observation = typeof entry === "function" ? entry(profile) : entry;
           missingReads += 1;
           if (observation instanceof Error) {
             throw observation;
@@ -381,10 +382,18 @@ async function missingProfileFixture(t, observations, options = {}) {
   };
 }
 
-const missingProfileWaiting = {
-  name: "probe",
-  state: { waiting: { reason: "CreateContainerError", message: "seccomp profile is not found" } },
+// k3s v1.35.8+k3s1 selects containerd v2.2.7-k3s1. Its WithProfile
+// error names the quoted profile path and os.ReadFile cause; CreateContainer wraps it.
+const missingProfileMessage = (profile) => {
+  const path = `/var/lib/kubelet/seccomp/${profile}`;
+  return `cannot load seccomp profile ${JSON.stringify(path)}: open ${path}: no such file or directory`;
 };
+const profileWaiting = (message) => ({
+  name: "probe",
+  state: { waiting: { reason: "CreateContainerError", message } },
+});
+const missingProfileWaiting = (profile) =>
+  profileWaiting(`failed to create containerd container: ${missingProfileMessage(profile)}`);
 const reportedContainer = { name: "probe", containerID: "containerd://reported-probe" };
 
 test("missing-profile preparation cannot forget a reported container before a later valid observation", async (t) => {
@@ -434,3 +443,66 @@ test("missing-profile terminal failure remains primary when cleanup also fails",
   assert.equal(control.reads(), 1);
   await control.assertCleanup();
 });
+
+for (const wrapped of [false, true]) {
+  test(`missing-profile proof accepts the exact generated path (${wrapped ? "CRI wrapped" : "direct"})`, async (t) => {
+    const control = await missingProfileFixture(t, [
+      (profile) => {
+        assert.match(profile, /^openclaw\/missing-[a-f0-9]+-codex-bwrap\.json$/);
+        const message = missingProfileMessage(profile);
+        return profileWaiting(
+          wrapped ? `failed to create containerd container: ${message}` : message,
+        );
+      },
+    ]);
+    await control.run();
+    assert.equal(control.reads(), 1);
+    await control.assertCleanup();
+  });
+}
+
+// All messages describe CreateContainerError, but none proves this generated file is missing.
+for (const [label, message] of [
+  [
+    "AppArmor profile",
+    (profile) =>
+      `cannot load AppArmor profile "/var/lib/kubelet/seccomp/${profile}": no such file or directory`,
+  ],
+  ["another seccomp profile", () => missingProfileMessage("openclaw/wrong.json")],
+  ["profile path prefix", (profile) => missingProfileMessage(`prefix/${profile}`)],
+  ["profile path suffix", (profile) => missingProfileMessage(`${profile}.other`)],
+  [
+    "incidental expected path",
+    (profile) =>
+      `${missingProfileMessage("openclaw/wrong.json")} (expected /var/lib/kubelet/seccomp/${profile})`,
+  ],
+  ["generic profile text", () => "seccomp profile is not found"],
+  [
+    "permission denied",
+    (profile) =>
+      missingProfileMessage(profile).replace("no such file or directory", "permission denied"),
+  ],
+  [
+    "malformed profile",
+    (profile) =>
+      `decoding seccomp profile failed "/var/lib/kubelet/seccomp/${profile}": invalid character`,
+  ],
+  [
+    "unexpected diagnostic prefix",
+    (profile) => `AppArmor failure: ${missingProfileMessage(profile)}`,
+  ],
+  ["unexpected diagnostic suffix", (profile) => `${missingProfileMessage(profile)}; another error`],
+]) {
+  test(`missing-profile proof rejects ${label} and cleans up`, async (t) => {
+    const control = await missingProfileFixture(
+      t,
+      [(profile) => profileWaiting(message(profile))],
+      {
+        timeoutMs: 5,
+      },
+    );
+    await assert.rejects(control.run, /Timed out waiting for Pod .* to fail closed/);
+    assert.equal(control.reads(), 1);
+    await control.assertCleanup();
+  });
+}

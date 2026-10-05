@@ -320,7 +320,11 @@ async function waitForPodReady(selection, namespace, name, options) {
   );
 }
 
-async function waitForMissingProfileFailure(selection, namespace, name, options) {
+async function waitForMissingProfileFailure(selection, namespace, name, missingProfile, options) {
+  const profilePath = posix.join(kubeletSeccompRoot, missingProfile);
+  // containerd's WithProfile read error, optionally wrapped by CreateContainer.
+  // Match the complete diagnostic: mentioning seccomp or another profile is not proof.
+  const missingMessage = `cannot load seccomp profile ${JSON.stringify(profilePath)}: open ${profilePath}: no such file or directory`;
   const pod = await waitFor(
     `Pod ${namespace}/${name} to fail closed on a missing localhost seccomp profile`,
     async () => {
@@ -337,7 +341,8 @@ async function waitForMissingProfileFailure(selection, namespace, name, options)
       const waiting = status?.state?.waiting;
       if (
         waiting?.reason === "CreateContainerError" &&
-        /seccomp|profile/i.test(waiting.message ?? "")
+        (waiting.message === missingMessage ||
+          waiting.message === `failed to create containerd container: ${missingMessage}`)
       ) {
         return pod;
       }
@@ -472,7 +477,7 @@ async function verifyMissingProfileFailsClosed(
     }),
     options,
   );
-  await waitForMissingProfileFailure(selection, namespace, podName, options);
+  await waitForMissingProfileFailure(selection, namespace, podName, missingProfile, options);
 }
 
 async function withProbeCleanup(

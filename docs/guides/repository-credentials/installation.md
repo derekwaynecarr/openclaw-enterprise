@@ -12,7 +12,9 @@ Sandbox Driver.
 
 Create `registry.json` using the [canonical registry schema](../../reference/repository-credentials.md#canonical-platform-registry).
 Use the real GitHub App, installation and numeric repository IDs, and the
-server-assigned OCC Namespace IDs. One App installation can serve several
+server-assigned OCC Namespace IDs. Installations always use a GitHub App; the
+[development token authority](../../reference/repository-credentials/development-token.md)
+is standalone and development-only. One App installation can serve several
 repository entries; each Agent binding still admits a separate single-repository
 session. The example below uses Backend ID `repository-backend`, registry
 maximum duration `86400`, and all three profiles.

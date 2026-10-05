@@ -164,10 +164,14 @@ curl -sS -X POST "$OCC_AUTH_BASE_URL/api/auth/accounts/$USER_ID/providers/oidc" 
 ```
 
 The subject is 1–255 printable ASCII characters without spaces. The call returns `409`
-when OIDC is off, the version is stale or the account is disabled, and `404` when
-another account holds the subject. Attachment advances the account version and ends the
-account's sessions. The method's `providerId` starts with `oidc:`; detach it with
-`POST /api/auth/accounts/:userId/methods/:methodId/detach`.
+when OIDC is off, the version is stale, the account is disabled, or another account
+holds the subject ("The external identity is already assigned."). Attachment advances
+the account version and ends the account's sessions. The method's `providerId` starts
+with `oidc:`; detach it with `POST /api/auth/accounts/:userId/methods/:methodId/detach`.
+
+Accounts are created with a password, and an OIDC identity can be attached only
+afterwards. To add someone who should sign in only through the IdP, follow
+[Add a person](../topics/iam.md#add-a-person), which covers the password left behind.
 
 ## Changes, rotation and outages
 

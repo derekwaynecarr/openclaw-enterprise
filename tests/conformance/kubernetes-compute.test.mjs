@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { spawnSync } from "node:child_process";
@@ -40,6 +38,7 @@ import {
   conformanceKubeconfig,
   conformanceKubernetesOptions,
 } from "../helpers/kubernetes-compute.mjs";
+import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
 const tenant = {
@@ -875,7 +874,8 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
     gatewayWorkspaceNodeId: undefined,
     gatewayWorkspaceNodeFailure: undefined,
     gatewayAppliesBinding: true,
-    // When set, the node host pairs this long after its setup reaches the Harness.
+    // With a fake clock: when set, the node host pairs this long after its setup
+    // reaches the Harness.
     pairAfterSetupMs: undefined,
     // The wait each setup observation was given.
     observeWaits: [],
@@ -1161,9 +1161,8 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
       body.metadata.annotations["openclaw.dev/workspace-node-setup"] !== undefined
     ) {
       // The setup file reaches the running Harness; its node host boots and pairs.
-      setTimeout(() => {
-        state.connected = true;
-      }, state.pairAfterSetupMs);
+      assert.notEqual(clock, undefined, "pairAfterSetupMs needs the fake clock");
+      state.pairAtMs = clock.now + state.pairAfterSetupMs;
     }
     const binding = objects.get(
       key("ConfigMap", `${gatewayName}-workspace-node`, kubernetesGatewayNamespaceName(tenant.id)),
@@ -1532,6 +1531,7 @@ test("an upgraded file-delivered node drops its leftover setup code and tolerate
 // wait on a start. Lower these counts when a change removes a start or a pass;
 // never raise them silently.
 test("a first dedicated deploy pins its workload starts through activation", async () => {
+  const clock = { now: 0 };
   const {
     state,
     driver,
@@ -1543,7 +1543,11 @@ test("a first dedicated deploy pins its workload starts through activation", asy
     read,
     prepare,
     markReady,
-  } = dedicatedFirstDeployFixture();
+  } = dedicatedFirstDeployFixture({ clock });
+  // Activation's ack poll waits on the same clock, so a missing ack fails instead of spinning.
+  driver.delay = async (ms) => {
+    clock.now += ms;
+  };
   const environment = (template) =>
     new Set(template.spec.containers[0].env.map(({ name }) => name));
   // Workloads become ready as soon as the controller waits on them, so every
@@ -7145,64 +7149,20 @@ test("containment-only Sandbox cleanup retries after its Compute-owned workload 
 });
 
 test("the official Kubernetes client rejects ambiguous identity and insecure API servers", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-kubernetes-auth-conformance-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
-  for (const scenario of [
-    { name: "unselected-context", context: "missing-context" },
-    { name: "missing-credential-identity", users: [] },
-    { name: "plaintext-api-endpoint", server: "http://127.0.0.1:1" },
-    { name: "unverified-tls", skipTLSVerify: true },
-    {
-      name: "embedded-api-credentials",
-      server: syntheticCredentialUrl({
-        username: "user",
-        password: "password",
-        host: "127.0.0.1",
-        port: 1,
-      }),
-    },
-    { name: "unexpected-api-path", server: "https://127.0.0.1:1/untrusted" },
-  ]) {
-    const path = join(directory, `${scenario.name}.json`);
-    await writeFile(
-      path,
-      JSON.stringify({
-        apiVersion: "v1",
-        kind: "Config",
-        clusters: [
-          {
-            name: "conformance-cluster",
-            cluster: {
-              server: scenario.server ?? "https://127.0.0.1:1",
-              ...(scenario.skipTLSVerify ? { "insecure-skip-tls-verify": true } : {}),
-            },
-          },
-        ],
-        users: scenario.users ?? [
-          { name: "conformance-user", user: { token: "test-only-fixture-token" } },
-        ],
-        contexts: [
-          {
-            name: contextName,
-            context: { cluster: "conformance-cluster", user: "conformance-user" },
-          },
-        ],
-        "current-context": contextName,
-      }),
-    );
-
+  for (const scenario of await writeUnsafeKubeconfigs(t)) {
     const driver = createKubernetesComputeDriver(
       options({
         authentication: {
           mode: "kubeconfig",
-          kubeconfigPath: path,
-          context: scenario.context ?? contextName,
+          kubeconfigPath: scenario.kubeconfigPath,
+          context: scenario.context,
         },
       }),
     );
 
     // Unsafe cluster configuration is permanently rejected before contacting its API server.
+    // An unrefused fixture fails later at the unreachable port, which is retryable, so
+    // `permanent` is what proves the validator refused it.
     assert.deepEqual(
       await driver.ensureNamespace(tenant),
       {
@@ -7213,6 +7173,24 @@ test("the official Kubernetes client rejects ambiguous identity and insecure API
       scenario.name,
     );
   }
+
+  // The safe kubeconfig these scenarios depart from passes validation and fails only at the
+  // unreachable API server, which is retryable.
+  const safe = await writeSafeKubeconfig(t);
+  const driver = createKubernetesComputeDriver(
+    options({
+      authentication: {
+        mode: "kubeconfig",
+        kubeconfigPath: safe.kubeconfigPath,
+        context: safe.context,
+      },
+    }),
+  );
+  assert.deepEqual(await driver.ensureNamespace(tenant), {
+    namespaceId: tenant.id,
+    namespaceReady: false,
+    failure: "retryable",
+  });
 });
 
 test("immutable image policy accepts digests and rejects mutable tags", () => {

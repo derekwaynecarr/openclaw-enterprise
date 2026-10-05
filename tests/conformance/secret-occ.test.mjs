@@ -786,3 +786,50 @@ test("failed Secret updates do not roll back or leak the old value", async () =>
   assert.equal(JSON.stringify(secretDriver.calls.at(-1).secret).includes("sk-test-v1"), false);
   assert.equal(JSON.stringify(secretDriver.calls.at(-1).secret).includes("sk-test-v2"), false);
 });
+
+test("channel directory lookup refuses saved IDs with C0 controls or DEL before authorization", async () => {
+  const controller = new OpenClawController(installation, { state: new InMemoryPlatformState() });
+  const lookup = (id) =>
+    controller.lookupChannelDirectory(administrator, "ns_directory", {
+      secretId: "secret_directory",
+      kind: "users",
+      ids: ["U0001", id],
+    });
+  // The controller uses the shared @openclaw-enterprise/utils check, swept over every code
+  // unit in utils.test.mjs; these are its boundaries as seen through the lookup input.
+  for (const code of [0x00, 0x09, 0x0a, 0x0d, 0x1b, 0x1f, 0x7f]) {
+    const character = String.fromCharCode(code);
+    for (const id of [`${character}U2`, `U${character}2`, `U2${character}`]) {
+      await assert.rejects(
+        lookup(id),
+        (error) =>
+          error instanceof ScopeViolationError &&
+          error.message === "The channel directory lookup input is invalid.",
+        code.toString(16),
+      );
+    }
+  }
+  // C1 controls, line separators, lone surrogates and other Unicode pass the input check and
+  // reach authorization, which this bare controller cannot provide.
+  for (const id of [
+    "U 2",
+    "U~2",
+    "U\u00802",
+    "U\u00852",
+    "U\u009f2",
+    "U\u00a02",
+    "U\u20282",
+    "U\u20292",
+    "U\ufeff2",
+    "U\ud8002",
+    "U\u{1f600}2",
+  ]) {
+    await assert.rejects(
+      lookup(id),
+      (error) =>
+        error instanceof DependencyUnavailableError &&
+        error.message === "The selected authorization Driver is unavailable.",
+      JSON.stringify(id),
+    );
+  }
+});

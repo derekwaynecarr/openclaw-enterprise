@@ -153,6 +153,33 @@ function namespaceContext(name = "oce-123456789012345") {
   };
 }
 
+function codexRequirements(revision, environment = []) {
+  return {
+    loginMode: "api_key",
+    image: "codex-runtime@sha256:synthetic",
+    command: ["codex"],
+    serviceAccountName: "agent-codex",
+    serviceAccountToken: {
+      audience: "openclaw-enterprise",
+      expirationSeconds: 900,
+      mountPath: "/var/run/secrets/openclaw-enterprise",
+      path: "token",
+      readOnly: true,
+    },
+    workspaceMounts: [
+      {
+        claimName: "harness-workspace-codex",
+        subPath: "workspace",
+        mountPath: "/home/node/workspace",
+        readOnly: false,
+      },
+    ],
+    credentialAttachments: [],
+    environment: [{ name: "APP_SERVER_PORT", value: "8080" }, ...environment],
+    labels: { "openclaw.dev/revision": revision.id },
+  };
+}
+
 test("startup constructs the bundled OpenShell SandboxDriver before constructing Kubernetes Compute", async (t) => {
   const createdDriver = await loadInstallationFile(t, sandboxInstallation());
 
@@ -400,35 +427,11 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     sandboxDriverId: driver.id,
   };
-  const requirements = (environment) => ({
-    loginMode: "api_key",
-    image: "codex-runtime@sha256:synthetic",
-    command: ["codex"],
-    serviceAccountName: "agent-codex",
-    serviceAccountToken: {
-      audience: "openclaw-enterprise",
-      expirationSeconds: 900,
-      mountPath: "/var/run/secrets/openclaw-enterprise",
-      path: "token",
-      readOnly: true,
-    },
-    workspaceMounts: [
-      {
-        claimName: "harness-workspace-codex",
-        subPath: "workspace",
-        mountPath: "/home/node/workspace",
-        readOnly: false,
-      },
-    ],
-    credentialAttachments: [],
-    environment: [{ name: "APP_SERVER_PORT", value: "8080" }, ...environment],
-    labels: { "openclaw.dev/revision": revision.id },
-  });
   const provision = (environment = [], target = revision) =>
     driver.provisionHarness({
       ...context,
       revision: target,
-      requirements: requirements(environment),
+      requirements: codexRequirements(revision, environment),
     });
 
   const first = await provision();
@@ -571,30 +574,7 @@ test("OpenShell moves a revision's create to a fresh request_id after the gatewa
     target.provisionHarness({
       ...context,
       revision,
-      requirements: {
-        loginMode: "api_key",
-        image: "codex-runtime@sha256:synthetic",
-        command: ["codex"],
-        serviceAccountName: "agent-codex",
-        serviceAccountToken: {
-          audience: "openclaw-enterprise",
-          expirationSeconds: 900,
-          mountPath: "/var/run/secrets/openclaw-enterprise",
-          path: "token",
-          readOnly: true,
-        },
-        workspaceMounts: [
-          {
-            claimName: "harness-workspace-codex",
-            subPath: "workspace",
-            mountPath: "/home/node/workspace",
-            readOnly: false,
-          },
-        ],
-        credentialAttachments: [],
-        environment: [{ name: "APP_SERVER_PORT", value: "8080" }],
-        labels: { "openclaw.dev/revision": revision.id },
-      },
+      requirements: codexRequirements(revision),
     });
   const trace = () => {
     const seen = calls.map(([call, id]) => (id === undefined ? call : `${call}:${id}`));
@@ -729,36 +709,12 @@ test("OpenShell rejects Secret-backed Harness environment as a permanent revisio
     driver.provisionHarness({
       ...context,
       revision: { ...revision, harness },
-      requirements: {
-        loginMode: "api_key",
-        image: "codex-runtime@sha256:synthetic",
-        command: ["codex"],
-        serviceAccountName: "agent-codex",
-        serviceAccountToken: {
-          audience: "openclaw-enterprise",
-          expirationSeconds: 900,
-          mountPath: "/var/run/secrets/openclaw-enterprise",
-          path: "token",
-          readOnly: true,
+      requirements: codexRequirements(revision, [
+        {
+          name: "APP_SERVER_TOKEN",
+          valueFrom: { secretKeyRef: { name: "agent-codex-token", key: "token" } },
         },
-        workspaceMounts: [
-          {
-            claimName: "harness-workspace-codex",
-            subPath: "workspace",
-            mountPath: "/home/node/workspace",
-            readOnly: false,
-          },
-        ],
-        credentialAttachments: [],
-        environment: [
-          { name: "APP_SERVER_PORT", value: "8080" },
-          {
-            name: "APP_SERVER_TOKEN",
-            valueFrom: { secretKeyRef: { name: "agent-codex-token", key: "token" } },
-          },
-        ],
-        labels: { "openclaw.dev/revision": revision.id },
-      },
+      ]),
     });
 
   await assert.rejects(provision(revision.harness), (error) => {

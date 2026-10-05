@@ -113,7 +113,7 @@ test("private metadata sessions reject other methods and routes before issuing a
   const factory = createGitHubDriverFactory({
     configuration: githubConfigurationData(),
     metadataOnly: true,
-    key,
+    authority: key,
     clock,
     gatewayOrigin: config.gateway.publicOrigin,
     limits: config.limits,
