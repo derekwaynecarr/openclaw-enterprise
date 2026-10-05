@@ -8,11 +8,10 @@ OpenShell keeps its own copy of the key and substitutes it on requests to
 [credential source reference](../../reference/credential-sources.md) defines the
 API behavior.
 
-Stock OpenShell `v0.1.3-pre.2` still rejects the Agent's app-server token projection,
-so the deployment in this profile fails closed before a Sandbox starts. The
-procedure proves registration, authorization, and admission. For a real model
-turn with the injected key, run the
-[OpenShell compatibility proof](../../testing/openshell.md#openshell-sandbox).
+The profile installs private Gateway routing, so the deployment provisions an
+OpenShell Sandbox for the dedicated Codex Harness. To run these steps and verify
+a real model turn with the injected key in one command, use
+[Deploy your first Agent](../first-agent.md) with `--harness codex`.
 
 ## Before you start
 
@@ -160,11 +159,11 @@ DEPLOYMENT_ID="$(./bin/occ agent deploy "$AGENT_ID" -o json | jq -r .id)"
 ```
 
 Expected result: OCC accepts the deployment and freezes
-`{"method": "credential_source", "sourceId": "cs_…"}` in the revision. The
-status then reaches `failed` with `SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`
-after one attempt, because stock OpenShell cannot project the app-server token.
-No Sandbox is created, and the Agent's `oce-*` Harness namespace contains no
-Secret. Without the access binding, the deploy request fails with `403`.
+`{"method": "credential_source", "sourceId": "cs_…"}` in the revision. Compute
+starts the Agent Gateway, then OpenShell creates the Sandbox, and the revision
+becomes active once the Harness workspace node connects to the Gateway. Startup
+can take several minutes. Without the access binding, the deploy request fails
+with `403`.
 
 ## Clean up
 
