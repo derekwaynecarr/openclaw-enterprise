@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-04
-last_updated_session: authoring-run/286855f7-c7cb-43b6-ba19-419a20192f76
+updated: 2026-10-05
+last_updated_session: authoring-run/cb5a7445-804a-48ad-8c35-118ae9f417b1
 ---
 
 # Compose development startup
@@ -130,7 +130,8 @@ attempts, and failure recovery.
 
 The API starts in `NODE_ENV=development`, binds inside the Compose network, and
 publishes its host port only on `127.0.0.1`. `OCC_AUTH_SECRET` signs user
-sessions and `OCC_AUTH_BASE_URL` fixes the cookie origin.
+sessions and `OCC_AUTH_BASE_URL` fixes the cookie origin. The API and initializer
+accept HTTP(S) origins on `localhost`, `127.0.0.1`, or `[::1]` in development.
 
 Development accepts the explicitly configured Compose bridge CIDR as local
 control-plane traffic, while non-loopback clients, forwarded headers,
@@ -370,6 +371,8 @@ external key if a later OpenShell readiness step fails.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-05 14:02: Matched the API and initializer localhost auth origin acceptance. (authoring-run/cb5a7445-804a-48ad-8c35-118ae9f417b1 - 91e316e7a559f5a09884262755f8fe2a9b655d72)
 
 - 2026-10-04 01:12: Pointed the API startup step at the existing composition function. (authoring-run/286855f7-c7cb-43b6-ba19-419a20192f76 - 7a8a64046ac8ef3e7b5a4ed46b1d4cef9f1573f3)
 
