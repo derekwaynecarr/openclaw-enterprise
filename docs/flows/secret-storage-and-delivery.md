@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-09-25
-last_updated_session: authoring-run/6556d897-be75-463f-b50c-73f3b1fb6d72
+updated: 2026-10-05
+last_updated_session: authoring-run/c743ee6e-95f7-43d3-813d-4496b4b2fb19
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -142,6 +142,10 @@ requires the current v3 development marker and state from the same checkout.
 The state must select Kubernetes Compute and
 `sandboxDriver: "none"`. OpenShell state fails with an explicit unsupported-profile
 error because that development profile does not support this model-turn path.
+`scripts/first-agent.mjs:loadLocalInstallation` uses the recorded Unix socket
+for container-engine calls and removes inherited Docker TLS settings from their
+environment. Compose-backed setup therefore queries the recorded local controller
+port and PostgreSQL service without loading certificates for another daemon.
 With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a
 Secret, Configuration, and named Agent through the OCC HTTP API. A new Agent uses
 `openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_MODEL` selects another authorized
@@ -275,6 +279,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-05 13:27: Keep first-Agent container-engine calls on the recorded Unix socket without inherited Docker TLS settings. (authoring-run/c743ee6e-95f7-43d3-813d-4496b4b2fb19 - 469d2fef447ecdf2565d3991db1e1ce5c95d880e)
 
 - 2026-09-25 14:57: Align first-Agent admission and its real fixture with v3 development state, and reject the unsupported OpenShell profile before external calls. (authoring-run/6556d897-be75-463f-b50c-73f3b1fb6d72 - 189c62c993066d52703d2cd7eb896e2c2c01bdc4)
 
