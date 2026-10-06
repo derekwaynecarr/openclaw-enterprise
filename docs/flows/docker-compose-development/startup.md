@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-04
-last_updated_session: authoring-run/286855f7-c7cb-43b6-ba19-419a20192f76
+updated: 2026-10-06
+last_updated_session: authoring-run/e789ef10-ca82-4ee2-b31d-8d11100d9744
 ---
 
 # Compose development startup
@@ -338,6 +338,11 @@ Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to
 `k3d cluster create --timeout`, so a node that never becomes ready fails startup
 instead of waiting indefinitely.
 
+`internal/occdev/state.go:exclusiveWrite` removes its newly created output when
+permission setting, writing, or closing fails. This includes a partial external
+key file, before startup records a successful copy. Existing targets remain
+untouched; a removal failure is returned alongside the original write error.
+
 On failure, startup attempts resource cleanup. Explicit Kubernetes shutdown
 validates the marker, state, and Compose snapshot before using the recorded
 engine endpoint. Cleanup stops the API and worker, then deletes the named k3d
@@ -370,6 +375,8 @@ external key if a later OpenShell readiness step fails.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 17:46: Remove newly created exclusive outputs after file-write failures. (authoring-run/e789ef10-ca82-4ee2-b31d-8d11100d9744 - 6508695f267e1441bf5a797b9710965f9b10990a)
 
 - 2026-10-04 01:12: Pointed the API startup step at the existing composition function. (authoring-run/286855f7-c7cb-43b6-ba19-419a20192f76 - 7a8a64046ac8ef3e7b5a4ed46b1d4cef9f1573f3)
 
