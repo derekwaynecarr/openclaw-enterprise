@@ -319,10 +319,18 @@ test("single-session launcher preserves native Git signal exit statuses", async 
       stop();
     }, 10000);
     try {
-      // A real Git batch reply proves the child is running and waiting on the open pipe.
+      // A batch reply proves Git is alive, not that the launcher installed its handlers.
+      // Signal the owned native child to exercise the launcher's child-exit mapping.
       child.stdin.write(`${"0".repeat(40)}\n`);
       await ready;
-      child.kill(signal);
+      const processes = await run("/bin/ps", ["-axo", "pid=,ppid=,comm="], { env });
+      const children = processes.stdout
+        .split("\n")
+        .map((line) => line.trim().split(/\s+/))
+        .filter((fields) => Number(fields[1]) === child.pid);
+      assert.equal(children.length, 1, "launcher must own exactly one native Git child");
+      assert.match(children[0][2], /(?:^|\/)git$/);
+      process.kill(Number(children[0][0]), signal);
       const result = await close;
       assert.equal(result.endedBy, null, errors);
       assert.equal(result.code, expected, `${signal}: ${errors}`);
