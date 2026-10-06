@@ -568,7 +568,7 @@ function normalizeEndpoint(endpoint: string): {
     );
   }
   if (parsed.protocol === "http:") {
-    return { target: parsed.host, secure: false };
+    return { target: `${parsed.hostname}:${parsed.port || "80"}`, secure: false };
   }
   if (parsed.protocol === "https:") {
     return { target: parsed.host, secure: true };

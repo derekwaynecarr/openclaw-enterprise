@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { getEventListeners } from "node:events";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import { connect } from "node:net";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,6 +40,115 @@ function bindWireServer(server) {
     ),
   );
 }
+
+test("OpenShell HTTP origins keep port 80 in native gRPC connections", async (t) => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, enums: String },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const server = new grpc.Server();
+  let healthCalls = 0;
+  server.addService(OpenShell.service, {
+    Health(_call, callback) {
+      healthCalls += 1;
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
+  });
+  const port = await bindWireServer(server);
+  const targets = [];
+  const sockets = new Set();
+  const proxy = createServer();
+  const track = (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => {});
+    return socket;
+  };
+  // A real CONNECT tunnel avoids privileged listening ports. It accepts only
+  // the configured authorities and forwards their actual gRPC bytes to the peer.
+  proxy.on("connect", (request, socket, head) => {
+    targets.push(request.url);
+    track(socket);
+    if (!["gateway.example.test:80", "gateway.example.test:7777"].includes(request.url)) {
+      socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
+    const upstream = track(
+      connect(port, "127.0.0.1", () => {
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        if (head.length > 0) {
+          upstream.write(head);
+        }
+        socket.pipe(upstream);
+        upstream.pipe(socket);
+      }),
+    );
+    upstream.on("error", () => socket.destroy());
+    socket.on("close", () => upstream.destroy());
+  });
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await new Promise((resolve) => proxy.close(resolve));
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const program = `
+    import { OpenShellGateway } from ${JSON.stringify(new URL("../../apps/controller/src/backends/openshell.ts", import.meta.url).href)};
+    const gateway = new OpenShellGateway(JSON.parse(process.argv[1]));
+    try {
+      await gateway.clientForNamespace("tenant-workspace").health(AbortSignal.timeout(2000));
+      process.stdout.write("healthy\\n");
+    } finally { gateway.close(); }
+  `;
+  for (const [configuration, target] of [
+    [{ endpoint: "gateway.example.test:80" }, "gateway.example.test:80"],
+    [{ endpoint: "http://gateway.example.test:80" }, "gateway.example.test:80"],
+    [{ endpoint: "http://gateway.example.test" }, "gateway.example.test:80"],
+    [{ serviceName: "gateway.example.test", scheme: "http", port: 80 }, "gateway.example.test:80"],
+    [{ endpoint: "http://gateway.example.test:7777" }, "gateway.example.test:7777"],
+  ]) {
+    const before = targets.length;
+    const child = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        program,
+        JSON.stringify({ ...configuration, requestTimeoutMs: 1000 }),
+      ],
+      {
+        env: { PATH: process.env.PATH, grpc_proxy: `http://127.0.0.1:${proxy.address().port}` },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const closed = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code) => resolve(code));
+    });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10000);
+    try {
+      assert.equal(await closed, 0, stderr);
+      assert.equal(stdout, "healthy\n");
+      assert.deepEqual(targets.slice(before), [target]);
+    } finally {
+      clearTimeout(timer);
+      child.kill("SIGKILL");
+      await closed;
+    }
+  }
+  assert.equal(healthCalls, 5);
+});
 
 test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", async () => {
   const proto = await loader.load(
