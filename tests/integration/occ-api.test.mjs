@@ -2702,6 +2702,30 @@ test("Channel directory lookup checks the exact edit target and Secret before an
     body: { ...body, ids: ["U123"] },
   });
   assert.equal(mixed.status, 400);
+  // The body is a union of lookup and hydration shapes. A lookup whose query is too long
+  // names only that field, not the fields other shapes require.
+  const longQuery = await controller.request("POST", path, {
+    body: { ...body, query: "q".repeat(201) },
+  });
+  assert.equal(longQuery.status, 400);
+  assert.equal(
+    longQuery.body.error.message,
+    "The request does not match the operation contract: body /query is too long.",
+  );
+  assert.deepEqual(longQuery.body.error.details, [{ path: "/query", code: "TOO_LONG" }]);
+  // An unknown kind fits no shape, so every shape's problem stays, but the three hydration
+  // shapes' identical missing /ids is listed once.
+  const unknownKind = await controller.request("POST", path, {
+    body: { ...body, kind: "groups" },
+  });
+  assert.equal(unknownKind.status, 400);
+  assert.deepEqual(unknownKind.body.error.details, [
+    { path: "/kind", code: "INVALID_VALUE" },
+    { path: "/agentId", code: "REQUIRED" },
+    { path: "/configurationId", code: "REQUIRED" },
+    { path: "/ids", code: "REQUIRED" },
+    { path: "", code: "INVALID_VALUE" },
+  ]);
   assert.deepEqual(
     (
       await controller.request("POST", path, {
@@ -3200,6 +3224,23 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
       assert.equal(response.body.error.message, message);
     }
   }
+  // A plugin the selected Driver does not offer, as after an Installation switches Drivers:
+  // the refusal names the rejected ID and points at its selection.
+  const otherDriverUpdate = await controller.request("PATCH", agentPath, {
+    body: {
+      configurationId: configuration.id,
+      plugins: { [diffsPluginId]: pluginPolicy(), [linearPluginId]: pluginPolicy() },
+    },
+  });
+  assert.equal(otherDriverUpdate.status, 400);
+  assert.equal(otherDriverUpdate.body.error.code, "INVALID_REQUEST");
+  assert.match(
+    otherDriverUpdate.body.error.message,
+    /^A plugin selection names a plugin that the selected Plugin Driver \(occ-plugin\) does not offer: codex-plugin:linear@openai-curated-remote\./,
+  );
+  assert.deepEqual(otherDriverUpdate.body.error.details, [
+    { path: `/plugins/${linearPluginId}`, code: "INVALID_VALUE" },
+  ]);
   const afterUnsupported = await controller.request("GET", agentPath);
   assert.deepEqual(afterUnsupported.data, afterInvalidUpdate.data);
   const savedAgents = await controller.request("GET", `/namespaces/${namespace.id}/agents`);
@@ -3292,6 +3333,36 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
   assert.equal(failedAudit.body.error.code, "DEPENDENCY_UNAVAILABLE");
   const afterAuditFailure = await controller.request("GET", agentPath);
   assert.deepEqual(afterAuditFailure.data, beforeAuditFailure.data);
+
+  // After the Installation switches Plugin Drivers, the Agent's stored selection is refused
+  // where the plugins are read from storage: an update that omits plugins and a bodiless
+  // deploy. The message still names the plugin, but no detail points into a request body
+  // the caller never sent.
+  await controller.fixture.controller.handleNamespaceLifecycle(
+    controller.fixture.principal.id,
+    namespace.id,
+    "ready",
+  );
+  await bindHarnessKey(controller.fixture, namespace.id, agent.data);
+  const beforeDriverSwitch = await controller.request("GET", agentPath);
+  const codexPluginDriver = new CodexPluginDriver();
+  controller.fixture.controller.registerDriver(codexPluginDriver);
+  controller.fixture.controller.selectDriver("plugin", codexPluginDriver.id);
+  const storedUpdate = await controller.request("PATCH", agentPath, {
+    body: { configurationId: configuration.id },
+  });
+  const storedDeploy = await controller.request("POST", `${agentPath}/deploy`);
+  for (const response of [storedUpdate, storedDeploy]) {
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.code, "INVALID_REQUEST");
+    assert.match(
+      response.body.error.message,
+      /^A plugin selection names a plugin that the selected Plugin Driver \(codex-plugin\) does not offer: occ-plugin:diffs\./,
+    );
+    assert.equal(Object.hasOwn(response.body.error, "details"), false);
+  }
+  const afterStoredRefusal = await controller.request("GET", agentPath);
+  assert.deepEqual(afterStoredRefusal.data, beforeDriverSwitch.data);
 });
 
 test("native ServiceAccounts keep private credential references and cannot admit Harness authentication", async () => {
@@ -4285,7 +4356,8 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
   assert.equal(agent.status, 201, JSON.stringify(agent.body));
   const agentPath = `/namespaces/${namespaceId}/agents/${agent.data.id}`;
 
-  const reserved = "A secret binding uses a reserved or invalid environment destination.";
+  const reserved =
+    "A secret binding destination uses the reserved prefix OPENCLAW_*: OPENCLAW_TOKEN.";
   const crossNamespace = "Secret references cannot cross Namespaces.";
   const writes = [
     [
@@ -4322,6 +4394,13 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
       assert.equal(result.body.error.code, status === 400 ? "INVALID_REQUEST" : "NOT_FOUND", label);
       if (message !== undefined) {
         assert.equal(result.body.error.message, message, label);
+      }
+      if (message === reserved) {
+        assert.deepEqual(
+          result.body.error.details,
+          [{ path: "/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" }],
+          label,
+        );
       }
     }
   }
@@ -4362,6 +4441,58 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
         assert.equal(result.body.error.message, message, label);
       }
     }
+    // The method selects the api_key shape: only its missing source is reported. An unknown
+    // method selects no shape, so every shape's problem stays.
+    const withoutSource = await injectedRequest(fixture.app, method, url, {
+      body: body({ method: "api_key" }),
+    });
+    assert.equal(withoutSource.status, 400, `${path}: ${JSON.stringify(withoutSource.body)}`);
+    assert.equal(
+      withoutSource.body.error.message,
+      "The request does not match the operation contract: body /harnessAuth/source is required.",
+      path,
+    );
+    assert.deepEqual(
+      withoutSource.body.error.details,
+      [{ path: "/harnessAuth/source", code: "REQUIRED" }],
+      path,
+    );
+    // Switching to the runtime method while leaving the old source in place: the method
+    // selects the runtime shape, so only the field it does not accept is reported.
+    const runtimeWithSource = await injectedRequest(fixture.app, method, url, {
+      body: body({ method: "runtime", source: foreign }),
+    });
+    assert.equal(
+      runtimeWithSource.status,
+      400,
+      `${path}: ${JSON.stringify(runtimeWithSource.body)}`,
+    );
+    assert.equal(
+      runtimeWithSource.body.error.message,
+      "The request does not match the operation contract: body /harnessAuth/source is not an accepted field.",
+      path,
+    );
+    assert.deepEqual(
+      runtimeWithSource.body.error.details,
+      [{ path: "/harnessAuth/source", code: "UNKNOWN_FIELD" }],
+      path,
+    );
+    const unknownMethod = await injectedRequest(fixture.app, method, url, {
+      body: body({ method: "password" }),
+    });
+    assert.equal(unknownMethod.status, 400, `${path}: ${JSON.stringify(unknownMethod.body)}`);
+    assert.deepEqual(
+      unknownMethod.body.error.details,
+      [
+        { path: "/harnessAuth/method", code: "INVALID_VALUE" },
+        { path: "/harnessAuth/source", code: "REQUIRED" },
+        { path: "/harnessAuth/serviceAccountId", code: "REQUIRED" },
+        { path: "/harnessAuth/sourceId", code: "REQUIRED" },
+        { path: "/harnessAuth", code: "INVALID_VALUE" },
+        { path: "/harnessAuth", code: "INVALID_TYPE" },
+      ],
+      path,
+    );
   }
 
   // A resource the caller cannot find stays a not-found even when the request is invalid.
@@ -4462,7 +4593,36 @@ test("Agent provisioning API validates inline configuration with existing Secret
           source: { kind: "provisioning-secret", name: "model-api-key" },
         },
       }),
-      /^The request does not match the operation contract: body \/harnessAuth\/source is not an accepted field;/,
+      "The request does not match the operation contract: body /harnessAuth/source/namespaceId is required.",
+    ],
+    [
+      // Only the source kind is wrong, so the api_key shape fits and the other Harness
+      // authentication shapes' fields are not listed.
+      "Harness Secret source of another kind",
+      provisioningRequestBody(namespace.data.id, secrets, {
+        harnessAuth: {
+          method: "api_key",
+          source: {
+            ...exactSecretRef(namespace.data.id, secrets.modelApiKey.id),
+            kind: "provisioning-secret",
+          },
+        },
+      }),
+      "The request does not match the operation contract: body /harnessAuth/source/kind has an unsupported value.",
+    ],
+    [
+      // A string fits neither a Harness authentication shape nor null: one wrong-type problem
+      // names both, not one per union level.
+      "Harness authentication of the wrong type",
+      provisioningRequestBody(namespace.data.id, secrets, { harnessAuth: "api_key" }),
+      "The request does not match the operation contract: body /harnessAuth has the wrong type (expected one of object, null).",
+    ],
+    [
+      // The method selects the api_key shape, so only its missing source is reported, not
+      // the fields of the other methods' shapes or the runtime method's literal.
+      "Harness authentication method without its source",
+      provisioningRequestBody(namespace.data.id, secrets, { harnessAuth: { method: "api_key" } }),
+      "The request does not match the operation contract: body /harnessAuth/source is required.",
     ],
     [
       "too many binding destinations",
@@ -4509,7 +4669,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
           },
         },
       }),
-      "A secret binding uses a reserved or invalid environment destination.",
+      "A secret binding destination uses the reserved prefix OPENCLAW_*: OPENCLAW_TOKEN.",
     ],
   ];
 
@@ -4529,6 +4689,42 @@ test("Agent provisioning API validates inline configuration with existing Secret
       assert.equal(result.body.error.message, message, description);
     }
   }
+  const wrongTypeHarnessAuth = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/agents/provision`,
+    {
+      body: invalidBodies.find(([description]) =>
+        description.startsWith("Harness authentication"),
+      )[1],
+    },
+  );
+  assert.deepEqual(wrongTypeHarnessAuth.body.error.details, [
+    { path: "/harnessAuth", code: "INVALID_TYPE" },
+  ]);
+  const methodWithoutSource = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/agents/provision`,
+    {
+      body: invalidBodies.find(([description]) =>
+        description.startsWith("Harness authentication method"),
+      )[1],
+    },
+  );
+  assert.deepEqual(methodWithoutSource.body.error.details, [
+    { path: "/harnessAuth/source", code: "REQUIRED" },
+  ]);
+  // The reserved destination is named by its pointer under the inline Configuration.
+  const reservedProvisioning = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/agents/provision`,
+    { body: invalidBodies.find(([description]) => description.startsWith("reserved"))[1] },
+  );
+  assert.deepEqual(reservedProvisioning.body.error.details, [
+    { path: "/configuration/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" },
+  ]);
 
   // A model provider baseUrl the runtime cannot use is refused at admission with the field
   // named, instead of surfacing later as an unexplained startup model check failure.

@@ -51,7 +51,9 @@ what each Agent actually holds; limits cover measured peaks:
 | Container default               | `128Mi`  | `2Gi` | containers that set no resources                                                                                                                                     |
 
 Plan node memory per Agent: an embedded OpenClaw Agent reserves `1792Mi`, and a
-dedicated Codex Agent reserves `2560Mi` (Gateway plus Harness). A Harness runs
+dedicated Codex Agent reserves `2560Mi`: `1792Mi` for its Gateway on the
+`runtime.gatewayNodeSelector` pool and `768Mi` for its Harness on the
+`runtime.nodeSelector` pool. A Harness runs
 the Agent's shell commands, so builds and test suites in large repositories can
 need more than `6Gi`; raise `resources.agent.limits.memory` in the Installation
 for such workloads. Limits reserve no node memory, so Harnesses building at the

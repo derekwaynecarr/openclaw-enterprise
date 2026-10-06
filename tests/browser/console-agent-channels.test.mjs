@@ -810,8 +810,15 @@ test("Agent credentials retry outstanding Slack Secret grants after changing one
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
 });
 
-// A persisted binding must remain blocked for both permission denials and retryable IAM failures.
-for (const grantStatus of [403, 429]) {
+// Every grant failure keeps the saved binding blocked. An unavailable IAM API (503) still leaves a
+// known saved Configuration, not an unknown outcome. Retryable failures (429, 503) retry the
+// pending grant on its own; 403 keeps it pending for the channel-edit check below.
+const grantErrorCodes = {
+  403: "ACCESS_DENIED",
+  429: "TOO_MANY_REQUESTS",
+  503: "DEPENDENCY_UNAVAILABLE",
+};
+for (const grantStatus of [403, 429, 503]) {
   test(`Agent credentials report partial Slack Secret grant failure (${grantStatus})`, async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Runtime Slack grant failure");
     const originalBotSecret = await fixture.createSecret(
@@ -837,7 +844,7 @@ for (const grantStatus of [403, 429]) {
     const requests = apiRequests(page, fixture.origin);
     await failMethod(page, `**/namespaces/${namespace.id}/iam/access-bindings`, "POST", {
       status: grantStatus,
-      error: { code: "ACCESS_DENIED", message: "masked IAM denial" },
+      error: { code: grantErrorCodes[grantStatus], message: "masked IAM failure" },
       requestId: "req_00000000-0000-4000-8000-000000000733",
     });
 
@@ -869,6 +876,30 @@ for (const grantStatus of [403, 429]) {
       accessBindingPostRequests(requests, namespace.id).map((request) => request.body.resourceId),
       [replacementAppSecret.id],
     );
+    if (grantStatus !== 403) {
+      // The pending grant is retried on its own once IAM answers again.
+      await page.unroute(`**/namespaces/${namespace.id}/iam/access-bindings`);
+      await page.getByRole("button", { name: "Save channel Secrets" }).click();
+      await page
+        .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
+        .waitFor();
+      assert.deepEqual(
+        accessBindingPostRequests(requests, namespace.id).map((request) => request.body.resourceId),
+        [replacementAppSecret.id, replacementAppSecret.id],
+      );
+      assert.equal(
+        await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(),
+        true,
+      );
+      assert.equal(
+        await page
+          .getByText("Configuration saved, but Secret access grants could not be confirmed.", {
+            exact: false,
+          })
+          .count(),
+        0,
+      );
+    }
     if (grantStatus === 403) {
       await page.getByRole("button", { name: "Channels", exact: true }).click();
       await page.getByRole("button", { name: "Edit Slack", exact: true }).click();

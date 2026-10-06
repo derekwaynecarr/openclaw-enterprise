@@ -7,6 +7,7 @@ import {
   AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
   CredentialSourceResponse,
+  ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
   JsonValue,
   occApiRoutes,
@@ -1046,7 +1047,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       canonicalFailure(reply, mapped);
     },
     ajv: {
-      customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false },
+      // `verbose` attaches each failure's schema and value, so contract errors can tell which
+      // shape of a discriminated union a request chose (http/errors.ts). Neither is logged or
+      // returned: problems name only paths and the schema's accepted values, and http/errors.ts
+      // drops both from the error once its problems are built. An onError hook runs before
+      // that, so none may log `error.validation`.
+      customOptions: {
+        removeAdditional: false,
+        coerceTypes: false,
+        useDefaults: false,
+        verbose: true,
+      },
       plugins: [formatsPlugin],
     },
     schemaController: { compilersFactory: { buildSerializer: cachedResponseSerializers() } },
@@ -2451,7 +2462,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           type: "object",
           additionalProperties: false,
           required: ["code", "message"],
-          properties: { code: { type: "string" }, message: { type: "string" } },
+          properties: {
+            code: { type: "string" },
+            message: { type: "string" },
+            // Schema 400s point at the rejected field; without this the serializer drops it.
+            details: { type: "array", maxItems: 32, items: ErrorDetailSchema },
+          },
         },
         meta,
       },
@@ -2461,6 +2477,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       401: { description: "Unauthorized", ...error },
       503: { description: "Service Unavailable", ...error },
     });
+    // Every route that reads a body answers an oversized one 413 and a non-JSON one 415.
+    const bodyErrors = {
+      413: { description: "Payload Too Large", ...error },
+      415: { description: "Unsupported Media Type", ...error },
+    };
     const accountBody = (
       createAuthAccountOperation.schema as {
         readonly body: { readonly properties: Record<string, unknown> };
@@ -2553,6 +2574,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
+            ...(creating ? bodyErrors : {}),
           },
         } as DocumentedFastifySchema,
         onRequest: async (request) => admit(request, operation),
@@ -2832,6 +2854,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               properties: { attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } },
             },
             response: {
+              // A body without the exact attemptId fails the schema.
+              400: { description: "Bad Request", ...error },
               ...responses({
                 type: "object",
                 additionalProperties: false,
@@ -2839,6 +2863,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 properties: { sessionKey: { type: "string" } },
               }),
               403: { description: "Forbidden", ...error },
+              ...bodyErrors,
             },
           },
         },
@@ -3110,9 +3135,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 required: ["userId"],
                 properties: { userId: { type: "string" } },
               }),
+              400: { description: "Bad Request", ...error },
               403: { description: "Forbidden", ...error },
               404: { description: "Not Found", ...error },
               409: { description: "Conflict", ...error },
+              ...bodyErrors,
             },
           },
           onRequest: async (request) => admit(request, operation),
@@ -3263,9 +3290,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               required: [...recoveryResponse.required, "changed"],
               properties: { ...recoveryResponse.properties, changed: { type: "boolean" } },
             }),
+            400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
+            ...bodyErrors,
           },
         },
         onRequest: async (request) => admit(request, recoveryReplaceOperation),
@@ -3418,6 +3447,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
           },
           response: {
+            // A browser Origin other than the console's, or a cross-site fetch, is refused
+            // before the credentials are read.
+            403: { description: "Forbidden", ...error },
             ...responses({
               type: "object",
               additionalProperties: false,
@@ -3427,7 +3459,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 sessionKey: { type: "string" },
               },
             }),
+            400: { description: "Bad Request", ...error },
             429: { description: "Too Many Requests", ...error },
+            ...bodyErrors,
           },
         },
       },
@@ -3442,7 +3476,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           description: "Revokes the current user session cookie.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
-          response: responses({ type: "object", additionalProperties: true }),
+          response: {
+            ...responses({ type: "object", additionalProperties: true }),
+            // A missing or foreign browser Origin, or a cross-site fetch.
+            403: { description: "Forbidden", ...error },
+          },
         },
       },
       async (request, reply) => options.auth.signOut(request, reply),
@@ -3510,6 +3548,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             409: { description: "Conflict", ...error },
+            ...bodyErrors,
           },
         },
         onRequest: async (request) => admit(request, createAuthAccountOperation),
