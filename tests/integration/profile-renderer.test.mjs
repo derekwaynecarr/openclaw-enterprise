@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -293,6 +293,33 @@ test("managed ChatGPT service-account wiring is optional and explicit", () => {
   assert.match(codex.values, /backend:\n {2}chatgpt:\n {4}enabled: true/);
   assert.match(codex.installation, /service_account: chatgpt-service-accounts/);
   assert.match(codex.preflight.warnings.join("\n"), /issuance is wired but remains unverified/);
+});
+
+test("profiles reject invalid Helm release names before emitting deployment files", (t) => {
+  for (const profile of ["openclaw", "codex"]) {
+    const input = profile === "codex" ? codexInput() : baseInput();
+    const directory = mkdtempSync(join(tmpdir(), `oce-release-name-${profile}-`));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    for (const releaseName of ["r".repeat(54), "Oce", "oce-", "oce..example", "oce example"]) {
+      // A failed rerender must also remove files from a previously valid release.
+      render(profile, input, directory);
+      assert.throws(
+        () =>
+          render(
+            profile,
+            { ...input, controlPlane: { ...input.controlPlane, releaseName } },
+            directory,
+          ),
+        (error) =>
+          error.status === 1 && /controlPlane.releaseName/.test(error.profileRendererOutput),
+      );
+      const preflight = JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8"));
+      assert.equal(preflight.ok, false);
+      assert.match(preflight.errors.join("\n"), /controlPlane.releaseName/);
+      assert.equal(existsSync(join(directory, "values.yaml")), false);
+      assert.equal(existsSync(join(directory, "installation.yaml")), false);
+    }
+  }
 });
 
 test(

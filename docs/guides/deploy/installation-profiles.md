@@ -91,7 +91,8 @@ then rerender with `repository.enabled: true`.
 
 Create a JSON file outside the repository or under an ignored local output
 directory. The renderer rejects any field it does not consume: unsupported
-fields fail preflight.
+fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
+release-name syntax and be at most 53 characters.
 
 ```json
 {

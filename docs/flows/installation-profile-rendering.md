@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-09-29
-last_updated_session: r2-fix-7
+updated: 2026-10-06
+last_updated_session: authoring-run/2ae5d308-21b1-4e0c-b693-55c25dd9f879
 ---
 
 # Installation Profile Rendering Flow
@@ -87,8 +87,9 @@ same-Namespace Secret or through the Console. Managed `chatgpt_service_account`
 provisioning is optional and renders only when `codex.managedServiceAccounts` is
 supplied.
 
-Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
-hostnames and their shared cookie parent domain, and paired metrics scraper
+Preflight checks `controlPlane.releaseName` against Helm's lowercase release-name
+syntax and 53-character maximum. It also applies the downstream contracts for
+IPv4 CIDRs, native-admin DNS hostnames and their shared cookie parent domain, and paired metrics scraper
 selectors. Invalid values therefore fail before `values.yaml` or
 `installation.yaml` is written.
 
@@ -193,6 +194,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 15:26: Reject invalid Helm release names before emitting deployment files. (authoring-run/2ae5d308-21b1-4e0c-b693-55c25dd9f879 - 4a314f5b5ac48937acf976fc3e69c385d1883c35)
 
 - 2026-09-29 20:30: Stop defaulting the repository broker Service name so the chart upgrade guard applies.
 
