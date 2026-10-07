@@ -253,7 +253,7 @@ function ipv4HostKept(raw, url) {
   if (isIP(url.hostname) !== 4) {
     return true;
   }
-  const stripped = raw.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "");
+  const stripped = stripUrlEdges(raw);
   const written = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
   return (
     written === url.hostname && /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(url.hostname)

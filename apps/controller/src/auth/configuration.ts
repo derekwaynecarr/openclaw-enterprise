@@ -17,11 +17,25 @@ export function betterAuthIssuer(installationId: string): string {
 // then URL.toString() publishes that other address.
 const strictDecimalIpv4 = /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/;
 
+// URL parsing strips only C0 controls and spaces from the ends. A character
+// class cannot spell that range: the linter rejects a null in a regex.
+function stripUrlEdges(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) <= 0x20) {
+    start += 1;
+  }
+  while (end > start && value.charCodeAt(end - 1) <= 0x20) {
+    end -= 1;
+  }
+  return value.slice(start, end);
+}
+
 export function refuseRewrittenIpv4AuthHost(raw: string, parsed: URL): void {
   if (isIP(parsed.hostname) !== 4) {
     return;
   }
-  const stripped = raw.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "");
+  const stripped = stripUrlEdges(raw);
   const written = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
   const octets = parsed.hostname.split(".");
   if (
