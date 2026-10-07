@@ -1075,6 +1075,50 @@ function harnessWorkspaceCategories(oauth: boolean) {
     ? HARNESS_WORKSPACE_CATEGORIES
     : [...HARNESS_WORKSPACE_CATEGORIES, HARNESS_CODEX_SESSIONS_CATEGORY];
 }
+
+/**
+ * Init script that makes each Harness claim subdirectory a uid-1000 0700
+ * directory. The 2026-09-28 release had no Harness init, so the kubelet created
+ * `workspace` and `generated-images` for their subPath mounts: root-owned and
+ * group- and world-writable, which uid 1000 cannot chmod (EPERM, finding 752).
+ * The claim root is group-writable without a sticky bit, so such a directory is
+ * renamed aside, recreated by uid 1000, and its entries are renamed back. Every
+ * step is a rename on one filesystem, and a retried init resumes an interrupted
+ * move. An entry already present in the new directory stays aside, and is logged.
+ */
+export function harnessWorkspacePreparationScript(paths: readonly string[]): string {
+  return `{
+  const fs = require("node:fs");
+  for (const path of ${JSON.stringify(paths)}) {
+    const aside = path.replace(/\\/([^/]+)$/u, "/.$1.kubelet-created");
+    const existing = fs.lstatSync(path, { throwIfNoEntry: false });
+    if (
+      fs.lstatSync(aside, { throwIfNoEntry: false }) === undefined &&
+      existing?.isDirectory() &&
+      existing.uid !== process.getuid()
+    ) {
+      fs.renameSync(path, aside);
+    }
+    fs.mkdirSync(path, { recursive: true, mode: 0o700 });
+    if (fs.lstatSync(aside, { throwIfNoEntry: false }) !== undefined) {
+      const kept = [];
+      for (const entry of fs.readdirSync(aside)) {
+        if (fs.lstatSync(path + "/" + entry, { throwIfNoEntry: false }) === undefined) {
+          fs.renameSync(aside + "/" + entry, path + "/" + entry);
+        } else {
+          kept.push(entry);
+        }
+      }
+      if (kept.length === 0) {
+        fs.rmdirSync(aside);
+      } else {
+        console.error("kept " + kept.length + " entries in " + aside + ": " + path + " has them");
+      }
+    }
+    fs.chmodSync(path, 0o700);
+  }
+}`;
+}
 const GATEWAY_SESSION_DIRECTORY = "/home/node/.openclaw/agents/main/sessions";
 const RESOURCE_REQUIREMENTS_SCHEMA = Object.freeze({
   type: "object",
@@ -12162,13 +12206,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         name: HARNESS_WORKSPACE_VOLUME,
         mountPath: "/harness-workspace-state",
       });
-      (initialization.args as string[])[0] += `
-for (const path of ${JSON.stringify(
+      (initialization.args as string[])[0] += `\n${harnessWorkspacePreparationScript(
         harnessWorkspaceCategories(oauth).map(([subPath]) => `/harness-workspace-state/${subPath}`),
-      )}) {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
-  chmodSync(path, 0o700);
-}`;
+      )}`;
       if (oauth) {
         // An OAuth home starts without earlier history, as a new OAuth source does.
         (initialization.args as string[])[0] += `
