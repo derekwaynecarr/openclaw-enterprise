@@ -304,6 +304,10 @@ spec:
               value: {{ $.Values.agentNativeAdmin.sharedCookieDomain | quote }}
             {{- end }}
             {{- else }}
+            {{- include "openclaw.positiveSafeInteger" (dict "name" "worker.pollIntervalMs" "value" $.Values.worker.pollIntervalMs) }}
+            {{- include "openclaw.positiveSafeInteger" (dict "name" "worker.leaseDurationMs" "value" $.Values.worker.leaseDurationMs) }}
+            {{- include "openclaw.positiveSafeInteger" (dict "name" "worker.maxAttempts" "value" $.Values.worker.maxAttempts) }}
+            {{- include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) }}
             - name: OCC_WORKER_READINESS_PATH
               value: /run/openclaw-worker/ready
             - name: OCC_WORKER_LIVENESS_PATH

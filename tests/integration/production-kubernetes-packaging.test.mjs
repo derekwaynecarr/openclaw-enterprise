@@ -3500,3 +3500,17 @@ test(
     });
   },
 );
+
+test("Helm rejects worker timings the worker process rejects", tooling, async () => {
+  for (const [key, value] of [
+    ["worker.pollIntervalMs", "0"],
+    ["worker.pollIntervalMs", "abc"],
+    ["worker.leaseDurationMs", "1.5"],
+    ["worker.maxAttempts", "-1"],
+    ["worker.convergenceTimeoutMs", "9007199254740993"],
+  ]) {
+    await assert.rejects(render({ [key]: value }), /must be a positive safe integer/);
+  }
+  const rendered = await render({ "worker.pollIntervalMs": "010" });
+  assert.match(rendered.stdout, /name: OCC_WORKER_POLL_INTERVAL_MS\n\s+value: "010"/);
+});
