@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9407,10 +9407,12 @@ test("Harness workspace preparation creates private directories and resumes an i
   assert.equal(await mode(`${root}/workspace`), 0o700);
   assert.equal(await mode(`${root}/generated-images`), 0o700);
 
-  // An owned directory keeps its files and is only tightened.
+  // An owned directory keeps its files and is only tightened, including the
+  // setgid bit an fsGroup claim root passes to new directories.
   await writeFile(`${root}/workspace/notes.md`, "kept");
   await rm(`${root}/generated-images`, { recursive: true });
-  await mkdir(`${root}/generated-images`, { mode: 0o777 });
+  await mkdir(`${root}/generated-images`);
+  await chmod(`${root}/generated-images`, 0o2777);
   assert.equal(prepare(), "");
   assert.equal(await readFile(`${root}/workspace/notes.md`, "utf8"), "kept");
   assert.equal(await mode(`${root}/generated-images`), 0o700);
@@ -9431,7 +9433,7 @@ test("Harness workspace preparation creates private directories and resumes an i
   await mkdir(`${root}/.workspace.kubelet-created`);
   await writeFile(`${root}/.workspace.kubelet-created/notes.md`, "released copy");
   await writeFile(`${root}/.workspace.kubelet-created/other.md`, "moved");
-  assert.match(prepare(), /kept 1 entries in .*\.workspace\.kubelet-created/);
+  assert.match(prepare(), /kept in .*\.workspace\.kubelet-created, already in .*: \["notes\.md"\]/);
   assert.equal(await readFile(`${root}/workspace/notes.md`, "utf8"), "kept");
   assert.equal(await readFile(`${root}/workspace/other.md`, "utf8"), "moved");
   assert.deepEqual(await readdir(`${root}/.workspace.kubelet-created`), ["notes.md"]);

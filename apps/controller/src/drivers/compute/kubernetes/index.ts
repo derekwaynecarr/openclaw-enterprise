@@ -1081,30 +1081,44 @@ function harnessWorkspaceCategories(oauth: boolean) {
  * directory. The 2026-09-28 release had no Harness init, so the kubelet created
  * `workspace` and `generated-images` for their subPath mounts: root-owned and
  * group- and world-writable, which uid 1000 cannot chmod (EPERM, finding 752).
- * The claim root is group-writable without a sticky bit, so such a directory is
+ * The claim root is writable without a sticky bit, so such a directory is
  * renamed aside, recreated by uid 1000, and its entries are renamed back. Every
  * step is a rename on one filesystem, and a retried init resumes an interrupted
  * move. An entry already present in the new directory stays aside, and is logged.
+ * The move assumes no other Pod writes the claim (dedicated Harnesses with node
+ * enrollment roll with Recreate).
  */
 export function harnessWorkspacePreparationScript(paths: readonly string[]): string {
   return `{
   const fs = require("node:fs");
+  const move = (from, to) => {
+    try {
+      fs.renameSync(from, to);
+    } catch (error) {
+      error.message += "; uid " + process.getuid() + " cannot move " + from +
+        " (a sticky claim root or an unwritable directory); chown it to uid 1000 on the node";
+      throw error;
+    }
+  };
   for (const path of ${JSON.stringify(paths)}) {
     const aside = path.replace(/\\/([^/]+)$/u, "/.$1.kubelet-created");
-    const existing = fs.lstatSync(path, { throwIfNoEntry: false });
     if (
       fs.lstatSync(aside, { throwIfNoEntry: false }) === undefined &&
-      existing?.isDirectory() &&
-      existing.uid !== process.getuid()
+      fs.lstatSync(path, { throwIfNoEntry: false })?.isDirectory()
     ) {
-      fs.renameSync(path, aside);
+      try {
+        fs.chmodSync(path, 0o700);
+      } catch (error) {
+        if (error.code !== "EPERM") throw error;
+        move(path, aside);
+      }
     }
     fs.mkdirSync(path, { recursive: true, mode: 0o700 });
     if (fs.lstatSync(aside, { throwIfNoEntry: false }) !== undefined) {
       const kept = [];
       for (const entry of fs.readdirSync(aside)) {
         if (fs.lstatSync(path + "/" + entry, { throwIfNoEntry: false }) === undefined) {
-          fs.renameSync(aside + "/" + entry, path + "/" + entry);
+          move(aside + "/" + entry, path + "/" + entry);
         } else {
           kept.push(entry);
         }
@@ -1112,7 +1126,8 @@ export function harnessWorkspacePreparationScript(paths: readonly string[]): str
       if (kept.length === 0) {
         fs.rmdirSync(aside);
       } else {
-        console.error("kept " + kept.length + " entries in " + aside + ": " + path + " has them");
+        console.error("kept in " + aside + ", already in " + path + ": " +
+          JSON.stringify(kept.slice(0, 20)) + (kept.length > 20 ? " and " + (kept.length - 20) + " more" : ""));
       }
     }
     fs.chmodSync(path, 0o700);
