@@ -3500,3 +3500,29 @@ test(
     });
   },
 );
+
+test("Helm rejects Kubernetes quantities the API cannot parse", tooling, async () => {
+  const collector = {
+    "logging.collector.enabled": "true",
+    "logging.collector.image":
+      "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc",
+    "logging.collector.configSecretName": "occ-otel-collector-config",
+    "logging.collector.envSecretName": "occ-otel-collector-exporter",
+    "logging.collector.exporter.cidr": "203.0.113.10/32",
+  };
+  await assert.rejects(
+    render({ ...collector, "logging.collector.state.sizeLimit": "foo" }),
+    /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
+  );
+  await assert.rejects(
+    render({ ...collector, "logging.collector.tmp.sizeLimit": "10MiB" }),
+    /logging\.collector\.tmp\.sizeLimit must be a Kubernetes quantity/,
+  );
+  await assert.rejects(
+    render({ "resources.requests.cpu": "foo" }),
+    /resources\.requests\.cpu must be a Kubernetes quantity/,
+  );
+  const rendered = await render(collector);
+  assert.match(rendered.stdout, /sizeLimit: "128Mi"/);
+  assert.match(rendered.stdout, /sizeLimit: "64Mi"/);
+});

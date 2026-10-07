@@ -499,6 +499,26 @@ capabilities:
 {{- default "git" .Values.repositoryCredentials.serviceName -}}
 {{- end -}}
 
+{{/* Kubernetes resource.ParseQuantity grammar: a number plus an optional suffix, or a bare exponent. */}}
+{{- define "openclaw.quantity" -}}
+{{- $pattern := "^([+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+))(([eE][+-]?[0-9]+)|([KMGTPE]i)|[numkKMGTP])?$|^[eE][+-]?[0-9]+$" -}}
+{{- if not (regexMatch $pattern (toString .value)) -}}
+{{- fail (printf "%s must be a Kubernetes quantity" .name) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "openclaw.resourceRequirements" -}}
+{{- $name := .name -}}
+{{- $requirements := .requirements -}}
+{{- range $section := list "requests" "limits" -}}
+{{- with index $requirements $section -}}
+{{- range $key, $qty := . -}}
+{{- include "openclaw.quantity" (dict "name" (printf "%s.%s.%s" $name $section $key) "value" $qty) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "openclaw.repositoryCredentials.clusterDomain" -}}
 {{- .Values.repositoryCredentials.clusterDomain -}}
 {{- end -}}
