@@ -1130,3 +1130,28 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     /controlPlane.trustedProxy.cidrs\[0\] must be/,
   );
 });
+
+test("preflight rejects channel proxy URLs with an invalid octet or port", () => {
+  const message = /must be an HTTP\(S\) literal IPv4 endpoint with an explicit port/;
+  assertPreflightFailure(
+    "openclaw",
+    baseInput({ channels: { directoryProxyUrl: "http://192.0.2.999:8080" } }),
+    message,
+  );
+  assertPreflightFailure(
+    "openclaw",
+    baseInput({ channels: { runtimeProxyUrl: "http://192.0.2.10:99999" } }),
+    message,
+  );
+  const accepted = render(
+    "openclaw",
+    baseInput({
+      channels: {
+        directoryProxyUrl: "http://192.0.2.10:8080",
+        runtimeProxyUrl: "http://192.0.2.10:8080",
+      },
+    }),
+  );
+  assert.match(accepted.values, /channelDirectoryProxyUrl: http:\/\/192\.0\.2\.10:8080/);
+  assert.match(accepted.installation, /proxyUrl: http:\/\/192\.0\.2\.10:8080/);
+});
