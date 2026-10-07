@@ -1130,3 +1130,38 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     /controlPlane.trustedProxy.cidrs\[0\] must be/,
   );
 });
+
+test("preflight rejects CIDR prefixes with a leading zero", () => {
+  const controlPlane = baseInput().controlPlane;
+  assertPreflightFailure(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...controlPlane, databaseCidrs: ["192.0.2.10/032"] },
+    }),
+    /controlPlane\.databaseCidrs\[0\] must be an IPv4 \/32 CIDR/,
+  );
+  assertPreflightFailure(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...controlPlane, gatewayTrustedProxyCidrs: ["192.0.2.12/08"] },
+    }),
+    /controlPlane\.gatewayTrustedProxyCidrs\[0\] must be an IPv4 CIDR/,
+  );
+  assertPreflightFailure(
+    "openclaw",
+    baseInput({
+      controlPlane: {
+        ...controlPlane,
+        trustedProxy: { preset: "ingress-nginx", cidrs: ["2001:db8::/032"] },
+      },
+    }),
+    /controlPlane\.trustedProxy\.cidrs\[0\] must be an IPv4 or IPv6 CIDR/,
+  );
+  const accepted = render(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...controlPlane, gatewayTrustedProxyCidrs: ["192.0.2.12/8"] },
+    }),
+  );
+  assert.match(accepted.installation, /192\.0\.2\.12\/8/);
+});
