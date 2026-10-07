@@ -750,6 +750,19 @@ const invalid = [
     parser: /OCC_AUTH_PASSWORD_SIGN_IN must be all or recovery-only/,
   },
   {
+    name: "GitHub with an organization login padded by U+0085",
+    values: {
+      ...githubOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.github.allowedOrgs[0]": "\u0085acme",
+    },
+    chart: /auth\.github\.allowedOrgs requires GitHub organization logins/,
+    github: true,
+    env: { OCC_AUTH_GITHUB_ALLOWED_ORGS: "\u0085acme" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_ORGS must be a comma-separated list of GitHub organization logins/,
+  },
+  {
     name: "GitHub with an allowed organization that is not a login",
     values: {
       ...githubOn,
@@ -761,6 +774,19 @@ const invalid = [
     env: { OCC_AUTH_GITHUB_ALLOWED_ORGS: "acme/platform" },
     parser:
       /OCC_AUTH_GITHUB_ALLOWED_ORGS must be a comma-separated list of GitHub organization logins/,
+  },
+  {
+    name: "GitHub with a team slug padded by U+0085",
+    values: {
+      ...githubOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.github.allowedTeams[0]": "\u0085acme/platform",
+    },
+    chart: /auth\.github\.allowedTeams requires org\/team-slug entries/,
+    github: true,
+    env: { OCC_AUTH_GITHUB_ALLOWED_TEAMS: "\u0085acme/platform" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_TEAMS must be a comma-separated list of org\/team-slug entries/,
   },
   {
     name: "GitHub with an allowed team without its organization",
@@ -855,6 +881,18 @@ const invalid = [
     },
   },
   {
+    name: "Google with a hosted domain padded by U+0085",
+    values: {
+      ...googleOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.google.allowedDomains[0]": "\u0085example.com",
+    },
+    chart: /auth\.google\.allowedDomains requires DNS domain names/,
+    google: true,
+    env: { OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: "\u0085example.com" },
+    parser: /OCC_AUTH_GOOGLE_ALLOWED_DOMAINS must be a comma-separated list of DNS domain names/,
+  },
+  {
     name: "Google with a hosted domain that is not a DNS name",
     values: {
       ...googleOn,
@@ -939,6 +977,17 @@ const invalid = [
     oidc: true,
     env: { OCC_AUTH_OIDC_TOKEN_AUTH: "private_key_jwt" },
     parser: /OCC_AUTH_OIDC_TOKEN_AUTH must be client_secret_post or client_secret_basic/,
+  },
+  {
+    name: "OIDC with a display name padded by U+0085",
+    values: {
+      ...oidcUpgradeValues(recoveryUserId),
+      "auth.oidc.displayName": "\u0085Continue",
+    },
+    chart: /auth\.oidc\.displayName must be 1 to 40 printable characters/,
+    oidc: true,
+    env: { OCC_AUTH_OIDC_DISPLAY_NAME: "\u0085Continue" },
+    parser: /OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters/,
   },
   {
     name: "OIDC with an overlong label",
