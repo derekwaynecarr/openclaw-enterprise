@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { refuseRewrittenIpv4AuthHost } from "../../apps/controller/src/auth/configuration.ts";
 import {
   clientAddressConfiguration,
   createControllerAuth,
@@ -1281,12 +1282,22 @@ test(
     // server.mjs's normalization, then createControllerAuth. Without an Installation, accepted
     // settings stop right after its base URL checks.
     const apiAccepts = (baseUrl) => {
-      let normalized;
+      let parsed;
       try {
-        normalized = new URL(baseUrl).toString().replace(/\/$/, "");
+        parsed = new URL(baseUrl);
       } catch {
         return false;
       }
+      try {
+        refuseRewrittenIpv4AuthHost(baseUrl, parsed);
+      } catch (error) {
+        assert.match(
+          error.message,
+          /^OCC_AUTH_BASE_URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros/,
+        );
+        return false;
+      }
+      const normalized = parsed.toString().replace(/\/$/, "");
       try {
         createControllerAuth({ mode: "production", secret: "s".repeat(32), baseURL: normalized });
       } catch (error) {
@@ -1338,6 +1349,8 @@ test(
         "https://console.oce.example.internal.",
         " https://console.oce.example.internal ",
         "https://192.0.2.10",
+        "https://192.168.10.1",
+        "https://10.0.0.1",
         "https://[2001:db8::10]:8443",
         "https://localhost",
         "http://127.0.0.1",
@@ -1425,17 +1438,33 @@ test(
         "http://localhost.",
         "http://localhost.oce.example.internal",
       ].map((baseUrl) => ({ baseUrl, chart: plainHttp, api: true, job: false })),
-      // Deliberately stricter: Node repairs these degenerate spellings into an origin, or
-      // reads another IPv4 spelling (shorthand, octal, hex, trailing dot) as 127.0.0.1.
+      // Node repairs these degenerate spellings into an origin. They are not IPv4 hosts.
       ...[
         ["https:console.oce.example.internal", notOrigin],
         ["https://console.oce.example.internal/.", notOrigin],
         ["https://console.oce.example.internal/%2e", notOrigin],
-        ["http://127.1", plainHttp],
-        ["http://2130706433", plainHttp],
-        ["http://0177.0.0.1", plainHttp],
-        ["http://127.0.0.1.", plainHttp],
       ].map(([baseUrl, chart]) => ({ baseUrl, chart, api: true, job: true })),
+      // A leading zero is octal (192.168.010.001 publishes 192.168.8.1). Hex, shorthand,
+      // a single integer and a trailing dot also publish a different host. The chart, the
+      // API and the bootstrap Job all refuse those spellings.
+      ...[
+        "https://192.168.010.001",
+        "https://192.168.001.010",
+        "https://010.0.0.1",
+        "https://127.1",
+        "https://0x7f.0.0.1",
+        "https://2130706433",
+        "http://127.1",
+        "http://2130706433",
+        "http://0177.0.0.1",
+        "http://127.0.0.1.",
+      ].map((baseUrl) => ({
+        baseUrl,
+        chart:
+          /auth\.baseUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros/,
+        api: false,
+        job: false,
+      })),
     ];
     await eachBounded(cases, async ({ baseUrl, chart, api, job }) => {
       const label = JSON.stringify(baseUrl);

@@ -22,6 +22,17 @@
 {{- if or (not (has $baseUrl.scheme (list "http" "https"))) (not $baseUrl.hostname) $baseUrl.userinfo (not (has $baseUrl.path (list "" "/"))) $baseUrl.query $baseUrl.fragment (regexMatch "[?#]" $baseUrlText) (and $baseUrlPort (gt (atoi $baseUrlPort) 65535)) -}}
 {{- fail "auth.baseUrl must be an absolute HTTP(S) origin such as https://console.example.com, without a path, query, fragment or user info" -}}
 {{- end -}}
+{{- /* Go's URL parser keeps the written host. Node reads a leading zero as octal and also accepts hex, shorthand, a single integer and a trailing dot, then publishes that other address. */ -}}
+{{- if regexMatch "^(?i)(?:[0-9]+|0x[0-9a-f]+)(?:\\.(?:[0-9]+|0x[0-9a-f]+))*\\.?$" $baseUrl.hostname -}}
+{{- if not (regexMatch "^(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $baseUrl.hostname) -}}
+{{- fail "auth.baseUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; the API's URL parser rewrites other spellings to a different address" -}}
+{{- end -}}
+{{- range $octet := splitList "." $baseUrl.hostname -}}
+{{- if gt (atoi $octet) 255 -}}
+{{- fail "auth.baseUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; the API's URL parser rewrites other spellings to a different address" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if or (not .Values.auth.secretName) (not .Values.auth.secretKey) -}}{{- fail "auth must reference an operator-created Better Auth signing Secret" -}}{{- end -}}
 {{- $github := .Values.auth.github -}}
 {{- $recoveryUserId := toString (default "" .Values.auth.recoveryUserId) -}}

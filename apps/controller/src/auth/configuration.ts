@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
 // Kept apart from index.ts so callers can check auth configuration and name the issuer
@@ -9,6 +10,30 @@ export function betterAuthIssuer(installationId: string): string {
     throw new Error("Better Auth issuer requires an Installation.");
   }
   return `${OCC_BETTER_AUTH_ISSUER_PREFIX}${installationId}:better-auth`;
+}
+
+// Four decimal octets, 0–255, with no leading zero. Node's URL parser reads a
+// leading zero as octal, and also accepts hex, shorthand and a single integer,
+// then URL.toString() publishes that other address.
+const strictDecimalIpv4 = /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/;
+
+export function refuseRewrittenIpv4AuthHost(raw: string, parsed: URL): void {
+  if (isIP(parsed.hostname) !== 4) {
+    return;
+  }
+  const stripped = raw.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "");
+  const written = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
+  const octets = parsed.hostname.split(".");
+  if (
+    written === parsed.hostname &&
+    strictDecimalIpv4.test(parsed.hostname) &&
+    octets.every((octet) => Number(octet) <= 255)
+  ) {
+    return;
+  }
+  throw new Error(
+    "OCC_AUTH_BASE_URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+  );
 }
 
 // A bare ? or # (https://host? or https://host#) parses to an empty search or hash, but it

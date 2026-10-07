@@ -242,7 +242,21 @@ function httpOrigin(value) {
     url.password.length === 0 &&
     url.pathname === "/" &&
     url.search.length === 0 &&
-    url.hash.length === 0
+    url.hash.length === 0 &&
+    ipv4HostKept(value, url)
+  );
+}
+
+// The same rule as the chart and OCC_AUTH_BASE_URL: a leading zero is octal, and
+// hex, shorthand, a single integer or a trailing dot publish a different host.
+function ipv4HostKept(raw, url) {
+  if (isIP(url.hostname) !== 4) {
+    return true;
+  }
+  const stripped = raw.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "");
+  const written = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
+  return (
+    written === url.hostname && /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(url.hostname)
   );
 }
 
