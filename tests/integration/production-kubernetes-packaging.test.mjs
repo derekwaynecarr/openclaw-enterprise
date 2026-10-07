@@ -2648,6 +2648,47 @@ test(
   },
 );
 
+test("the chart refuses administrator emails the bootstrap Job refuses", tooling, async () => {
+  const message = /bootstrap\.adminEmail must contain a valid administrator email/;
+  for (const email of [
+    "",
+    " ",
+    "not-an-email",
+    "a@b",
+    "a@b.",
+    "a@.com",
+    "a@b c.com",
+    "a@b\u00A0c.com",
+    "a@b\u000Bc.com",
+  ]) {
+    await assert.rejects(
+      render({}, { strings: { "bootstrap.adminEmail": email } }),
+      ({ code, stderr }) => code !== 0 && message.test(stderr),
+      JSON.stringify(email),
+    );
+  }
+  for (const email of [
+    "admin@example.invalid",
+    " Admin@Example.COM ",
+    "a@b.com ",
+    "\nadmin@example.com",
+    "\uFEFFadmin@example.com",
+    "\u0085a@b.com",
+  ]) {
+    const { stdout } = await render({}, { strings: { "bootstrap.adminEmail": email } });
+    const objects = await resources(stdout);
+    const job = objects.find(
+      (object) =>
+        object.kind === "Job" &&
+        object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+    );
+    const value = job.spec.template.spec.containers
+      .find((container) => container.name === "bootstrap")
+      .env.find((entry) => entry.name === "OCC_BOOTSTRAP_ADMIN_EMAIL").value;
+    assert.equal(value, email);
+  }
+});
+
 test(
   "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
   tooling,
