@@ -5171,9 +5171,8 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
       }),
     /required profile.*owned by the selected Compute Driver/i,
   );
-  // OpenClaw's default Agent (sole entry, `default: true`, or a named session store or system
-  // owner) keeps its own workspace, while the Gateway, file transfer and workspace files
-  // address main.
+  // OpenClaw's default Agent (sole entry, or a named session store or system owner) keeps its
+  // own workspace, while the Gateway, file transfer and workspace files address main.
   const withAgents = ({ defaults, ...agents }) => ({
     ...revision.configuration,
     agents: {
@@ -5185,14 +5184,24 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   for (const agents of [
     { entries: null },
     { ownership: "explicit", entries: {} },
+    { ownership: "explicit" },
     { entries: { helper: { workspace: "/home/node/helper" } } },
-    { entries: { main: {}, helper: { default: true, workspace: "/home/node/helper" } } },
-    { entries: { Main: {}, helper: { default: true } } },
     // OpenClaw normalizes `main!` to main and may match it first.
-    { entries: { "main!": { workspace: "/home/node/elsewhere" }, main: {} } },
+    {
+      ownership: "explicit",
+      entries: { "main!": { workspace: "/home/node/elsewhere" }, main: {} },
+    },
     { entries: { " main": {} } },
-    { entries: { main: {}, helper: {} }, defaults: { sessionStore: { agentId: "helper" } } },
-    { entries: { main: {}, helper: {} }, defaults: { systemAgent: { agentId: "helper" } } },
+    {
+      ownership: "explicit",
+      entries: { main: {}, helper: {} },
+      defaults: { sessionStore: { agentId: "helper" } },
+    },
+    {
+      ownership: "explicit",
+      entries: { main: {}, helper: {} },
+      defaults: { systemAgent: { agentId: "helper" } },
+    },
   ]) {
     assert.throws(
       () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withAgents(agents)),
@@ -5221,12 +5230,41 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     errorClass: "ConfigurationHarnessError",
     message: refusal.message,
   });
+  // OpenClaw's config validation rejects retired roster shapes, and its Gateway then exits at
+  // startup (EX_CONFIG 78) instead of serving, so admission refuses them up front.
   for (const agents of [
-    // OpenClaw reads an empty roster as `{ main: {} }`.
+    { entries: { main: { default: true } } },
+    { entries: { main: { default: false } } },
+    { entries: { main: {}, helper: { default: true, workspace: "/home/node/helper" } } },
+    { ownership: "explicit", entries: { main: {}, helper: { default: false } } },
+    { list: [{ id: "main", default: true }] },
+    { list: [], entries: { main: {} } },
+    { list: [], ownership: "explicit", entries: { main: {} } },
+    { entries: { main: {}, helper: {} } },
+    { ownership: "shared", entries: { main: {} } },
+  ]) {
+    assert.throws(
+      () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withAgents(agents)),
+      (error) =>
+        error instanceof ConfigurationHarnessError &&
+        /rejects agents\.list, agents\.entries default markers, an agents\.ownership other than/.test(
+          error.message,
+        ),
+      JSON.stringify(agents),
+    );
+  }
+  for (const agents of [
+    // OpenClaw reads an empty roster as `{ main: {} }` and drops an empty list beside it.
     { entries: {} },
+    { list: [] },
+    { list: [], entries: {} },
     { entries: { main: { workspace: "/home/node/main" } } },
-    { entries: { Main: {}, helper: { workspace: "/home/node/helper" } } },
-    { entries: { main: {}, helper: {} }, defaults: { systemAgent: { agentId: "Main" } } },
+    { ownership: "explicit", entries: { Main: {}, helper: { workspace: "/home/node/helper" } } },
+    {
+      ownership: "explicit",
+      entries: { main: {}, helper: {} },
+      defaults: { systemAgent: { agentId: "Main" } },
+    },
   ]) {
     assert.doesNotThrow(
       () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withAgents(agents)),
