@@ -2186,7 +2186,7 @@ export class ControllerWorker {
         throw new WorkClaimLostError();
       }
       if (result.outcome === "success" && result.agent !== undefined) {
-        const agent = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+        const agent = await this.lockClaimAgent(unit, claim);
         if (agent === undefined || agent.servicePrincipalId !== result.agent.servicePrincipalId) {
           result = { outcome: "permanent", code: "INVALID_AGENT_OWNER" };
         } else if (agent.desiredRuntimeState !== "stopped") {
@@ -3729,7 +3729,7 @@ export class ControllerWorker {
         }
         await this.appendRevisionSuperseded(unit, claim, resolved.supersededBy);
       } else if (resolved.revision !== undefined && resolved.outcome === "success") {
-        const current = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+        const current = await this.lockClaimAgent(unit, claim);
         if (
           current === undefined ||
           current.servicePrincipalId !== resolved.revision.servicePrincipalId ||
@@ -3905,7 +3905,7 @@ export class ControllerWorker {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      const agent = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+      const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
         agent.id !== revision.agentId ||
@@ -4005,7 +4005,7 @@ export class ControllerWorker {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      const agent = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+      const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
         agent.servicePrincipalId !== revision.servicePrincipalId ||
@@ -4069,7 +4069,7 @@ export class ControllerWorker {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      const agent = await unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+      const agent = await this.lockClaimAgent(unit, claim);
       if (agent?.activeRevisionId !== revisionId || agent.desiredRuntimeState !== "running") {
         return;
       }
@@ -4111,6 +4111,18 @@ export class ControllerWorker {
       ...this.deployTimingFields(claim),
     });
     return true;
+  }
+
+  // Lock the claim's Agent in admission order: Namespace, then Agent. These
+  // transactions can later take Namespace locks (a Controller work insert's
+  // foreign key, or the queue's cleanup transfer), so locking the Agent first
+  // deadlocks with a concurrent deployment, stop or delete.
+  private async lockClaimAgent(
+    unit: PlatformUnitOfWork,
+    claim: ClaimedWork,
+  ): Promise<Readonly<Agent> | undefined> {
+    await unit.namespaces.lockNamespace(claim.namespaceId, { includeDeleted: true });
+    return unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
   }
 
   private async enqueueMaintenance(

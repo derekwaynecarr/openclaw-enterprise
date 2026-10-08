@@ -6554,6 +6554,70 @@ test(
 );
 
 revisionTest(
+  "maintenance completion takes the Namespace lock before the Agent, like deployment admission",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("maintenance-lock-order");
+    const workerPool = fixture.createWorkerPool();
+    const backend = await workerPool.query("SELECT pg_backend_pid() AS pid");
+    await fixture.start({ ...fixture.compute, maintenanceIntervalMs: 200 }, { pool: workerPool });
+    await fixture.work(candidate, "succeeded");
+    const succeededMaintenance = async () =>
+      Number(
+        (
+          await fixture.observerPool.query(
+            `SELECT count(*) AS count FROM occ.controller_work
+             WHERE revision_id = $1 AND idempotency_key LIKE '%:maintenance:%'
+               AND state = 'succeeded'`,
+            [candidate.id],
+          )
+        ).rows[0].count,
+      );
+    await waitFor("one completed maintenance pass", async () =>
+      (await succeededMaintenance()) > 0 ? true : undefined,
+    );
+
+    // Deployment admission locks the Namespace, then the Agent. Hold the Namespace
+    // until the worker waits on it; the waiting worker must not hold the Agent, or
+    // admission and maintenance completion deadlock.
+    const admission = await fixture.observerPool.connect();
+    let released = false;
+    try {
+      await admission.query("BEGIN");
+      const admissionBackend = await admission.query("SELECT pg_backend_pid() AS pid");
+      await admission.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
+        fixture.namespace.id,
+      ]);
+      await waitFor("the worker's real wait on the Namespace lock", async () => {
+        const waiting = await fixture.observerPool.query(
+          `SELECT pid FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock'
+           AND $2 = ANY(pg_blocking_pids(pid))`,
+          [backend.rows[0].pid, admissionBackend.rows[0].pid],
+        );
+        return waiting.rowCount === 1 ? true : undefined;
+      });
+      const before = await succeededMaintenance();
+      await assert.doesNotReject(
+        admission.query(
+          "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2 FOR UPDATE NOWAIT",
+          [fixture.namespace.id, owner.id],
+        ),
+        "a worker waiting for the Namespace must not already hold the Agent",
+      );
+      await admission.query("ROLLBACK");
+      released = true;
+      await waitFor("the maintenance chain to continue", async () =>
+        (await succeededMaintenance()) > before ? true : undefined,
+      );
+    } finally {
+      if (!released) {
+        await admission.query("ROLLBACK").catch(() => {});
+      }
+      admission.release();
+    }
+  },
+);
+
+revisionTest(
   "development workers run supplied after-commit activation hooks and retry incomplete finalization",
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("development-after-commit", {
