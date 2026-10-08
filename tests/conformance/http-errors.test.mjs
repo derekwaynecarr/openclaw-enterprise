@@ -192,6 +192,19 @@ const cases = [
     },
   ],
   [
+    "an IAM policy path over the 512-character cap keeps whole leading segments",
+    new IAMPolicyValidationError(
+      `/bindings/${"b".repeat(600)}`,
+      "The subject is not usable in this Namespace.",
+    ),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: "The subject is not usable in this Namespace.",
+      details: [{ path: "/bindings", code: "INVALID_VALUE" }],
+    },
+  ],
+  [
     "a Secret value over the byte limit",
     new SecretValueError("TOO_LONG", "Secret values must be at most 65536 UTF-8 bytes."),
     {
@@ -308,6 +321,19 @@ const cases = [
       code: "CHANNEL_CREDENTIAL_BINDING_REQUIRED",
       message: "Select an environment-backed Secret for this channel credential.",
       details: [{ path: "/channels/slack/appToken", code: "INVALID_VALUE" }],
+    },
+  ],
+  [
+    "a channel credential path under a long account key is capped",
+    new ChannelCredentialError(
+      "binding_required",
+      `/channels/slack/accounts/${"a".repeat(600)}/appToken`,
+    ),
+    {
+      status: 400,
+      code: "CHANNEL_CREDENTIAL_BINDING_REQUIRED",
+      message: "Select an environment-backed Secret for this channel credential.",
+      details: [{ path: "/channels/slack/accounts", code: "INVALID_VALUE" }],
     },
   ],
   [

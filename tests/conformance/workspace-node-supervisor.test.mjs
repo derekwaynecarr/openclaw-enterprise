@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,7 +9,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { AGENT_WITH_NODE_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 
-// Reads a JSON-lines file; a file that does not exist yet has no rows.
+// Reads a JSON-lines file; a file that does not exist yet has no rows. Children append
+// rows while the test polls, and a read can see a large append half-written (a Codex
+// row carries its whole program), so a last line without its newline is not a row yet.
 async function jsonLines(path) {
   const contents = await readFile(path, "utf8").catch((error) => {
     if (error.code === "ENOENT") {
@@ -18,6 +20,7 @@ async function jsonLines(path) {
     throw error;
   });
   return contents
+    .slice(0, contents.lastIndexOf("\n") + 1)
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line));
@@ -123,6 +126,8 @@ test(
   },
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "oce-node-supervisor-"));
+    const existingCa = join(directory, "existing-ca.pem");
+    await writeFile(existingCa, "existing-public-ca");
     const setupEnvelopePath = join(directory, "node-setup.json");
     await writeFile(
       setupEnvelopePath,
@@ -141,6 +146,7 @@ test(
         'args: JSON.parse(args ?? "[]"),',
         "hasSetup: process.env.OPENCLAW_NODE_SETUP_CODE !== undefined ||",
         "  process.env.OPENCLAW_NODE_SETUP_ENVELOPE !== undefined,",
+        "caPath: process.env.NODE_EXTRA_CA_CERTS,",
         "hasModelKey: process.env.OPENAI_API_KEY !== undefined,",
         'autoUpdateDisabled: process.env.OPENCLAW_NO_AUTO_UPDATE === "1",',
         'hasTransportToken: process.env.APP_SERVER_TOKEN !== undefined }) + "\\n");',
@@ -150,6 +156,8 @@ test(
       stubs: pendingIdentityProbe,
       env: {
         OPENCLAW_NODE_SETUP_ENVELOPE: setupEnvelopePath,
+        OPENCLAW_NODE_CA_PEM: "gateway-public-ca",
+        NODE_EXTRA_CA_CERTS: existingCa,
         OPENAI_API_KEY: "synthetic-model-key",
         APP_SERVER_TOKEN: "synthetic-transport-token",
       },
@@ -168,6 +176,9 @@ test(
     assert.equal(codex.hasSetup, false);
     assert.equal(codex.hasModelKey, true);
     assert.equal(codex.hasTransportToken, true);
+    assert.equal((await stat(join(directory, ".oce-native-hooks"))).mode & 0o777, 0o700);
+    assert.equal(await readFile(codex.caPath, "utf8"), "existing-public-ca\ngateway-public-ca");
+    assert.equal(await readFile(node.caPath, "utf8"), "gateway-public-ca");
 
     process.kill(codex.pid, "SIGKILL");
     const afterCodex = await waitFor(

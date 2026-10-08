@@ -2,6 +2,7 @@ import type {
   AuthorizationEvidence,
   AuthorizationRequest,
   ResourceRef,
+  SecretConsumers,
 } from "@openclaw-enterprise/contracts";
 
 export class AuthorizationDeniedError extends Error {
@@ -174,9 +175,11 @@ export class ScopeViolationError extends Error {
 }
 
 /**
- * Admitted Configuration content cannot select a supported Harness runtime. The
- * caller can already see the Configuration, so HTTP reports the static message as
- * an invalid request instead of hiding it as a scope miss.
+ * Admitted Configuration content cannot select a supported Harness runtime, or a
+ * provisioning request names an execution mode the Compute Driver does not provision
+ * (public through the Installation capabilities). The caller can already see what the
+ * message names, so HTTP reports it as an invalid request instead of hiding it as a
+ * scope miss.
  */
 export class ConfigurationHarnessError extends ScopeViolationError {
   constructor(message: string) {
@@ -281,6 +284,129 @@ export class ResourceStateConflictError extends ResourceConflictError {
   constructor(message: string) {
     super(message);
     this.name = "ResourceStateConflictError";
+  }
+}
+
+const SECRET_CONSUMER_LABELS = [
+  ["agents", "Agent", "Agents"],
+  ["configurations", "Configuration", "Configurations"],
+  ["credentialSources", "credential source", "credential sources"],
+  [
+    "provisioningRequests",
+    "pending Agent provisioning request",
+    "pending Agent provisioning requests",
+  ],
+] as const satisfies readonly (readonly [keyof SecretConsumers, string, string])[];
+
+/** The HTTP error contract caps messages at 256 characters. */
+const SECRET_REFERENCED_MESSAGE_LIMIT = 256;
+
+/**
+ * Names each kind of readable reference and as many of its IDs as fit the message cap,
+ * one ID per kind in turn, so many Agents cannot crowd out a Configuration. References the
+ * caller cannot read are only counted. The Secret's `consumers` on GET has the full list.
+ */
+function secretReferencedMessage(consumers: Readonly<SecretConsumers>): string {
+  const kinds = SECRET_CONSUMER_LABELS.filter(([key]) => consumers[key].length > 0);
+  const shown = new Map<string, number>(kinds.map(([key]) => [key, 0]));
+  const suffix =
+    consumers.provisioningRequests.length > 0
+      ? "Remove those references, or let provisioning finish, first."
+      : "Remove those references first.";
+  const render = (): string => {
+    const parts: string[] = kinds.map(([key, singular, plural]) => {
+      const ids = consumers[key];
+      const label = ids.length === 1 ? singular : plural;
+      const count = shown.get(key) ?? 0;
+      if (count === 0) {
+        return `${label} (${ids.length})`;
+      }
+      const more = ids.length - count;
+      return `${label} ${ids.slice(0, count).join(", ")}${more === 0 ? "" : ` and ${more} more`}`;
+    });
+    if (consumers.unreadable > 0) {
+      parts.push(
+        `${consumers.unreadable} ${consumers.unreadable === 1 ? "resource" : "resources"} you cannot read`,
+      );
+    }
+    if (consumers.truncated) {
+      parts.push("and more");
+    }
+    return `The Secret is still referenced by ${parts.join("; ")}. ${suffix}`;
+  };
+  // Counts alone fit today (at most SECRET_CONSUMER_LIMIT references); the fallback below
+  // keeps the HTTP contract if a label or that limit grows.
+  const done = new Set<string>();
+  while (done.size < kinds.length) {
+    for (const [key] of kinds) {
+      if (done.has(key)) {
+        continue;
+      }
+      const count = shown.get(key) ?? 0;
+      shown.set(key, count + 1);
+      if (count + 1 > consumers[key].length || render().length > SECRET_REFERENCED_MESSAGE_LIMIT) {
+        shown.set(key, count);
+        done.add(key);
+      }
+    }
+  }
+  const message = render();
+  return message.length <= SECRET_REFERENCED_MESSAGE_LIMIT
+    ? message
+    : `The Secret is still referenced by other resources. ${suffix}`;
+}
+
+/**
+ * Secret deletion found current references. Raised only after the delete authorization;
+ * the message names the references the caller may read and counts the others.
+ */
+export class SecretReferencedError extends ResourceStateConflictError {
+  readonly consumers: Readonly<SecretConsumers>;
+
+  constructor(consumers: Readonly<SecretConsumers>) {
+    super(secretReferencedMessage(consumers));
+    this.name = "SecretReferencedError";
+    this.consumers = consumers;
+  }
+}
+
+/**
+ * The Compute Driver refuses a gateway setting in the caller's own Configuration that it
+ * cannot provision, such as `gateway.auth.mode` or `gateway.trustedProxies`. Like the
+ * Configuration errors above, the message names the setting and what the Driver accepts,
+ * never a submitted value, so HTTP returns it with the 409 that other plan refusals use,
+ * and provisioning status keeps it. Raised only after the caller was authorized.
+ */
+export class ComputeGatewaySettingError extends ResourceStateConflictError {
+  readonly setting: string;
+
+  constructor(setting: string, requirement: string) {
+    // A submitted key can be part of the setting's path; status stores this message as is.
+    const shown = setting.replace(/[\p{Cc}\p{Cf}]|\p{Cs}/gu, "?");
+    super(
+      configurationFieldMessage(shown, (path) => `Configuration setting ${path} ${requirement}.`),
+    );
+    this.name = "ComputeGatewaySettingError";
+    this.setting = setting;
+  }
+}
+
+const COMPUTE_PROVISIONING_REFUSED =
+  "The Compute Driver cannot provision this execution mode or gateway configuration.";
+
+/**
+ * Any other Compute Driver refusal of a provisioning plan, such as an Installation gateway or
+ * routing setting. Its cause may name Installation configuration, so the caller gets fixed
+ * text; HTTP logs `reason` (bounded) with the request ID for the operator.
+ */
+export class ComputeProvisioningRefusedError extends ResourceStateConflictError {
+  readonly reason: string;
+
+  constructor(cause: unknown) {
+    super(COMPUTE_PROVISIONING_REFUSED);
+    this.name = "ComputeProvisioningRefusedError";
+    const reason = cause instanceof Error ? cause.message : "The Compute Driver refused the plan.";
+    this.reason = Array.from(reason).slice(0, 512).join("");
   }
 }
 

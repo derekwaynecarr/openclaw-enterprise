@@ -92,7 +92,10 @@ then rerender with `repository.enabled: true`.
 Create a JSON file outside the repository or under an ignored local output
 directory. The renderer rejects any field it does not consume: unsupported
 fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
-release-name syntax and be at most 53 characters.
+release-name syntax and be at most 53 characters. Image references in
+`controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
+must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
+casing fails preflight without emitting deployable files.
 
 ```json
 {
@@ -236,7 +239,8 @@ sessions drain.
 
 ## Render files
 
-Run the renderer from the repository root with Node.js 24 or newer:
+Run the renderer from the repository root with Node.js 24 or newer. With native
+admin, run `pnpm install` first: the public suffix check uses the API's list.
 
 ```sh
 node scripts/render-installation-profile.mjs \
