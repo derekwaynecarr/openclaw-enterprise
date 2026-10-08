@@ -547,11 +547,14 @@ function preparationFailureDiagnostic(error: unknown): ComputePrepareRevisionFai
   const failure = preparationFailure(error);
   const cause = privateWriteEvidence(failure.error) ?? failure.error;
   const status = numericErrorStatus(cause);
-  if (cause instanceof ConfigurationFailure) {
+  if (cause instanceof ConfigurationFailure || cause instanceof ConfigurationHarnessError) {
     return {
       code: "KUBERNETES_CONFIGURATION_INVALID",
       stage: failure.stage,
-      errorClass: "ConfigurationFailure",
+      errorClass:
+        cause instanceof ConfigurationHarnessError
+          ? "ConfigurationHarnessError"
+          : "ConfigurationFailure",
       message: cause.message,
     };
   }
@@ -1928,6 +1931,38 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
   };
 }
 
+// OpenClaw's default Agent (the sole entry, one marked `default: true`, or a named session
+// store or system owner) keeps its own workspace, while the Gateway, file transfer and
+// workspace files address main. A refusal, not a rewrite: OCC skips this on status reads.
+function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocument): void {
+  const agents = asRecord(configuration.agents);
+  const defaults = asRecord(agents?.defaults);
+  // OpenClaw matches normalized ids case-insensitively, as the OpenShell workspace pin does.
+  const isMain = (id: unknown) => typeof id === "string" && id.trim().toLowerCase() === "main";
+  const owners = [
+    asRecord(defaults?.sessionStore)?.agentId,
+    asRecord(defaults?.systemAgent)?.agentId,
+  ];
+  const record = asRecord(agents?.entries);
+  const entries = Object.entries(record ?? {});
+  // OpenClaw reads an empty roster as `{ main: {} }` unless ownership is explicit.
+  const implicitMain =
+    record !== undefined && entries.length === 0 && agents?.ownership !== "explicit";
+  if (
+    owners.some((owner) => owner !== undefined && !isMain(owner)) ||
+    (agents?.entries !== undefined &&
+      !implicitMain &&
+      // Other spellings normalize to ids OpenClaw may match first, so keys must be canonical.
+      (entries.some(([id]) => !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id)) ||
+        !entries.some(([id]) => isMain(id)) ||
+        entries.some(([id, entry]) => !isMain(id) && asRecord(entry)?.default === true)))
+  ) {
+    throw new ConfigurationHarnessError(
+      "Dedicated OpenClaw serves the main Agent: agents.entries needs canonical keys including main, and only main may be the default, session store, or system Agent.",
+    );
+  }
+}
+
 function requireNativeWorkerSandbox(
   harness: RevisionHarnessDescriptor,
   sandboxDriver: SandboxDriver | undefined,
@@ -2817,6 +2852,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new ConfigurationFailure(
         `Dedicated OpenClaw required profile ${NATIVE_WORKER_PROFILE} is owned by the selected Compute Driver.`,
       );
+    }
+    if (native) {
+      requireNativeMainAgentDefault(configuration);
     }
     if (
       (!embedded && !codex && !native) ||
