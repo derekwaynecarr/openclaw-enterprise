@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-07
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-08
+last_updated_session: authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6
 ---
 
 # Harness Execution Topology Flow
@@ -154,6 +154,16 @@ device token. Compute pins the enrolled device in a generated `dedicated-native`
 profile with `inference: "worker"`, so a missing or disconnected Harness fails
 the turn rather than using Gateway inference. An exact callback route and
 session-bound worker admission scope the transport to the owning Agent.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:nativeRuntimeConfiguration`
+projects only the admitted native OpenAI model catalog into canonical
+`models.providers.openai`, with an environment SecretRef for the Harness-owned
+credential. `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
+writes that projection into the node's private `openclaw.json` alongside its
+worker capacity and isolation settings. OpenClaw snapshots node-local models
+and credentials, then projects each worker's exact managed workspace from its
+authorized launch descriptor. No separate inference file, workspace-grant
+catalog, or retired `nativeInferenceConfig` node setting is produced.
+
 Embedded OpenClaw uses one combined workload with its exact Agent identity
 and model key. The worker
 has scoped Secret permissions for admitted delivery and node enrollment. Its
@@ -317,6 +327,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 02:28: Project dedicated native models through canonical node configuration in the accompanying change; retain required placement and separate image qualification. (authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6 - 1f97586276fde1dbddec9f14dca3d6d783aade63)
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 

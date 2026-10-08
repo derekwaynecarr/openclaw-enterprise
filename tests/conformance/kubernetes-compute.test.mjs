@@ -5078,27 +5078,26 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   );
   const ownership = { namespaceId: tenant.id, agentId };
   const nativeInference = {
-    models: [
-      {
-        provider: "openai",
-        id: "gpt-5",
-        api: "openai-responses",
-        baseUrl: "https://api.openai.com/v1",
-        contextWindow: 128000,
-        maxTokens: 8192,
-        reasoning: true,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        apiKeyEnv: "OPENAI_API_KEY",
+    models: {
+      providers: {
+        openai: {
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: { source: "env", provider: "model", id: "OPENAI_API_KEY" },
+          models: [
+            {
+              id: "gpt-5",
+              name: "gpt-5",
+              api: "openai-responses",
+              contextWindow: 128000,
+              maxTokens: 8192,
+              reasoning: true,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            },
+          ],
+        },
       },
-    ],
-    workspaces: [
-      {
-        id: "main",
-        path: "/home/node/.openclaw-node/node-host",
-        scope: "subdirectories",
-        models: ["openai/gpt-5"],
-      },
-    ],
+    },
+    secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
   };
   const deviceId = "a".repeat(64);
   const gatewayDeployment = driver.deployment(
