@@ -3431,6 +3431,70 @@ revisionTest(
 );
 
 revisionTest(
+  "a withdrawn Harness source fails a deployment admitted before the withdrawal",
+  async (fixture) => {
+    const { owner, candidate: first } = await fixture.admitInitialRevision(
+      "withdraw-harness-successor",
+      { agent: { auth: "credential_source" } },
+    );
+    const sourceId = owner.harnessAuth.sourceId;
+    const prepared = [];
+    const compute = {
+      ...fixture.compute,
+      async prepareRevision(revision, revisionContext) {
+        if (revision.namespaceId === fixture.namespace.id) {
+          prepared.push(revision.id);
+        }
+        return fixture.compute.prepareRevision(revision, revisionContext);
+      },
+      async withdrawCredentialSource(_revision, source) {
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+
+    const second = await fixture.revision(owner, 2);
+    const request = {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      credentialSourceId: sourceId,
+    };
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
+    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    // The successor never re-attaches the model source, so its deployment cannot succeed.
+    await fixture.work(second, "failed_permanent", 30_000);
+    await waitFor(
+      "both withdrawals to be revoked",
+      async () => {
+        const found = await fixture.state.read((view) =>
+          Promise.all(
+            [first, second].map((revision) =>
+              view.credentialSources.findCredentialWithdrawal(
+                fixture.namespace.id,
+                revision.id,
+                sourceId,
+              ),
+            ),
+          ),
+        );
+        return found.every((withdrawal) => withdrawal?.state === "revoked") ? found : undefined;
+      },
+      30_000,
+    );
+    await fixture.stop();
+
+    assert.equal((await fixture.workResult(second)).rows[0].reason_code, "CREDENTIAL_WITHDRAWN");
+    assert.deepEqual(prepared, [first.id]);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, first.id);
+    const read = await fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
+    assert.equal(read.revisionId, first.id);
+    assert.equal(read.state, "revoked");
+  },
+);
+
+revisionTest(
   "a withdrawal whose requester lost Agent operate fails once with a denial, and another operator's replay completes it",
   async (fixture) => {
     const { owner, candidate: active } = await fixture.admitInitialRevision("withdraw-denied", {
