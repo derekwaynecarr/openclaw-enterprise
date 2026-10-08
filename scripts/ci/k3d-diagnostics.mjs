@@ -170,7 +170,7 @@ function conditions(values = []) {
   }));
 }
 
-export async function captureK3dDiagnostics({ execFile, cluster, lane, statePath }) {
+export async function captureK3dDiagnostics({ execFile, cluster, lane, statePath, failure }) {
   const kubectl = process.env.OCC_KUBECTL_BIN ?? "kubectl";
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
   const scope = ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context];
@@ -283,6 +283,7 @@ export async function captureK3dDiagnostics({ execFile, cluster, lane, statePath
     capturedAt: new Date().toISOString(),
     lane,
     cluster: cluster.name,
+    ...(failure ? { failure } : {}),
     nodeImage: cluster.nodeImage,
     host,
     nodes,
