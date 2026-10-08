@@ -52,6 +52,7 @@ import {
   TransientDependencyError,
   WorkClaimLostError,
   CREDENTIAL_WITHDRAWAL_TARGET,
+  credentialWithdrawalCompanionRevisions,
   isCredentialWithdrawalWork,
   isRepositoryCleanupWork,
   repositoryCleanupRevisionId,
@@ -61,6 +62,7 @@ import {
   type ClaimedWork,
   type NativeWorkerSupport,
   type ProvisioningEffectReceipt,
+  type PlatformReadView,
   type PlatformUnitOfWork,
   type PostgresPool,
   type PostgresQueryClient,
@@ -2605,7 +2607,8 @@ export class ControllerWorker {
 
   /**
    * A model-withdrawn revision must not be prepared again. Maintenance recovers every pending
-   * withdrawal, including tool sources, and stops only after all revocations are confirmed.
+   * withdrawal, including tool sources and those of revisions that may still run with a source
+   * (see pendingCredentialWithdrawals), and stops only after all revocations are confirmed.
    */
   private async completeWithdrawnRevisionMaintenance(
     claim: ClaimedWork,
@@ -2629,30 +2632,14 @@ export class ControllerWorker {
       return;
     }
     await this.state.transactWithQueue(async (unit, queue) => {
+      // Namespace first, as every transaction that may also lock it (the work insert's
+      // foreign key) must.
+      await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      const pending = (
-        await unit.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id)
-      ).filter(({ state }) => state === "pending");
-      if (
-        pending.length > 0 &&
-        !(await unit.operations.hasOutstandingCredentialWithdrawalWork(
-          revision.namespaceId,
-          revision.id,
-        ))
-      ) {
-        // The requester's authority is re-checked by the withdrawal work, as for a replay.
-        await unit.operations.append({
-          kind: "agent_revision",
-          action: "reconcile",
-          target: CREDENTIAL_WITHDRAWAL_TARGET,
-          namespaceId: revision.namespaceId,
-          resourceId: revision.id,
-          actorId: pending[0]!.requestedBy,
-          operationId: randomUUID(),
-        });
-      }
+      const pending = await this.pendingCredentialWithdrawals(unit, revision);
+      await this.requeueCredentialWithdrawals(unit, pending);
       await queue.complete(claim, { code: "CREDENTIAL_WITHDRAWN" });
       if (pending.length > 0 && this.revisionMaintenanceInterval(revision) !== undefined) {
         await this.enqueueMaintenance(queue, claim, revision);
@@ -2720,49 +2707,108 @@ export class ControllerWorker {
 
   /**
    * Withdrawal work retries a bounded number of times. Maintenance of a revision that keeps
-   * running re-queues any pending non-model withdrawal, so a gateway outage cannot leave its
-   * token usable after the gateway recovers. Ordinary maintenance then continues.
+   * running re-queues any pending non-model withdrawal, its own or that of a revision that may
+   * still run with a source, so a gateway outage cannot leave a token usable after the gateway
+   * recovers. Ordinary maintenance then continues.
    */
   private async recoverPendingCredentialWithdrawals(
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
   ): Promise<void> {
     const sourceIds = new Set((revision.credentialSources ?? []).map(({ sourceId }) => sourceId));
-    if (sourceIds.size === 0) {
-      return;
-    }
-    const pending = (
-      await this.state.read((view) =>
-        view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id),
-      )
-    ).filter(
-      ({ state, credentialSourceId }) => state === "pending" && sourceIds.has(credentialSourceId),
+    const pending = await this.state.read((view) =>
+      this.pendingCredentialWithdrawals(view, revision, sourceIds),
     );
     if (pending.length === 0) {
       return;
     }
     await this.state.transactWithQueue(async (unit, queue) => {
+      await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      if (
-        !(await unit.operations.hasOutstandingCredentialWithdrawalWork(
-          revision.namespaceId,
-          revision.id,
-        ))
-      ) {
-        // The withdrawal work reauthorizes each withdrawal's own requester, as for a replay.
-        await unit.operations.append({
-          kind: "agent_revision",
-          action: "reconcile",
-          target: CREDENTIAL_WITHDRAWAL_TARGET,
-          namespaceId: revision.namespaceId,
-          resourceId: revision.id,
-          actorId: pending[0]!.requestedBy,
-          operationId: randomUUID(),
-        });
-      }
+      await this.requeueCredentialWithdrawals(
+        unit,
+        await this.pendingCredentialWithdrawals(unit, revision, sourceIds),
+      );
     }, this.queueOptions);
+  }
+
+  /**
+   * The pending credential withdrawals that maintenance of the active `revision` recovers, one
+   * per revision: its own (only of `sourceIds`, when given), then those of the revisions that
+   * may still run with a withdrawn source (credentialWithdrawalCompanionRevisions). No other
+   * pass would ever queue those: a successor has no maintenance before it activates, and a
+   * predecessor's ends once it is superseded. In practice they are admitted successors: an
+   * active revision gets a maintenance chain only once its deployment activated it, which
+   * retires its predecessors, so an unretired predecessor's withdrawal is retried by a replay.
+   */
+  private async pendingCredentialWithdrawals(
+    view: PlatformReadView,
+    revision: Readonly<AgentRevision>,
+    sourceIds?: ReadonlySet<string>,
+  ): Promise<readonly Readonly<CredentialWithdrawal>[]> {
+    const withdrawals = await view.credentialSources.listCredentialWithdrawals(
+      revision.namespaceId,
+      revision.id,
+    );
+    // A withdrawal records a row on the then-active revision with every other revision's, and
+    // a successor that activates has its own, so without one there is nothing to recover. This
+    // keeps the revision walk off the maintenance passes of Agents that never withdrew a source.
+    if (withdrawals.length === 0) {
+      return [];
+    }
+    const own = withdrawals.find(
+      ({ state, credentialSourceId }) =>
+        state === "pending" && (sourceIds === undefined || sourceIds.has(credentialSourceId)),
+    );
+    const pending = own === undefined ? [] : [own];
+    const companions = await credentialWithdrawalCompanionRevisions(
+      view,
+      await view.revisions.listRevisions(revision.namespaceId, revision.agentId),
+      revision,
+      new Date(),
+    );
+    for (const companion of companions) {
+      // Rows exist only for sources the revision holds, so none needs filtering here.
+      const found = (
+        await view.credentialSources.listCredentialWithdrawals(companion.namespaceId, companion.id)
+      ).find(({ state }) => state === "pending");
+      if (found !== undefined) {
+        pending.push(found);
+      }
+    }
+    return pending;
+  }
+
+  /**
+   * Queues withdrawal work for each revision's pending withdrawal that has no attempt queued
+   * or running, so one outage costs one bounded series of attempts per maintenance pass. The
+   * work re-checks each withdrawal's own requester, as for a replay.
+   */
+  private async requeueCredentialWithdrawals(
+    unit: PlatformUnitOfWork,
+    pending: readonly Readonly<CredentialWithdrawal>[],
+  ): Promise<void> {
+    for (const withdrawal of pending) {
+      if (
+        await unit.operations.hasOutstandingCredentialWithdrawalWork(
+          withdrawal.namespaceId,
+          withdrawal.revisionId,
+        )
+      ) {
+        continue;
+      }
+      await unit.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        target: CREDENTIAL_WITHDRAWAL_TARGET,
+        namespaceId: withdrawal.namespaceId,
+        resourceId: withdrawal.revisionId,
+        actorId: withdrawal.requestedBy,
+        operationId: randomUUID(),
+      });
+    }
   }
 
   private beginDeployPass(claim: ClaimedWork): void {

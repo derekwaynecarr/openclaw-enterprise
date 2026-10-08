@@ -1688,7 +1688,7 @@ Get an exact Installation-owned Namespace
 | [`GET /namespaces/{namespaceId}/agents/{agentId}`](#get-namespacesnamespaceidagentsagentid) | Get an exact Namespace-owned Agent |
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw`](#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw) | Revoke one credential source from an Agent's active revision |
-| [`GET /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdrawal`](#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal) | Get the withdrawal state of a credential source for an Agent's active revision |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdrawal`](#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal) | Get the withdrawal state of a credential source for an Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy`](#post-namespacesnamespaceidagentsagentiddeploy) | Admit an immutable revision from the Agent's saved draft |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations`](#post-namespacesnamespaceidagentsagentiddeviceauthorizations) | Experimental: Start a private device login for Agent configuration |
 | [`DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}`](#delete-namespacesnamespaceidagentsagentiddeviceauthorizationssecretid) | Experimental: Discard a local device login without upstream revocation |
@@ -2746,7 +2746,7 @@ Revoke one credential source from an Agent's active revision
 | `data.reason` | `string` | No | pattern: `^[A-Z0-9_]{1,64}$`; Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while the gateway has not confirmed revocation. |
 | `data.requestedAt` | `string (date-time)` | Yes | — |
 | `data.requestedBy` | `string` | Yes | min length: 1; max length: 256; Principal whose `agent:operate` permission the worker re-checks before revoking. |
-| `data.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it. |
 | `data.state` | `"pending" or "revoked"` | Yes | `revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve. |
 | `data.withdrawalInProgress` | `boolean` | Yes | `true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it. |
 | `meta` | `object` | Yes | — |
@@ -2756,7 +2756,7 @@ Revoke one credential source from an Agent's active revision
 
 <span id="get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal"></span>
 
-Get the withdrawal state of a credential source for an Agent's active revision
+Get the withdrawal state of a credential source for an Agent
 
 **Operation ID:** `getAgentCredentialWithdrawal`
 
@@ -2799,7 +2799,7 @@ Get the withdrawal state of a credential source for an Agent's active revision
 | `data.reason` | `string` | No | pattern: `^[A-Z0-9_]{1,64}$`; Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while the gateway has not confirmed revocation. |
 | `data.requestedAt` | `string (date-time)` | Yes | — |
 | `data.requestedBy` | `string` | Yes | min length: 1; max length: 256; Principal whose `agent:operate` permission the worker re-checks before revoking. |
-| `data.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it. |
 | `data.state` | `"pending" or "revoked"` | Yes | `revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve. |
 | `data.withdrawalInProgress` | `boolean` | Yes | `true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it. |
 | `meta` | `object` | Yes | — |

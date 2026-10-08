@@ -16685,6 +16685,7 @@
                           "type": "string"
                         },
                         "revisionId": {
+                          "description": "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
@@ -16851,6 +16852,7 @@
                           "type": "string"
                         },
                         "revisionId": {
+                          "description": "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
@@ -16934,7 +16936,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Get the withdrawal state of a credential source for an Agent's active revision",
+        "summary": "Get the withdrawal state of a credential source for an Agent",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent", "scope": "requested" }

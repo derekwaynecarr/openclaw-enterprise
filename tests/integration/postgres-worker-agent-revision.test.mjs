@@ -3628,6 +3628,216 @@ revisionTest(
   },
 );
 
+// Admits `number` for `owner` with its deployment held back, as one that has not run yet.
+async function admitHeldRevision(fixture, owner, number) {
+  const revision = await fixture.revision(owner, number);
+  await fixture.observerPool.query(
+    `UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 day'
+     WHERE idempotency_key = $1`,
+    [revision.idempotencyKey],
+  );
+  return revision;
+}
+
+function withdrawalWorkFor(fixture, revision) {
+  return fixture.observerPool
+    .query(
+      `SELECT idempotency_key, state FROM occ.controller_work
+       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'
+       ORDER BY created_at`,
+      [revision.id],
+    )
+    .then(({ rows }) => rows);
+}
+
+test(
+  "the read reports an unretired predecessor's exhausted withdrawal once the active one is revoked, and a replay retries it",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const owner = await fixture.agent("withdraw-predecessor-exhausted", {
+      auth: "credential_source",
+      nonModelSources: 1,
+    });
+    const [tool] = toolSources(owner).map(({ sourceId }) => sourceId);
+    let third;
+    let revoke = false;
+    const compute = {
+      ...fixture.compute,
+      // The published revision has no Sandbox yet. The predecessor's still runs, and the gateway
+      // cannot confirm its withdrawal until the outage ends.
+      async withdrawCredentialSource(revision, source) {
+        return {
+          sourceId: source.id,
+          state: revision.id === third?.id || revoke ? "revoked" : "pending",
+        };
+      },
+    };
+    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+    const first = await fixture.revision(owner, 1);
+    await fixture.start(compute, options);
+    await fixture.work(first, "succeeded");
+    const second = await fixture.revision(owner, 2);
+    await fixture.work(second, "succeeded", 30_000);
+    await fixture.stop();
+
+    // A worker published the third revision as active; its deployment has not activated it or
+    // retired the second (nor will it, if it fails), and no maintenance runs for either.
+    third = await admitHeldRevision(fixture, owner, 3);
+    await fixture.state.transact((unit) =>
+      unit.agents.compareAndSetActiveRevision(fixture.namespace.id, owner.id, second.id, third.id),
+    );
+    const request = {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      credentialSourceId: tool,
+    };
+    const requested = await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      request,
+    );
+    assert.equal(requested.revisionId, third.id);
+    assert.equal(requested.withdrawalInProgress, true);
+    const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
+    await fixture.start(compute, options);
+    const [secondAttempt] = await withdrawalWorkFor(fixture, second);
+    await fixture.work(
+      { id: second.id, idempotencyKey: secondAttempt.idempotency_key },
+      "failed_permanent",
+      30_000,
+    );
+    const [thirdAttempt] = await withdrawalWorkFor(fixture, third);
+    await fixture.work({ id: third.id, idempotencyKey: thirdAttempt.idempotency_key }, "succeeded");
+
+    // The active revision's withdrawal is revoked, but the second revision still runs with the
+    // source and nothing will retry it, so the read says so instead of `revoked`.
+    const exhausted = await read();
+    assert.equal(exhausted.revisionId, second.id);
+    assert.equal(exhausted.state, "pending");
+    assert.equal(exhausted.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
+    assert.equal(exhausted.withdrawalInProgress, false);
+
+    // A replay queues the predecessor's attempt again and reports it in progress.
+    revoke = true;
+    const replayed = await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      request,
+    );
+    assert.equal(replayed.revisionId, second.id);
+    assert.equal(replayed.state, "pending");
+    assert.equal(replayed.withdrawalInProgress, true);
+    assert.equal((await withdrawalWorkFor(fixture, third)).length, 1);
+    const retried = (await withdrawalWorkFor(fixture, second)).at(-1);
+    await fixture.work({ id: second.id, idempotencyKey: retried.idempotency_key }, "succeeded");
+    await fixture.stop();
+    const revoked = await read();
+    assert.equal(revoked.revisionId, third.id);
+    assert.equal(revoked.state, "revoked");
+    assert.equal(revoked.withdrawalInProgress, false);
+  },
+);
+
+for (const harness of [false, true]) {
+  test(
+    `maintenance of the active revision re-queues an admitted successor's exhausted ${harness ? "Harness" : "tool"} source withdrawal`,
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context, { maxAttempts: 2 });
+      const owner = await fixture.agent(`withdraw-successor-maintenance-${harness}`, {
+        auth: "credential_source",
+        nonModelSources: 1,
+      });
+      const sourceId = harness ? owner.harnessAuth.sourceId : toolSources(owner)[0].sourceId;
+      let second;
+      let revoke = false;
+      const compute = {
+        ...fixture.compute,
+        maintenanceIntervalMs: 3_600_000,
+        // The successor's Sandbox runs; the gateway cannot confirm its withdrawal yet.
+        async withdrawCredentialSource(revision, source) {
+          return {
+            sourceId: source.id,
+            state: revision.id !== second?.id || revoke ? "revoked" : "pending",
+          };
+        },
+      };
+      const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+      const first = await fixture.revision(owner, 1);
+      await fixture.start(compute, options);
+      await fixture.work(first, "succeeded");
+      await fixture.stop();
+      second = await admitHeldRevision(fixture, owner, 2);
+      const request = {
+        namespaceId: fixture.namespace.id,
+        agentId: owner.id,
+        credentialSourceId: sourceId,
+      };
+      await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
+      await fixture.start(compute, options);
+      const [attempt] = await withdrawalWorkFor(fixture, second);
+      await fixture.work(
+        { id: second.id, idempotencyKey: attempt.idempotency_key },
+        "failed_permanent",
+        30_000,
+      );
+      await waitFor("the active revision's withdrawal to be revoked", async () => {
+        const [work] = await withdrawalWorkFor(fixture, first);
+        return work?.state === "succeeded" ? work : undefined;
+      });
+      const exhausted = await fixture.controller.readAgentCredentialWithdrawal(
+        fixture.actor.id,
+        request,
+      );
+      assert.equal(exhausted.revisionId, second.id);
+      assert.equal(exhausted.state, "pending");
+      assert.equal(exhausted.withdrawalInProgress, false);
+
+      const runMaintenance = async () => {
+        const due = await fixture.advanceMaintenance(first);
+        assert.equal(due.rowCount, 1, "the active revision's maintenance chain must continue");
+        await fixture.work(
+          { id: first.id, idempotencyKey: due.rows[0].idempotency_key },
+          "succeeded",
+        );
+      };
+      // The next maintenance pass of the active revision queues the successor's attempt again.
+      revoke = true;
+      await runMaintenance();
+      const work = await withdrawalWorkFor(fixture, second);
+      assert.equal(work.length, 2, "maintenance must queue the successor's withdrawal again");
+      assert.equal((await withdrawalWorkFor(fixture, first)).length, 1);
+      await fixture.work({ id: second.id, idempotencyKey: work[1].idempotency_key }, "succeeded");
+      const revoked = await fixture.controller.readAgentCredentialWithdrawal(
+        fixture.actor.id,
+        request,
+      );
+      assert.equal(revoked.revisionId, first.id);
+      assert.equal(revoked.state, "revoked");
+
+      // Revoked everywhere: nothing is queued again. A Harness-withdrawn revision's maintenance
+      // then ends; a tool withdrawal leaves it running.
+      if (!harness) {
+        await runMaintenance();
+      } else {
+        const due = await fixture.advanceMaintenance(first);
+        assert.equal(due.rowCount, 1);
+        await fixture.work(
+          { id: first.id, idempotencyKey: due.rows[0].idempotency_key },
+          "succeeded",
+        );
+        assert.equal(
+          (await fixture.advanceMaintenance(first)).rowCount,
+          0,
+          "maintenance stops once every withdrawal is revoked",
+        );
+      }
+      await fixture.stop();
+      assert.equal((await withdrawalWorkFor(fixture, second)).length, 2);
+      assert.equal((await withdrawalWorkFor(fixture, first)).length, 1);
+    },
+  );
+}
+
 revisionTest(
   "a withdrawn Harness source fails a deployment admitted before the withdrawal",
   async (fixture) => {

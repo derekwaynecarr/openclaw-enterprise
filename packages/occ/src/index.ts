@@ -791,6 +791,49 @@ const SECRET_CONSUMER_FIELDS: Readonly<
   provisioning_request: "provisioningRequests",
 });
 
+/**
+ * Revisions other than `active` that may still run with the sources they were admitted with,
+ * and so need their own withdrawal of a source withdrawn from the Agent: earlier revisions not
+ * yet retired, newest first, then every later admitted revision, which may still deploy. The
+ * worker publishes a revision as active before it retires the earlier ones, and completes the
+ * deployment only after that, so until the active revision's deployment has activated it, its
+ * predecessor keeps serving. The walk stops at the newest revision whose deployment succeeded,
+ * which means it activated: the worker completes that work only after retiring everything
+ * before it. The in-memory store reports all work as queued, so there the walk always reaches
+ * the first revision.
+ */
+export async function credentialWithdrawalCompanionRevisions(
+  state: { readonly operations: Pick<PlatformReadView["operations"], "findWork"> },
+  revisions: readonly Readonly<AgentRevision>[],
+  active: Readonly<AgentRevision>,
+  now: Date,
+): Promise<readonly Readonly<AgentRevision>[]> {
+  const ordered = revisions
+    .filter((candidate) => candidate.revision <= active.revision)
+    .sort((left, right) => right.revision - left.revision);
+  const companions: Readonly<AgentRevision>[] = [];
+  for (const candidate of ordered) {
+    if (candidate.id !== active.id) {
+      companions.push(candidate);
+    }
+    const work = await state.operations.findWork(`agent_revision:${candidate.id}:reconcile`);
+    if (
+      work !== undefined &&
+      work.namespaceId === candidate.namespaceId &&
+      work.revisionId === candidate.id &&
+      controllerWorkDeploymentStatus(work, now) === "succeeded"
+    ) {
+      break;
+    }
+  }
+  companions.push(
+    ...revisions
+      .filter((candidate) => candidate.revision > active.revision)
+      .sort((left, right) => left.revision - right.revision),
+  );
+  return companions;
+}
+
 /** The revision was admitted with the source, as its Harness authentication or in its list. */
 function revisionHoldsCredentialSource(
   revision: Readonly<AgentRevision>,
@@ -6095,8 +6138,9 @@ export class OpenClawController {
    * each predecessor that may still run until the active revision's deployment retires it.
    * A replay of a pending withdrawal queues another attempt only when no earlier attempt is
    * still queued or running, and that attempt runs on the replaying operator's authority; a
-   * revoked withdrawal is returned unchanged. The response describes the active revision's
-   * withdrawal.
+   * revoked withdrawal is left unchanged. The response describes the active revision's
+   * withdrawal, or, once that is revoked, a pending one of another revision that may still run
+   * with the source (see readAgentCredentialWithdrawal).
    */
   async withdrawAgentCredentialSource(
     principalId: string,
@@ -6126,68 +6170,33 @@ export class OpenClawController {
         revision,
         input.credentialSourceId,
       );
-      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
-      // A deployment admitted before this request may activate after it. Its revision was
-      // admitted with the source, and the worker reads withdrawals by each revision's own id.
-      const successors = revisions.filter(
-        (candidate) =>
-          candidate.revision > revision.revision &&
-          revisionHoldsCredentialSource(candidate, input.credentialSourceId),
-      );
-      const others = [
-        ...(await this.unretiredPredecessorRevisions(state, revisions, revision)).filter(
-          (candidate) => revisionHoldsCredentialSource(candidate, input.credentialSourceId),
-        ),
-        ...successors,
-      ];
+      const others = (
+        await credentialWithdrawalCompanionRevisions(
+          state,
+          await state.revisions.listRevisions(agent.namespaceId, agent.id),
+          revision,
+          this.clock(),
+        )
+      ).filter((candidate) => revisionHoldsCredentialSource(candidate, input.credentialSourceId));
+      const pendingOthers: Readonly<CredentialWithdrawal>[] = [];
       for (const other of others) {
-        await this.requestRevisionCredentialWithdrawal(
+        const recorded = await this.requestRevisionCredentialWithdrawal(
           state,
           principalId,
           other,
           input.credentialSourceId,
         );
+        if (recorded.state === "pending") {
+          pendingOthers.push(recorded);
+        }
       }
-      // A pending withdrawal now has an attempt queued or running, either earlier or just now.
-      // Like the read, this reflects the queue at commit: a claim that expired on its last
+      // Every pending withdrawal now has an attempt queued or running, either earlier or just
+      // now. Like the read, this reflects the queue at commit: a claim that expired on its last
       // attempt counts until recoverStale fails it.
-      return Object.freeze({ ...withdrawal, withdrawalInProgress: withdrawal.state === "pending" });
+      const reported =
+        withdrawal.state === "pending" ? withdrawal : (pendingOthers[0] ?? withdrawal);
+      return Object.freeze({ ...reported, withdrawalInProgress: reported.state === "pending" });
     });
-  }
-
-  /**
-   * Earlier revisions whose Sandbox may still run. The worker publishes a revision as active
-   * before it retires the earlier ones, and completes the deployment only after that, so
-   * until the active revision's deployment has activated it, its predecessor keeps serving
-   * with the sources it was admitted with. The walk stops at the newest revision whose
-   * deployment succeeded, which means it activated: the worker completes that work only after
-   * retiring everything before it. The in-memory store reports all work as queued, so there
-   * the walk always reaches the first revision.
-   */
-  private async unretiredPredecessorRevisions(
-    state: PlatformUnitOfWork,
-    revisions: readonly Readonly<AgentRevision>[],
-    active: Readonly<AgentRevision>,
-  ): Promise<readonly Readonly<AgentRevision>[]> {
-    const ordered = revisions
-      .filter((candidate) => candidate.revision <= active.revision)
-      .sort((left, right) => right.revision - left.revision);
-    const predecessors: Readonly<AgentRevision>[] = [];
-    for (const candidate of ordered) {
-      if (candidate.id !== active.id) {
-        predecessors.push(candidate);
-      }
-      const work = await state.operations.findWork(`agent_revision:${candidate.id}:reconcile`);
-      if (
-        work !== undefined &&
-        work.namespaceId === candidate.namespaceId &&
-        work.revisionId === candidate.id &&
-        controllerWorkDeploymentStatus(work, this.clock()) === "succeeded"
-      ) {
-        break;
-      }
-    }
-    return predecessors;
   }
 
   /**
@@ -6252,6 +6261,13 @@ export class OpenClawController {
   /**
    * A `pending` withdrawal whose attempts ran out has no outstanding work, whether the last
    * attempt failed or its claim expired, so `withdrawalInProgress` is read from the queue.
+   *
+   * The source is withdrawn from the Agent only once every revision that may still run with it
+   * confirmed its own withdrawal, so the read reports the active revision's withdrawal unless
+   * one of those revisions' tells more: first a `pending` one with no attempt outstanding, so
+   * `withdrawalInProgress: false` on a `pending` read always means a replay is needed, then any
+   * other `pending` one, so `revoked` means all of them are. `revisionId` names the revision
+   * whose withdrawal is reported.
    */
   async readAgentCredentialWithdrawal(
     principalId: string,
@@ -6278,15 +6294,44 @@ export class OpenClawController {
           "The credential source was not withdrawn from the Agent's active revision.",
         );
       }
-      return Object.freeze({
-        ...withdrawal,
-        withdrawalInProgress:
-          withdrawal.state === "pending" &&
-          (await state.operations.hasOutstandingCredentialWithdrawalWork(
-            withdrawal.namespaceId,
-            withdrawal.revisionId,
-          )),
-      });
+      const withdrawals = [withdrawal];
+      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
+      const active = revisions.find(({ id }) => id === withdrawal.revisionId);
+      const companions =
+        active === undefined
+          ? []
+          : await credentialWithdrawalCompanionRevisions(state, revisions, active, this.clock());
+      for (const companion of companions) {
+        if (!revisionHoldsCredentialSource(companion, input.credentialSourceId)) {
+          continue;
+        }
+        const recorded = await state.credentialSources.findCredentialWithdrawal(
+          companion.namespaceId,
+          companion.id,
+          input.credentialSourceId,
+        );
+        if (recorded !== undefined) {
+          withdrawals.push(recorded);
+        }
+      }
+      let inProgress: Readonly<CredentialWithdrawalStatus> | undefined;
+      for (const candidate of withdrawals) {
+        if (candidate.state !== "pending") {
+          continue;
+        }
+        const status = Object.freeze({
+          ...candidate,
+          withdrawalInProgress: await state.operations.hasOutstandingCredentialWithdrawalWork(
+            candidate.namespaceId,
+            candidate.revisionId,
+          ),
+        });
+        if (!status.withdrawalInProgress) {
+          return status;
+        }
+        inProgress ??= status;
+      }
+      return inProgress ?? Object.freeze({ ...withdrawal, withdrawalInProgress: false });
     });
   }
 
