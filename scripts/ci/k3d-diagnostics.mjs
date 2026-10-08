@@ -403,6 +403,8 @@ export function projectAgentNamespaceActivity(eventsText, podsText) {
 // this directory (tests/helpers/container-log-capture.mjs); `finish` publishes a
 // bounded, redacted projection. Passing tests write nothing.
 export const CONTAINER_LOG_DIRECTORY_VARIABLE = "OPENCLAW_CI_CONTAINER_LOG_DIR";
+// A file keeps its first records (the earliest failure is the likeliest cause);
+// the report keeps the most recent files' records.
 const MAX_CONTAINER_LOG_FILES = 4;
 const MAX_CONTAINER_LOG_RECORDS = 8;
 const MAX_CONTAINER_LOG_INPUT_BYTES = 4 * 1024 * 1024;
@@ -466,7 +468,20 @@ export function projectContainerLog(value, secrets = []) {
       ended: stream.ended === true,
       exitCode: Number.isInteger(stream.exitCode) ? stream.exitCode : undefined,
       // kubectl's own complaint when the follow failed (Pod gone, API error).
-      error: text(stream.error, 2_000),
+      error:
+        typeof stream.error === "string"
+          ? text(
+              stream.error
+                .split("\n")
+                .map((line) =>
+                  CONTAINER_LOG_SECRET_LINE.test(line)
+                    ? "[redacted credential-bearing line]"
+                    : line,
+                )
+                .join("\n"),
+              2_000,
+            )
+          : undefined,
     },
     snapshots: (Array.isArray(value.snapshots) ? value.snapshots : [])
       .filter(record)

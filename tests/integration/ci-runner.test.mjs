@@ -2399,7 +2399,7 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
       'if (args.includes("logs")) {',
       `  process.stdout.write(${JSON.stringify(`${logLines.join("\n")}\n`)});`,
       "  process.stdout.write(`2026-10-08T07:43:53.6Z child value ${process.env.OCC_TEST_CHILD_ONLY}\\n`);",
-      "  process.stderr.write('follow note');",
+      "  process.stderr.write('follow note\\nGET https://api Authorization: Bearer do-not-publish-verbose');",
       "  setTimeout(() => process.stdout.write('2026-10-08T07:44:22.0Z [gateway] exit 0'), 300);",
       '} else if (args.includes("get") && args.includes("pods")) {',
       `  process.stdout.write(JSON.stringify({ items: [${JSON.stringify(pod)}] }));`,
@@ -2499,7 +2499,7 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   // The follow ran to the container's exit, unterminated last line included.
   assert.equal(log.stream.ended, true);
   assert.equal(log.stream.exitCode, 0);
-  assert.equal(log.stream.error, "follow note");
+  assert.equal(log.stream.error, "follow note\n[redacted credential-bearing line]");
   assert.deepEqual(log.lines, [
     logLines[0],
     logLines[1],

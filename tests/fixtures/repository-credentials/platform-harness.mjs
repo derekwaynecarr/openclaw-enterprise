@@ -77,7 +77,8 @@ if (args[0] === "models" && args[1] === "status") {
       }
       draining = true;
       log("signal", { signal, ...state() });
-      server.close(() => log("closed", state()));
+      // Sockets report their own close after this callback; it carries no counts.
+      server.close(() => log("closed"));
       setInterval(() => log("draining", state()), 2_000).unref();
     });
   }
