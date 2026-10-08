@@ -5307,6 +5307,9 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     { entries: { ["a".repeat(65)]: {} } },
     { ownership: "explicit", entries: { main: {}, Main: {} } },
     { ownership: "explicit", entries: { main: {}, helper: {}, HELPER: {} } },
+    // OpenClaw drops trailing dashes from a key that starts with _.
+    { ownership: "explicit", entries: { _x: {}, "_x-": {} } },
+    { ownership: "explicit", entries: { _X: {}, "_x--": {} } },
   ];
   for (const [harness, configure] of topologies) {
     for (const configuration of [
@@ -5318,7 +5321,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
         () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration),
         (error) =>
           error instanceof ConfigurationHarnessError &&
-          /^The OpenClaw Gateway requires agents and agents\.entries to be objects, and each entry to be an object keyed by a unique case-insensitive Agent ID/.test(
+          /^The OpenClaw Gateway requires agents and agents\.entries to be objects, and each entry to be an object keyed by an Agent ID of up to 64 letters, digits, _ or -/.test(
             error.message,
           ),
         `${harness.mode} ${harness.id} ${JSON.stringify(configuration.agents)}`,
@@ -5335,6 +5338,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
       { entries: { "9lives": {} } },
       { entries: { ["a".repeat(64)]: {} } },
       { ownership: "explicit", entries: { Main: {}, helper_2: {}, "re-viewer": {} } },
+      { ownership: "explicit", entries: { x: {}, "x-": {}, _x: {}, "_-x": {} } },
     ]) {
       assert.doesNotThrow(
         () => driver.validateHarnessAuth(harness, apiKeyAuth, configure(agents)),

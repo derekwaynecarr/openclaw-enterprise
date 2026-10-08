@@ -1415,16 +1415,24 @@ test("Kubernetes projects the repository client into native exec paths without c
   assert.deepEqual(f.revision.configuration, original);
 });
 
-test("Kubernetes supplies a native repository exec prefix when no tools configuration exists", async () => {
-  const f = await fixture();
-  const original = structuredClone(f.revision.configuration);
-  deepFreeze(f.revision.configuration);
-  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-  assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
-    ...original,
-    tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
-  });
-  assert.deepEqual(f.revision.configuration, original);
+test("Kubernetes supplies a native repository exec prefix when no tools configuration exists", async (t) => {
+  // OpenClaw drops an empty agents.list beside an implicit empty roster, so it passes through.
+  for (const list of [undefined, []]) {
+    await t.test(list === undefined ? "no list" : "empty list", async () => {
+      const f = await fixture();
+      if (list !== undefined) {
+        f.revision.configuration.agents.list = list;
+      }
+      const original = structuredClone(f.revision.configuration);
+      deepFreeze(f.revision.configuration);
+      await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
+      assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
+        ...original,
+        tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
+      });
+      assert.deepEqual(f.revision.configuration, original);
+    });
+  }
 });
 
 test("Kubernetes preserves native configuration bytes without repository bindings", async (t) => {
