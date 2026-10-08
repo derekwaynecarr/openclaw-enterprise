@@ -239,6 +239,27 @@ function optionalAgentConfiguration(
       >);
 }
 
+/** OpenClaw resolves entry keys case-insensitively, so `Main` also names the main Agent. */
+function pinMainAgentWorkspace(
+  value: OpenClawConfigurationValue,
+  workspace: string,
+): Readonly<Record<string, OpenClawConfigurationValue>> {
+  const entries = optionalAgentConfiguration(value, "OpenShell Agent entries");
+  return Object.fromEntries(
+    Object.entries(entries).map(([id, entry]) =>
+      id.trim().toLowerCase() === "main"
+        ? [
+            id,
+            {
+              ...optionalAgentConfiguration(entry, "OpenShell main Agent entry"),
+              workspace,
+            },
+          ]
+        : [id, entry],
+    ),
+  );
+}
+
 function labels(value: Readonly<Record<string, string>>, description: string): void {
   if (asRecord(value) === undefined || Object.keys(value).length === 0) {
     throw new OpenShellSandboxConfigurationFailure(
@@ -1797,11 +1818,19 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell Agent configuration",
       );
       const defaults = optionalAgentConfiguration(agents.defaults, "OpenShell Agent defaults");
+      const workspace = this.options.kubernetes.sandboxDataMount.mountPath;
+      // Like the Codex sandbox below, the workspace is forced, not refused: this hook also
+      // runs on provisioning status reads, where a refusal would fail stored work. The main
+      // entry is pinned too, because its workspace wins over the default in OpenClaw and in
+      // the Gateway, while file transfer and the Harness use the mount.
       return {
         ...configuration,
         agents: {
           ...agents,
-          defaults: { ...defaults, workspace: this.options.kubernetes.sandboxDataMount.mountPath },
+          defaults: { ...defaults, workspace },
+          ...(agents.entries === undefined
+            ? {}
+            : { entries: pinMainAgentWorkspace(agents.entries, workspace) }),
         },
       };
     }
