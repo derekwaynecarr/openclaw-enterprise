@@ -8747,7 +8747,7 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     namespaceId: tenant.id,
     name: "tool",
     type: "bearer-token",
-    config: { host: "api.example.com", env_var: "TOOL_TOKEN" },
+    config: {},
     secrets: {},
     driverId: "credential-gateway",
     state: "ready",

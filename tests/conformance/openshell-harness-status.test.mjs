@@ -215,22 +215,16 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
         assert.equal(refused.status, 401, String(authorization));
         assert.deepEqual(refused.body, { error: "unauthorized" });
       }
-      // The token is checked first: without it every path and method is the same 401.
-      for (const request of [
-        { url: "/" },
-        { url: "/openclaw/runtime/diagnostics" },
-        { method: "POST" },
-      ]) {
-        const refused = call(handler, request);
-        assert.equal(refused.status, 401, JSON.stringify(request));
-        assert.deepEqual(refused.body, { error: "unauthorized" });
-      }
+      // The token is checked first: without it every other path and method is the same 401.
       for (const request of [
         { url: "/" },
         { url: "/openclaw/runtime/diagnostics" },
         { url: "/openclaw/plugin-runtime/status" },
         { method: "POST" },
       ]) {
+        const refused = call(handler, request);
+        assert.equal(refused.status, 401, JSON.stringify(request));
+        assert.deepEqual(refused.body, { error: "unauthorized" });
         const missing = call(handler, { ...request, authorization: `Bearer ${TOKEN}` });
         assert.equal(missing.status, 404);
         assert.deepEqual(missing.body, { error: "not_found" });
@@ -393,7 +387,7 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
     await client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, signal),
     { status: 200 },
   );
-  // Only an application/json answer is a status document, whatever the body looks like.
+  // A JSON body under another content type is still not a status document.
   answer = (_request, response) => {
     response.writeHead(200, { "content-type": "text/plain" });
     response.end(JSON.stringify({ runtimeFailure: { code: "MODEL_PROBE_FAILED" } }));
@@ -561,6 +555,7 @@ test("the OpenShell client verifies a TLS gateway listener against its root cert
   const port = await listen(gateway);
   t.after(() => close(gateway));
   const signal = AbortSignal.timeout(5_000);
+  // SNI needs a name. The listener is IPv4; Node falls back to it if localhost resolves to ::1.
   const endpoint = `https://localhost:${port}`;
   const client = new GrpcOpenShellGatewayClient({ endpoint, rootCertificatePath: certPath });
 
