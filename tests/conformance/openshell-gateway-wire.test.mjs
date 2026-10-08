@@ -17,7 +17,10 @@ import {
   OpenShellRequestReplayRefusedError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  openShellProviderName,
+  openShellWorkspaceName,
+} from "../../apps/controller/src/backends/openshell.ts";
 import { TransientDependencyError } from "../../packages/occ/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
@@ -978,6 +981,36 @@ test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP 
       },
     );
   }
+  // Clients of one IP endpoint never share a verified connection: a client that does not
+  // trust the gateway's certificate still fails while a trusting client is connected.
+  await t.test("untrusted-beside-trusted", async (t) => {
+    const { keyPath, certPath } = selfSignedCertificate(directory, "shared", "IP:127.0.0.1");
+    const other = selfSignedCertificate(directory, "other", "IP:127.0.0.1");
+    const seen = [];
+    const gateway = await tlsHealthGateway(keyPath, certPath, "127.0.0.1", seen);
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const endpoint = `https://127.0.0.1:${gateway.address().port}`;
+    const client = (rootCertificatePath) => {
+      const created = new GrpcOpenShellGatewayClient({
+        endpoint,
+        rootCertificatePath,
+        requestTimeoutMs: 5_000,
+      });
+      t.after(() => created.close());
+      return created;
+    };
+    await client(certPath).health(AbortSignal.timeout(10_000));
+    await assert.rejects(client(other.certPath).health(AbortSignal.timeout(10_000)), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError, String(error));
+      assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
+      return true;
+    });
+    assert.deepEqual(
+      seen.filter(([kind]) => kind === "request"),
+      [health],
+      "an untrusting client never reaches the gateway over the trusting client's connection",
+    );
+  });
 });
 
 test("OpenShell client cancels an in-flight provider request", async () => {
@@ -1353,6 +1386,8 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
   const sourceId = "cs_recheck";
   const provider = openShellProviderName(sourceId);
+  const namespace = { id: "ns_recheck", name: "tenant-workspace" };
+  const workspace = openShellWorkspaceName(namespace);
   // The provider names each Sandbox lists; a missing entry is a Sandbox that does not exist.
   const sandboxes = new Map([
     ["os-listed", ["operator-static", provider]],
@@ -1365,7 +1400,11 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
   server.addService(OpenShell.service, {
     GetSandbox(call, callback) {
       calls.push(["GetSandbox", call.request.name]);
-      const providers = sandboxes.get(call.request.name);
+      // Sandbox names are scoped to the Namespace's workspace: another workspace has none.
+      const providers =
+        call.request.workspace_scope?.workspace === workspace
+          ? sandboxes.get(call.request.name)
+          : undefined;
       if (providers === undefined) {
         callback(Object.assign(new Error("not found"), { code: grpc.status.NOT_FOUND }));
         return;
@@ -1410,7 +1449,7 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
   );
   const recheck = (resourceName) =>
     gateway.withdraw({
-      namespace: { id: "ns_recheck", name: "tenant-workspace" },
+      namespace,
       revision: { id: "rev_recheck" },
       sandbox: { resourceName },
       sourceId,
