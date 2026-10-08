@@ -151,6 +151,7 @@ import {
   ComputeProvisioningRefusedError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
   NamespaceNotEmptyError,
@@ -159,6 +160,7 @@ import {
   NoActiveAgentRevisionError,
   NotImplementedError,
   PluginPolicyValidationError,
+  ProvisioningSecretDriverError,
   RepositoryOptionsUnavailableError,
   ResourceConflictError,
   ResourceStateConflictError,
@@ -169,7 +171,9 @@ import {
   ScopeViolationError,
   SecretBindingDriverError,
   SecretBindingValidationError,
+  SecretDriverOwnershipError,
   SecretReferencedError,
+  SecretStorageDriverError,
   SecretValueError,
 } from "./errors.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
@@ -270,6 +274,7 @@ export {
   ComputeProvisioningRefusedError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
@@ -281,6 +286,7 @@ export {
   NoActiveAgentRevisionError,
   NotImplementedError,
   PluginPolicyValidationError,
+  ProvisioningSecretDriverError,
   RepositoryOptionsUnavailableError,
   ResourceConflictError,
   ResourceStateConflictError,
@@ -292,6 +298,8 @@ export {
   ScopeViolationError,
   SecretBindingDriverError,
   SecretBindingValidationError,
+  SecretDriverOwnershipError,
+  SecretStorageDriverError,
   SecretValueError,
   TransientDependencyError,
   type ActivationFailedCode,
@@ -2071,7 +2079,12 @@ export class OpenClawController {
         configurationInput.secretBindings,
         harnessAuth,
       );
-      await this.validateChannelCredentials(principalId, input.namespaceId, configurationInput);
+      await this.validateChannelCredentials(
+        principalId,
+        input.namespaceId,
+        configurationInput,
+        () => new ProvisioningSecretDriverError(),
+      );
     }
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, input.namespaceId);
@@ -3731,7 +3744,10 @@ export class OpenClawController {
       if (!secret) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
       }
-      const driver = this.secretDriver(secret.driverId);
+      const driver = this.ownedSecretDriver(
+        secret.driverId,
+        () => new SecretStorageDriverError("update"),
+      );
       // No prior value is read or retained for rollback. Success means stored, not delivered.
       await this.secretOperation(() => driver.update(secret, input.value));
       return this.secretMetadata(secret);
@@ -3763,7 +3779,10 @@ export class OpenClawController {
         throw new SecretReferencedError(consumers);
       }
       const removed = await accessBindingsTargeting(state, namespace.id, "secret", secret.id);
-      const driver = this.secretDriver(secret.driverId);
+      const driver = this.ownedSecretDriver(
+        secret.driverId,
+        () => new SecretStorageDriverError("delete"),
+      );
       await this.secretOperation(() => driver.delete(secret));
       if (!(await state.secrets.deleteSecret(namespace.id, secret.id))) {
         throw new ResourceStateConflictError("The Secret changed during deletion.");
@@ -5609,6 +5628,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     configuration: Pick<Configuration, "values" | "secretBindings">,
+    driverFailure: () => SecretDriverOwnershipError,
   ): Promise<void> {
     const driver = this.selections.get("channel")?.driver as ChannelDriver | undefined;
     if (driver?.validateCredentials === undefined) {
@@ -5636,7 +5656,7 @@ export class OpenClawController {
       if (secret === undefined) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
       }
-      const storage = this.secretDriver(secret.driverId);
+      const storage = this.ownedSecretDriver(secret.driverId, driverFailure);
       if (storage.withValue === undefined) {
         throw new ChannelCredentialError("unavailable", path);
       }
@@ -5694,7 +5714,12 @@ export class OpenClawController {
       await this.driverOperation(() => this.configurationDriver().read(metadata)),
       metadata,
     );
-    return this.validateChannelCredentials(principalId, input.namespaceId, configuration);
+    return this.validateChannelCredentials(
+      principalId,
+      input.namespaceId,
+      configuration,
+      () => new SecretBindingDriverError(),
+    );
   }
 
   async deployAgentWithAuthorization(
@@ -7046,11 +7071,7 @@ export class OpenClawController {
       if (!secret) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
       }
-      try {
-        this.secretDriver(secret.driverId);
-      } catch {
-        throw new SecretBindingDriverError();
-      }
+      this.ownedSecretDriver(secret.driverId, () => new SecretBindingDriverError());
       secrets.set(secret.id, secret);
     }
     return Object.freeze([...secrets.values()]);
@@ -7083,7 +7104,7 @@ export class OpenClawController {
       if (source === undefined) {
         throw new ScopeViolationError("The Harness Secret does not belong to the exact Namespace.");
       }
-      this.secretDriver(source.driverId);
+      this.ownedSecretDriver(source.driverId, () => new HarnessAuthSecretDriverError());
     } else if (binding.method === "credential_source") {
       await this.authorize(principalId, "operate", {
         kind: "credential_source",
@@ -8140,7 +8161,7 @@ export class OpenClawController {
     if (secret === undefined) {
       throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
     }
-    this.secretDriver(secret.driverId);
+    this.ownedSecretDriver(secret.driverId, () => new ProvisioningSecretDriverError());
   }
 
   private async serviceAccountHarnessAuthSnapshot(
@@ -8391,6 +8412,23 @@ export class OpenClawController {
       name: secret.name,
       ref: { kind: "secret", namespaceId: secret.namespaceId, id: secret.id },
     });
+  }
+
+  /**
+   * The selected Secret Driver when it owns a Secret the caller has already been granted and
+   * looked up; otherwise the path's own SecretDriverOwnershipError, whose fixed message names
+   * that path's fix. Call it only after the grant and the lookup, so it is no existence oracle.
+   * No usable selected driver is an outage, not an ownership problem: it keeps the generic 503.
+   */
+  private ownedSecretDriver(
+    driverId: string,
+    failure: () => SecretDriverOwnershipError,
+  ): SecretDriver {
+    const driver = this.secretDriver();
+    if (driver.id !== driverId) {
+      throw failure();
+    }
+    return driver;
   }
 
   private secretDriver(expectedId?: string): SecretDriver {

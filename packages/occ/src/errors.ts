@@ -97,17 +97,70 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
 }
 
 /**
- * A Configuration Secret binding the selected Secret Driver cannot serve, typically a Secret
- * stored through a driver the Installation no longer selects. Raised only after the caller's
- * `operate` grant and the Secret lookup, so it reveals nothing a 403 or 404 hides. Only a
- * Configuration write can replace the binding, so the fixed message says so.
+ * A Secret the selected Secret Driver cannot serve, typically one stored through a driver the
+ * Installation no longer selects. Each subclass is raised only after the caller's grant and the
+ * Secret lookup, so it reveals nothing a 403 or 404 hides, and carries a fixed message naming
+ * the fix for its own path. HTTP returns that message; every other 503 keeps the generic text.
  */
-export class SecretBindingDriverError extends DependencyUnavailableError {
+export abstract class SecretDriverOwnershipError extends DependencyUnavailableError {}
+
+/**
+ * A Configuration Secret binding the selected Secret Driver cannot serve. Only a Configuration
+ * write can replace the binding, so the fixed message says so.
+ */
+export class SecretBindingDriverError extends SecretDriverOwnershipError {
   constructor() {
     super(
-      "The selected Secret Driver is unavailable or does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+      "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
     );
     this.name = "SecretBindingDriverError";
+  }
+}
+
+/**
+ * An Agent's requested or bound Harness authentication Secret the selected Secret Driver cannot
+ * serve. The Agent's `harnessAuth` must name another Secret.
+ */
+export class HarnessAuthSecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own the Harness authentication Secret. Bind a Secret stored through the selected driver: set harnessAuth to another Secret, or create a new Secret with the key and bind that.",
+    );
+    this.name = "HarnessAuthSecretDriverError";
+  }
+}
+
+/**
+ * A Secret an Agent provisioning request or its accepted work uses that the selected Secret
+ * Driver cannot serve. Accepted work keeps its inputs, so only a new request can replace it.
+ */
+export class ProvisioningSecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own a Secret this Agent provisioning uses. Use only Secrets stored through the selected driver: save replacement Secrets and submit a new provisioning request with them.",
+    );
+    this.name = "ProvisioningSecretDriverError";
+  }
+}
+
+const SECRET_STORAGE_DRIVER_MESSAGES = Object.freeze({
+  update:
+    "The selected Secret Driver does not own this Secret, so its value cannot be updated. Create a new Secret with the value through the selected driver and bind it in place of this one.",
+  delete:
+    "The selected Secret Driver does not own this Secret, so its stored value cannot be deleted. Delete it once the Installation again selects the Secret Driver that stored it.",
+});
+
+/**
+ * An exact Secret update or delete the selected Secret Driver cannot perform: OCC never writes or
+ * removes a value through a driver that does not own it.
+ */
+export class SecretStorageDriverError extends SecretDriverOwnershipError {
+  readonly operation: keyof typeof SECRET_STORAGE_DRIVER_MESSAGES;
+
+  constructor(operation: keyof typeof SECRET_STORAGE_DRIVER_MESSAGES) {
+    super(SECRET_STORAGE_DRIVER_MESSAGES[operation]);
+    this.name = "SecretStorageDriverError";
+    this.operation = operation;
   }
 }
 

@@ -23,6 +23,7 @@ import {
   DeletionRetryOwnedError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
+  HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
@@ -35,6 +36,7 @@ import {
   PluginDiscoveryError,
   PluginPolicyValidationError,
   PostgresCommitOutcomeUnknownError,
+  ProvisioningSecretDriverError,
   ResourceConflictError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -42,6 +44,7 @@ import {
   ScopeViolationError,
   SecretBindingDriverError,
   SecretBindingValidationError,
+  SecretStorageDriverError,
   SecretValueError,
 } from "../../packages/occ/src/index.ts";
 
@@ -704,7 +707,47 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "The selected Secret Driver is unavailable or does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+        "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+    },
+  ],
+  [
+    "a Harness authentication Secret the selected Secret Driver cannot serve names the fix",
+    new HarnessAuthSecretDriverError(),
+    {
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "The selected Secret Driver does not own the Harness authentication Secret. Bind a Secret stored through the selected driver: set harnessAuth to another Secret, or create a new Secret with the key and bind that.",
+    },
+  ],
+  [
+    "an Agent provisioning Secret the selected Secret Driver cannot serve names the fix",
+    new ProvisioningSecretDriverError(),
+    {
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "The selected Secret Driver does not own a Secret this Agent provisioning uses. Use only Secrets stored through the selected driver: save replacement Secrets and submit a new provisioning request with them.",
+    },
+  ],
+  [
+    "a Secret update the selected Secret Driver cannot perform names the fix",
+    new SecretStorageDriverError("update"),
+    {
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "The selected Secret Driver does not own this Secret, so its value cannot be updated. Create a new Secret with the value through the selected driver and bind it in place of this one.",
+    },
+  ],
+  [
+    "a Secret delete the selected Secret Driver cannot perform names the fix",
+    new SecretStorageDriverError("delete"),
+    {
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "The selected Secret Driver does not own this Secret, so its stored value cannot be deleted. Delete it once the Installation again selects the Secret Driver that stored it.",
     },
   ],
   [
