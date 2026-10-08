@@ -4,6 +4,9 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { createSecureServer } from "node:http2";
 import test from "node:test";
 import {
   GrpcOpenShellGatewayClient,
@@ -741,6 +744,127 @@ test("OpenShell client retries setup after a failed first connection", async (t)
     });
   } finally {
     client.close();
+  }
+});
+
+function selfSignedCertificate(directory, name, subjectAltName) {
+  const keyPath = join(directory, `${name}.key`);
+  const certPath = join(directory, `${name}.crt`);
+  const generated = spawnSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-days",
+      "1",
+      "-keyout",
+      keyPath,
+      "-out",
+      certPath,
+      "-subj",
+      "/CN=openshell-gateway",
+      "-addext",
+      `subjectAltName=${subjectAltName}`,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
+  return { keyPath, certPath };
+}
+
+// A TLS gRPC listener that answers Health and records the SNI of every connection
+// and the path of every request it receives.
+async function tlsHealthGateway(keyPath, certPath, bind, seen) {
+  const gateway = createSecureServer({
+    key: readFileSync(keyPath),
+    cert: readFileSync(certPath),
+  });
+  gateway.on("secureConnection", (socket) => seen.push(["sni", socket.servername]));
+  gateway.on("stream", (stream, headers) => {
+    seen.push(["request", headers[":path"]]);
+    stream.respond(
+      { ":status": 200, "content-type": "application/grpc" },
+      { waitForTrailers: true },
+    );
+    stream.on("wantTrailers", () => stream.sendTrailers({ "grpc-status": "0" }));
+    // HealthResponse { status: SERVICE_STATUS_HEALTHY } in one uncompressed gRPC frame.
+    stream.end(Buffer.from([0, 0, 0, 0, 2, 0x08, 0x01]));
+  });
+  await new Promise((resolve, reject) => {
+    gateway.once("error", reject);
+    gateway.listen(0, bind, resolve);
+  });
+  return gateway;
+}
+
+test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP and sends no SNI", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openshell-grpc-tls-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // IPv6 loopback is optional on CI hosts; without it the IPv6 cases are skipped.
+  // The probe only binds, so it needs no certificate.
+  const probe = createSecureServer();
+  const ipv6 = await new Promise((resolve) => {
+    probe.once("error", () => resolve(false));
+    probe.listen(0, "::1", () => probe.close(() => resolve(true)));
+  });
+  const health = ["request", "/openshell.v1.OpenShell/Health"];
+  const cases = [
+    // A DNS endpoint is sent as SNI and verified by name, as before.
+    { name: "dns", san: "DNS:localhost", bind: "localhost", host: "localhost", sni: "localhost" },
+    // TLS forbids an IP in SNI: the certificate must carry the endpoint IP itself.
+    { name: "ipv4", san: "IP:127.0.0.1", bind: "127.0.0.1", host: "127.0.0.1", sni: false },
+    { name: "ipv6", san: "IP:::1", bind: "::1", host: "[::1]", sni: false, needsIpv6: true },
+    // A hex IPv6 literal (IPv4-mapped, so it reaches the IPv4 loopback listener).
+    {
+      name: "ipv6-hex",
+      san: "IP:::ffff:7f00:1",
+      bind: "127.0.0.1",
+      host: "[::ffff:7f00:1]",
+      sni: false,
+      needsIpv6: true,
+    },
+    { name: "wrong-ip", san: "IP:127.0.0.2", bind: "127.0.0.1", host: "127.0.0.1" },
+    // A name certificate does not vouch for an IP endpoint, even one that resolves there.
+    { name: "name-for-ip", san: "DNS:localhost", bind: "127.0.0.1", host: "127.0.0.1" },
+  ];
+  for (const { name, san, bind, host, sni, needsIpv6 } of cases) {
+    await t.test(
+      name,
+      { skip: needsIpv6 && !ipv6 && "IPv6 loopback ::1 is unavailable" },
+      async (t) => {
+        const { keyPath, certPath } = selfSignedCertificate(directory, name, san);
+        const seen = [];
+        const gateway = await tlsHealthGateway(keyPath, certPath, bind, seen);
+        t.after(() => new Promise((resolve) => gateway.close(resolve)));
+        const client = new GrpcOpenShellGatewayClient({
+          endpoint: `https://${host}:${gateway.address().port}`,
+          rootCertificatePath: certPath,
+          requestTimeoutMs: 5_000,
+        });
+        t.after(() => client.close());
+        const signal = AbortSignal.timeout(10_000);
+        if (sni !== undefined) {
+          await client.health(signal);
+          assert.deepEqual(seen, [["sni", sni], health]);
+          return;
+        }
+        await assert.rejects(client.health(signal), (error) => {
+          assert.ok(error instanceof DependencyUnavailableError, String(error));
+          assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
+          return true;
+        });
+        assert.deepEqual(
+          seen.filter(([kind]) => kind === "request"),
+          [],
+          "an unverified listener never receives a request",
+        );
+      },
+    );
   }
 });
 

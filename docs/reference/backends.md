@@ -147,7 +147,9 @@ Its closed `configuration` accepts:
   an absolute path.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
   limits how late a timed-out credential registration can land.
-- `rootCertificatePath`: an absolute path to the gateway CA.
+- `rootCertificatePath`: an absolute path to the gateway CA. An `https`
+  `endpoint` at an IP address sends no TLS server name, so the gateway
+  certificate must carry that IP address.
 - `insecureTransport: network-policy`: required when the connection lacks TLS or
   bearer-token authentication, and rejected otherwise. It declares that
   NetworkPolicy restricts the gateway to the OCE API, worker, and OpenShell

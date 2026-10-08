@@ -15,14 +15,22 @@ import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
+import { checkServerIdentity, connect as tlsConnect, createSecureContext } from "node:tls";
 import { fileURLToPath } from "node:url";
 import {
   getServiceDocument,
   serviceWebSocketHandshake,
   type OpenShellServiceDocument,
 } from "./openshell-service-transport.ts";
-import type { Client, ClientUnaryCall, Metadata, ServiceClientConstructor } from "@grpc/grpc-js";
+import type {
+  ChannelCredentials,
+  Client,
+  ClientUnaryCall,
+  Metadata,
+  ServiceClientConstructor,
+} from "@grpc/grpc-js";
 import type { PackageDefinition } from "@grpc/proto-loader";
 
 export {
@@ -708,6 +716,61 @@ function metadataValue(token: string): string {
     throw new OpenShellGatewayFailure("OpenShell bearer token file is empty or invalid.");
   }
   return `Bearer ${value}`;
+}
+
+// TLS forbids an IP address in SNI, and Node 25 and later reject one (DEP0123), but
+// grpc-js always sends the target host as the servername. An IP endpoint therefore
+// connects through this connector: no SNI, and the certificate must carry the
+// endpoint IP, verified the same way the service transport does (`tlsIdentity`).
+// A DNS endpoint uses createSsl. grpc-js's GRPC_SSL_CIPHER_SUITES and
+// GRPC_DEFAULT_SSL_ROOTS_FILE_PATH overrides do not apply to this path.
+function ipEndpointCredentials(
+  grpc: typeof import("@grpc/grpc-js"),
+  address: string,
+  rootCertificate: Buffer | undefined,
+): ChannelCredentials {
+  const secureContext = createSecureContext(
+    rootCertificate === undefined ? {} : { ca: rootCertificate },
+  );
+  class IpEndpointCredentials extends grpc.ChannelCredentials {
+    _isSecure(): boolean {
+      return true;
+    }
+    _equals(other: ChannelCredentials): boolean {
+      return other === this;
+    }
+    // Typed through Parameters: grpc-js does not export the GrpcUri target type.
+    _createSecureConnector(
+      ...[, , callCredentials]: Parameters<ChannelCredentials["_createSecureConnector"]>
+    ): ReturnType<ChannelCredentials["_createSecureConnector"]> {
+      return {
+        connect: (socket) =>
+          new Promise((resolve, reject) => {
+            const tlsSocket = tlsConnect(
+              {
+                socket,
+                secureContext,
+                ALPNProtocols: ["h2"],
+                checkServerIdentity: (_name, certificate) =>
+                  checkServerIdentity(address, certificate),
+              },
+              () => {
+                if (!tlsSocket.authorized) {
+                  reject(tlsSocket.authorizationError);
+                  return;
+                }
+                resolve({ socket: tlsSocket, secure: true });
+              },
+            );
+            tlsSocket.on("error", reject);
+          }),
+        waitForReady: () => Promise.resolve(),
+        getCallCredentials: () => callCredentials ?? grpc.CallCredentials.createEmpty(),
+        destroy: () => {},
+      };
+    }
+  }
+  return new IpEndpointCredentials();
 }
 
 async function metadata(
@@ -1524,13 +1587,18 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       throw new OpenShellGatewayFailure("OpenShell gRPC service was not found in the proto.");
     }
     const endpoint = normalizeEndpoint(this.options.endpoint);
-    const credentials = endpoint.secure
-      ? grpc.credentials.createSsl(
-          this.options.rootCertificatePath === undefined
-            ? undefined
-            : readFileSync(this.options.rootCertificatePath),
-        )
-      : grpc.credentials.createInsecure();
+    let credentials: ChannelCredentials = grpc.credentials.createInsecure();
+    if (endpoint.secure) {
+      const rootCertificate =
+        this.options.rootCertificatePath === undefined
+          ? undefined
+          : readFileSync(this.options.rootCertificatePath);
+      const address = new URL(`https://${endpoint.target}`).hostname.replace(/^\[(.*)\]$/, "$1");
+      credentials =
+        isIP(address) === 0
+          ? grpc.credentials.createSsl(rootCertificate)
+          : ipEndpointCredentials(grpc, address, rootCertificate);
+    }
     return {
       grpc,
       client: new OpenShell(endpoint.target, credentials) as unknown as OpenShellGrpcClient,
