@@ -90,7 +90,11 @@ Inactive historical revisions and permanently failed deployments do not block
 deletion unless the account is still referenced by other live state.
 Backend-managed deletion removes
 the exact upstream credential, the account-owned Secret, and the upstream
-account before deleting OCC account state. Native deletion removes OCC account
+account before deleting OCC account state. If the account holds an issued
+access token and the Installation no longer has a ChatGPT Backend, deletion
+fails with `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`, after the `delete`
+grant and the account lookup, and keeps the account: configure the same
+ChatGPT Backend again (same `backendId`), then retry. Native deletion removes OCC account
 state; the operator owns the referenced source Secret.
 
 ## Revision snapshots and credential delivery
@@ -157,8 +161,8 @@ provider, not IAM, Compute, OCC, or the Harness.
   referenced-account deletion, missing credential, or unsupported Harness or
   OAuth deployment, or mismatched managed Backend binding.
 - `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`: The Installation has no ChatGPT
-  Backend, so issuance, and deploying an Agent bound to an account without an
-  access token, cannot succeed. Configure the
+  Backend, so issuance, deploying an Agent bound to an account without an
+  access token, and deleting an account that holds one cannot succeed. Configure the
   [ChatGPT Backend](../guides/integrations/chatgpt.md).
 - Provider denial or Kubernetes failure: Creation fails closed; compensation deletes
   only the newly created exact provider account, provider credential, or

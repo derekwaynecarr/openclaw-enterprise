@@ -284,7 +284,10 @@ explicitly, and test bridges do not establish turnkey production support. See it
 ### Native worker support
 
 The pinned OpenClaw [runtime image](../../deploy/runtime/README.md) supports required
-worker placement (`cloudWorkers.requiredProfile`), but still lacks native worker inference.
+worker placement (`cloudWorkers.requiredProfile`), but is not yet qualified for
+the complete native worker flow. Native worker models and environment SecretRefs
+are rendered in the node’s canonical `models.providers` configuration; there is
+no separate node inference-config setting.
 Deploy and provisioning therefore refuse dedicated native OpenClaw with
 `400 INVALID_REQUEST`, and the console withholds that choice. Provisioning
 status reads do not recheck this support, so work accepted before it was

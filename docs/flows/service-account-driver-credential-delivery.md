@@ -97,6 +97,9 @@ provisioning plans through `serviceAccounts.hasReferences`. A conflict returns
 before any Driver call can revoke the credential or remove its Secret. Namespace locking serializes this
 check with draft changes and deployment admission; the PostgreSQL reference
 query observes active pointers and pending work together during worker cutover.
+With no ServiceAccount Driver selected (no ChatGPT Backend), an account holding
+an issued access token answers `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`
+naming the fix and stays, since nothing can revoke its token.
 
 ### 3. Issue the credential and create one account Secret
 
@@ -200,6 +203,7 @@ Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Changelog
 
+- 2026-10-08 17:45: Deleting an account that holds an issued access token, with no ChatGPT Backend, answers `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix instead of a generic `503`. (fix-816-819)
 - 2026-10-08 13:00: Issuance, and deploying an account without an access token, on an Installation with no ChatGPT Backend answer `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix instead of a generic `503` or `409`. (fix-780-781/d540)
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)

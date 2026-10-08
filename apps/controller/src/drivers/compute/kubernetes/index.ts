@@ -984,8 +984,6 @@ function settledSchedulingConflict(
 const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
 const WORKLOAD_TERMINATION_POLL_MS = 100;
 const AGENT_TRANSPORT_PORT = 18_790;
-const NATIVE_WORKER_INFERENCE_CONFIG_PATH = "/tmp/openclaw-native-inference.json";
-const NATIVE_WORKER_WORKSPACE_ROOT = "/home/node/.openclaw-node/node-host";
 const NATIVE_WORKER_PROFILE = "dedicated-native";
 const DEFAULT_NATIVE_OPENCLAW_SESSION_CAPACITY = 8;
 const NATIVE_WORKER_COMPILE_CACHE = "/home/node/.openclaw-node/.cache/node-compile";
@@ -1780,8 +1778,6 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
 
 function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument): object {
   const models = harnessModels(configuration);
-  const configuredAgentIds = Object.keys(asRecord(asRecord(configuration.agents)?.entries) ?? {});
-  const agentIds = configuredAgentIds.length === 0 ? ["main"] : configuredAgentIds;
   const providers = asRecord(asRecord(configuration.models)?.providers);
   const openai = asRecord(providers?.openai);
   if (openai === undefined || !Array.isArray(openai.models)) {
@@ -1886,11 +1882,9 @@ function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument
       );
     }
     return {
-      provider,
       id,
       api,
-      baseUrl,
-      ...(isNonEmptyString(entry.name) ? { name: entry.name } : {}),
+      name: isNonEmptyString(entry.name) ? entry.name : id,
       contextWindow,
       maxTokens,
       ...(entry.reasoning === undefined ? {} : { reasoning: entry.reasoning }),
@@ -1902,17 +1896,19 @@ function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument
         cacheWrite: cost.cacheWrite,
       },
       ...(input === undefined ? {} : { input }),
-      apiKeyEnv: MODEL_API_KEY,
     };
   });
   return {
-    models: runtimeModels,
-    workspaces: agentIds.map((id) => ({
-      id,
-      path: NATIVE_WORKER_WORKSPACE_ROOT,
-      scope: "subdirectories",
-      models,
-    })),
+    models: {
+      providers: {
+        openai: {
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: { source: "env", provider: "model", id: MODEL_API_KEY },
+          models: runtimeModels,
+        },
+      },
+    },
+    secrets: { providers: { model: { source: "env", allowlist: [MODEL_API_KEY] } } },
   };
 }
 
@@ -12562,13 +12558,10 @@ require("node:fs").rmSync("/harness-workspace-state/codex-home", { recursive: tr
             { name: "CODEX_HOME", value: "/home/node/.codex" },
           );
         } else {
-          variables.push(
-            { name: "OPENCLAW_NATIVE_INFERENCE_CONFIG", value: nativeRuntime.configuration },
-            {
-              name: "OPENCLAW_NATIVE_INFERENCE_CONFIG_PATH",
-              value: NATIVE_WORKER_INFERENCE_CONFIG_PATH,
-            },
-          );
+          variables.push({
+            name: "OPENCLAW_NATIVE_INFERENCE_CONFIG",
+            value: nativeRuntime.configuration,
+          });
         }
       }
     }
