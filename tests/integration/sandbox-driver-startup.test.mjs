@@ -4,6 +4,7 @@ import test from "node:test";
 import pg from "pg";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
@@ -20,6 +21,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -493,6 +495,67 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
         mode: "embedded",
       }),
     /supports only dedicated Harness revisions/,
+  );
+});
+
+test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount", () => {
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(workspaceGatewayClient()),
+  });
+  const harness = { id: "openclaw", version: "1.0.0", mode: "dedicated" };
+  const configuration = {
+    agents: {
+      defaults: { model: "openai/gpt-5", workspace: "/home/node/.openclaw/workspace" },
+      entries: {
+        main: { model: "openai/gpt-5", workspace: "/home/node/elsewhere" },
+        helper: { workspace: "/sandbox/enterprise/helper" },
+      },
+    },
+  };
+  const configured = driver.configureAgent(configuration, harness);
+  assert.deepEqual(configured.agents, {
+    defaults: { model: "openai/gpt-5", workspace: "/sandbox/enterprise" },
+    entries: {
+      main: { model: "openai/gpt-5", workspace: "/sandbox/enterprise" },
+      helper: { workspace: "/sandbox/enterprise/helper" },
+    },
+  });
+  assert.equal(configuration.agents.entries.main.workspace, "/home/node/elsewhere");
+  // Status reads rerun the hook on stored work, so pinning must be idempotent.
+  assert.deepEqual(driver.configureAgent(configured, harness), configured);
+  // OpenClaw resolves entry keys case-insensitively, and an entry without a path is pinned too.
+  assert.deepEqual(
+    driver.configureAgent({ agents: { entries: { Main: {} } } }, harness).agents.entries,
+    { Main: { workspace: "/sandbox/enterprise" } },
+  );
+  assert.throws(
+    () => driver.configureAgent({ agents: { entries: { main: "/home/node/elsewhere" } } }, harness),
+    /OpenShell main Agent entry/,
+  );
+
+  // The admitted revision's Gateway workspace is the mount the Harness and file transfer use.
+  const compute = createKubernetesComputeDriver(
+    conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
+  );
+  assert.equal(
+    compute.gatewayConfiguration({
+      id: "rev_00000000-0000-4000-8000-000000000001",
+      namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+      agentId: "agt_00000000-0000-4000-8000-000000000001",
+      revision: 1,
+      configurationId: "cfg_main_workspace",
+      configurationKind: "agent",
+      configurationGeneration: 1,
+      configuration: {
+        ...configured,
+        logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
+        diagnostics: { otel: { logs: false } },
+      },
+      harness,
+    }).workspace,
+    "/sandbox/enterprise",
   );
 });
 
