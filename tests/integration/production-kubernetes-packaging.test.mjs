@@ -3661,5 +3661,65 @@ test("Helm rejects Kubernetes quantities the API cannot parse", tooling, async (
     );
     assert.match(bounded.stdout, /memory: 1e9223372036854775807/);
     assert.match(bounded.stdout, /memory: "1e-9223372036854775808"/);
+
+    // Digitless exponents below nano take ParseQuantity's decimal path. .e-9 stays on the fast path.
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": ".e-10" } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render(collector, {
+        ...options,
+        strings: { "logging.collector.resources.requests.memory": ".e-10" },
+      }),
+      /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render(collector, {
+        ...options,
+        strings: { "logging.collector.state.sizeLimit": ".e-10" },
+      }),
+      /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
+    );
+    const nanoZero = await render(
+      {},
+      { ...options, strings: { "resources.requests.memory": ".e-9" } },
+    );
+    assert.match(nanoZero.stdout, /memory: ["']?\.e-9["']?/);
+    // A digit keeps the decimal path. Int32 truncation of a huge digitless exponent can stay on the fast path.
+    const decimalDigit = await render(
+      {},
+      { ...options, strings: { "resources.requests.memory": ".0e-10" } },
+    );
+    assert.match(decimalDigit.stdout, /memory: ["']?\.0e-10["']?/);
+    const wrappedZero = await render(
+      {},
+      { ...options, strings: { "resources.limits.memory": ".e-9223372036854775808" } },
+    );
+    assert.match(wrappedZero.stdout, /memory: ["']?\.e-9223372036854775808["']?/);
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": ".e2147483648" } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+
+    // resources: null clears defaults. Indexing that absent map used to abort the render.
+    const cleared = await render(
+      {
+        ...collector,
+        resources: "null",
+        "logging.collector.resources": "null",
+      },
+      options,
+    );
+    assert.match(cleared.stdout, /sizeLimit: "128Mi"/);
+    assert.doesNotMatch(cleared.stdout, /cpu: 100m/);
+    assert.doesNotMatch(cleared.stdout, /memory: 128Mi/);
+    await assert.rejects(
+      render(
+        { ...collector, resources: "null" },
+        { ...options, strings: { "logging.collector.resources.requests.memory": ".e-10" } },
+      ),
+      /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
+    );
   }
 });
