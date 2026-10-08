@@ -3547,7 +3547,8 @@ function withdrawalRequest(fixture, owner, credentialSourceId) {
   return { namespaceId: fixture.namespace.id, agentId: owner.id, credentialSourceId };
 }
 
-// The revision's withdrawal attempts, oldest first, each ready for fixture.work.
+// The revision's withdrawal work rows, oldest first, each ready for fixture.work. Each row is
+// one queued withdrawal; the worker may run it up to maxAttempts times (its attempt_count).
 async function withdrawalAttempts(fixture, revision) {
   const { rows } = await fixture.observerPool.query(
     `SELECT idempotency_key, actor_id, state FROM occ.controller_work
@@ -3578,6 +3579,7 @@ function findWithdrawals(fixture, revisions, credentialSourceId) {
   );
 }
 
+// The revision's withdrawal of the source, or undefined.
 async function findWithdrawal(fixture, revision, credentialSourceId) {
   const [withdrawal] = await findWithdrawals(fixture, [revision], credentialSourceId);
   return withdrawal;
@@ -4014,6 +4016,7 @@ revisionTest(
     const requester = `withdraw-requester-${randomUUID()}`;
     await fixture.copyActorGrants(requester);
     const request = withdrawalRequest(fixture, owner, owner.harnessAuth.sourceId);
+    const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
     await fixture.controller.withdrawAgentCredentialSource(requester, request);
     // While that attempt is outstanding, a replay neither queues another nor takes it over.
     const pendingReplay = await fixture.controller.withdrawAgentCredentialSource(
@@ -4031,10 +4034,7 @@ revisionTest(
     // A denial is final on the first attempt and never reaches the gateway.
     assert.equal(failed.attempt_count, 1);
     assert.deepEqual(withdrawn, []);
-    const recorded = await fixture.controller.readAgentCredentialWithdrawal(
-      fixture.actor.id,
-      request,
-    );
+    const recorded = await read();
     assert.equal(recorded.state, "pending");
     assert.equal(recorded.requestedBy, requester);
     assert.equal(recorded.lastReason, "AUTHORIZATION_DENIED");
@@ -4073,10 +4073,7 @@ revisionTest(
     await startWorker();
     await fixture.work(retry[0], "succeeded");
     assert.deepEqual(withdrawn, [[active.id, owner.harnessAuth.sourceId]]);
-    const revoked = await fixture.controller.readAgentCredentialWithdrawal(
-      fixture.actor.id,
-      request,
-    );
+    const revoked = await read();
     assert.equal(revoked.state, "revoked");
     assert.equal(revoked.requestedBy, fixture.actor.id);
     const revocations = await fixture.observerPool.query(
@@ -4331,11 +4328,10 @@ revisionTest(
     // exhausted every attempt leaves it.
     await recordPendingWithdrawal(fixture, owner, active, toolSourceId);
     const runMaintenance = () => runMaintenancePass(fixture, active);
-    const withdrawalWork = () => withdrawalAttempts(fixture, active);
 
     // Maintenance queues a withdrawal attempt and still repairs the revision, without the tool.
     await runMaintenance();
-    const [queued] = await withdrawalWork();
+    const [queued] = await withdrawalAttempts(fixture, active);
     assert.ok(queued, "maintenance must queue the pending withdrawal again");
     assert.deepEqual(dispatched.at(-1), [remainingToolSourceId]);
 
@@ -4345,7 +4341,11 @@ revisionTest(
     const recorded = await findWithdrawal(fixture, active, toolSourceId);
     assert.equal(recorded.state, "revoked");
     await runMaintenance();
-    assert.equal((await withdrawalWork()).length, 1, "a revoked withdrawal is not queued again");
+    assert.equal(
+      (await withdrawalAttempts(fixture, active)).length,
+      1,
+      "a revoked withdrawal is not queued again",
+    );
 
     // A revoked model source must stop preparation, but an exhausted tool withdrawal still
     // needs maintenance to recover after a gateway outage.
@@ -4381,9 +4381,9 @@ revisionTest(
       { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
     );
     await runMaintenance();
-    const recovered = (await withdrawalWork()).at(-1);
+    const recovered = (await withdrawalAttempts(fixture, active)).at(-1);
     assert.equal(
-      (await withdrawalWork()).length,
+      (await withdrawalAttempts(fixture, active)).length,
       3,
       "maintenance must recover the remaining tool withdrawal",
     );
@@ -4396,7 +4396,7 @@ revisionTest(
     await fixture.work(recovered, "succeeded");
     await runMaintenance();
     assert.equal(
-      (await withdrawalWork()).length,
+      (await withdrawalAttempts(fixture, active)).length,
       3,
       "revoked tool sources must not be queued again",
     );
@@ -4576,18 +4576,15 @@ revisionTest(
         return withdrawal.state === "revoked" ? withdrawal : undefined;
       });
     }
-    const maintenancePass = async () => {
-      const due = await fixture.advanceMaintenance(active);
-      assert.equal(due.rowCount, 1, "one maintenance pass is queued");
-      return { id: active.id, idempotencyKey: due.rows[0].idempotency_key };
-    };
 
     // A gateway outage during the recheck ends only this pass, as REVISION_FINALIZATION_INCOMPLETE
     // (DependencyUnavailableError carries no dependency code); the chain queues the next pass
     // instead of stopping with a revoked source maybe still attached.
     recheckFailure = new DependencyUnavailableError("The Credential Gateway did not answer.");
     rechecked.length = 0;
-    const failed = await maintenancePass();
+    const due = await fixture.advanceMaintenance(active);
+    assert.equal(due.rowCount, 1, "one maintenance pass is queued");
+    const failed = { id: active.id, idempotencyKey: due.rows[0].idempotency_key };
     const pending = await completion(
       events,
       "the failed recheck's pass to end pending",
@@ -4662,14 +4659,13 @@ revisionTest(
       });
       assert.equal(settled.state, "succeeded", `maintenance ended ${settled.reason_code}`);
     };
-    const withdrawalWork = () => withdrawalAttempts(fixture, active);
     const withdrawalState = async (credentialSourceId) =>
       (await findWithdrawal(fixture, active, credentialSourceId)).state;
 
     // A tool source: maintenance re-queues its withdrawal and repairs the revision without it.
     await strandWithdrawal(toolSourceId);
     await runMaintenance();
-    const [toolWithdrawal, ...extra] = await withdrawalWork();
+    const [toolWithdrawal, ...extra] = await withdrawalAttempts(fixture, active);
     assert.ok(toolWithdrawal, "maintenance must queue the pending tool withdrawal again");
     assert.deepEqual(extra, []);
     assert.deepEqual(dispatched.at(-1), []);
@@ -4680,7 +4676,7 @@ revisionTest(
     await strandWithdrawal(modelSourceId);
     const prepared = dispatched.length;
     await runMaintenance();
-    const work = await withdrawalWork();
+    const work = await withdrawalAttempts(fixture, active);
     assert.equal(work.length, 2, "maintenance must queue the pending model withdrawal again");
     const modelWithdrawal = work[1];
     await fixture.work(modelWithdrawal, "succeeded");
@@ -5724,10 +5720,7 @@ test(
     const otherActor = `delete-successor-${randomUUID()}`;
     await fixture.copyActorGrants(otherActor);
     // The initiator is offboarded: it no longer holds any access.
-    await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
-      [fixture.actor.id],
-    );
+    await removeAccessBindings(fixture, fixture.actor.id);
     // A caller without delete permission still cannot take over.
     await assert.rejects(
       fixture.controller.deleteAgent(
@@ -6161,10 +6154,7 @@ revisionTest(
     assert.deepEqual(await observe(), exhausted);
 
     // The initiator is offboarded: it no longer holds any access.
-    await fixture.observerPool.query(
-      `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
-      [fixture.actor.id],
-    );
+    await removeAccessBindings(fixture, fixture.actor.id);
     // A caller without delete permission still cannot take over.
     await assert.rejects(
       fixture.controller.deleteNamespace(`unprivileged-${randomUUID()}`, namespace.id),
