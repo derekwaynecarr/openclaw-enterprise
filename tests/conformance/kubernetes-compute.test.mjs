@@ -11007,6 +11007,155 @@ test("retiring a running embedded revision waits for gateway Pods and removes ow
   assert.deepEqual(objects.get(key("ConfigMap", sibling.metadata.name)), sibling);
 });
 
+// Finding 860: retiring the last OpenShell revision left the workspace-node pair
+// (supervisor egress to the Gateway, Gateway ingress from supervisors) in the namespace.
+for (const stopped of [false, true]) {
+  test(`retiring the last ${stopped ? "stopped " : ""}OpenShell revision removes every Agent NetworkPolicy it wrote`, async () => {
+    const cleanupCalls = [];
+    const driver = new KubernetesComputeDriver(
+      options({
+        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+        network: {
+          ...options().network,
+          providerHarness: {
+            namespace: "openshell-system",
+            podLabels: { app: "openshell-gateway" },
+            address: "10.43.0.50",
+            port: 8080,
+          },
+        },
+      }),
+      {
+        sandboxDriver: {
+          id: "sandbox-provider",
+          implementation: "openshell",
+          async provisionHarness() {
+            assert.fail("retirement must not provision a Harness");
+          },
+          async harnessEndpoint() {
+            return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
+          },
+          async cleanup(context) {
+            cleanupCalls.push(context.revision.id);
+          },
+        },
+      },
+    );
+    const revision = routedRevision(driver, {
+      id: "revision-openshell-retirement",
+      agentId: "agent-openshell-retirement",
+      sandboxDriverId: "sandbox-provider",
+    });
+    const namespace = kubernetesNamespaceName(revision.namespaceId);
+    const target = { name: namespace, plane: "execution" };
+    const gatewayName = `gateway-${digest(revision.agentId)}`;
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const key = (kind, name) => `${kind}:${name}`;
+    const objects = new Map();
+    const save = (object) => {
+      assert.equal(object.metadata.namespace ?? namespace, namespace);
+      object.metadata.uid ??= `${object.metadata.name}-uid`;
+      objects.set(key(object.kind, object.metadata.name), structuredClone(object));
+    };
+    save({
+      ...driver.manifest("v1", "Namespace", namespace, { namespaceId: revision.namespaceId }),
+      status: { phase: "Active" },
+    });
+    // Stop already removed the Gateway Deployment; Agent deletion then retires the revision.
+    if (!stopped) {
+      const gateway = driver.manifest("apps/v1", "Deployment", gatewayName, ownership, target);
+      gateway.metadata.annotations["openclaw.dev/agent-revision-id"] = revision.id;
+      save(gateway);
+    }
+    const policies = [
+      ...driver.agentNetworkPolicies(revision, target).map(({ resource }) => resource),
+      driver.channelNetworkPolicy(revision, [], target),
+    ];
+    const policyNames = policies.map(({ metadata }) => metadata.name);
+    for (const name of ["allow-workspace-node-gateway", "allow-gateway-workspace-node"]) {
+      assert.ok(policyNames.includes(`${name}-${digest(revision.agentId)}`), name);
+    }
+    for (const policy of policies) {
+      save(policy);
+    }
+    // A sibling Agent's identically shaped policy must survive.
+    const sibling = driver.manifest(
+      "networking.k8s.io/v1",
+      "NetworkPolicy",
+      `allow-workspace-node-gateway-${digest("agent-sibling")}`,
+      { namespaceId: revision.namespaceId, agentId: "agent-sibling" },
+      target,
+    );
+    save(sibling);
+
+    const deleted = [];
+    const missing = (kind, name) =>
+      Object.assign(new Error(`${kind} ${name} not found`), { code: 404 });
+    const read = (kind) => async (request) => {
+      const name = request.name ?? request.metadata?.name;
+      const value = objects.get(key(kind, name));
+      if (value === undefined) {
+        throw missing(kind, name);
+      }
+      return structuredClone(value);
+    };
+    const remove = (kind) => async (request) => {
+      const current = await read(kind)(request);
+      assert.equal(request.namespace, namespace);
+      assert.equal(request.body?.preconditions?.uid, current.metadata.uid);
+      deleted.push(`${kind}/${request.name}`);
+      objects.delete(key(kind, request.name));
+      return {};
+    };
+    const core = {
+      async listNamespace() {
+        return { apiVersion: "v1", kind: "NamespaceList", items: [] };
+      },
+      readNamespace: read("Namespace"),
+      async listNamespacedPod() {
+        return { apiVersion: "v1", kind: "PodList", items: [] };
+      },
+    };
+    for (const kind of [
+      "ConfigMap",
+      "Secret",
+      "Service",
+      "ServiceAccount",
+      "PersistentVolumeClaim",
+    ]) {
+      core[`readNamespaced${kind}`] = read(kind);
+      core[`deleteNamespaced${kind}`] = remove(kind);
+    }
+    driver.apiClients = Promise.resolve({
+      core,
+      apps: {
+        readNamespacedDeployment: read("Deployment"),
+        deleteNamespacedDeployment: remove("Deployment"),
+      },
+      networking: {
+        readNamespacedNetworkPolicy: read("NetworkPolicy"),
+        deleteNamespacedNetworkPolicy: remove("NetworkPolicy"),
+      },
+      objects: {
+        read: async (object) => read(object.kind)(object),
+      },
+    });
+
+    await driver.retireRevision(revision);
+    assert.deepEqual(cleanupCalls, [revision.id]);
+    assert.equal(objects.has(key("Deployment", gatewayName)), false);
+    for (const name of policyNames) {
+      assert.equal(objects.has(key("NetworkPolicy", name)), false, `${name} must be deleted`);
+    }
+    assert.deepEqual(objects.get(key("NetworkPolicy", sibling.metadata.name)), sibling);
+
+    // A retried retirement finds nothing left to delete.
+    const deletedOnce = deleted.length;
+    await driver.retireRevision(revision);
+    assert.equal(deleted.length, deletedOnce);
+  });
+}
+
 test("retirement preserves active storage and node routing and deletes exact owned UIDs", async () => {
   const driver = createKubernetesComputeDriver(
     routedOptions({
