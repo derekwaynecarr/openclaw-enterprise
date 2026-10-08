@@ -499,11 +499,20 @@ capabilities:
 {{- default "git" .Values.repositoryCredentials.serviceName -}}
 {{- end -}}
 
-{{/* Kubernetes resource.ParseQuantity: a number plus an optional suffix, or a bare exponent.
+{{/* Quantity.UnmarshalJSON strips a JSON string's quotes and trims that raw text before ParseQuantity.
+     It does not unescape, so a tab or newline in the rendered value stays rejected.
      Decimal suffixes are case-sensitive (k and E, not K or e). Binary suffixes use a lowercase i (Ki, not KI). */}}
 {{- define "openclaw.quantity" -}}
 {{- $pattern := "^([+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+))(([eE][+-]?[0-9]+)|([KMGTPE]i)|[numkMGTPE])?$|^[eE][+-]?[0-9]+$" -}}
-{{- if not (regexMatch $pattern (toString .value)) -}}
+{{- $encoded := toJson (toString .value) -}}
+{{- $quantity := $encoded -}}
+{{- if ge (len $encoded) 2 -}}
+{{- $last := int (sub (len $encoded) 1) -}}
+{{- if and (eq (substr 0 1 $encoded) "\"") (eq (substr $last (len $encoded) $encoded) "\"") -}}
+{{- $quantity = trim (substr 1 $last $encoded) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (regexMatch $pattern $quantity) -}}
 {{- fail (printf "%s must be a Kubernetes quantity" .name) -}}
 {{- end -}}
 {{- end -}}

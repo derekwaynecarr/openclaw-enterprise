@@ -3569,5 +3569,34 @@ test("Helm rejects Kubernetes quantities the API cannot parse", tooling, async (
     assert.match(preserved.stdout, /memory: "1E3"/);
     assert.match(preserved.stdout, /cpu: 1k/);
     assert.match(preserved.stdout, /cpu: 1Ki/);
+
+    // UnmarshalJSON trims spaces on the raw JSON text. Escaped tabs stay rejected.
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.cpu": "  foo " } }),
+      /resources\.requests\.cpu must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": " 1K " } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": "\t64Mi" } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    const padded = await render(collector, {
+      ...options,
+      strings: {
+        "resources.requests.cpu": " 100m ",
+        "resources.limits.memory": " 1E ",
+        "logging.collector.resources.requests.memory": " 64Mi ",
+        "logging.collector.state.sizeLimit": " 128Mi ",
+        "logging.collector.tmp.sizeLimit": " 32Mi ",
+      },
+    });
+    assert.match(padded.stdout, /cpu: ["'] 100m ["']/);
+    assert.match(padded.stdout, /memory: ["'] 1E ["']/);
+    assert.match(padded.stdout, /memory: ["'] 64Mi ["']/);
+    assert.match(padded.stdout, /sizeLimit: " 128Mi "/);
+    assert.match(padded.stdout, /sizeLimit: " 32Mi "/);
   }
 });
