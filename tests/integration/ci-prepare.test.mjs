@@ -36,10 +36,12 @@ async function writeState(path, state) {
 // Lane preparation stderr opens with timing and host metrics, and assert.match's default
 // message keeps only its start (finding 818). Show the end, where the cause is.
 function assertStderrMatch(stderr, pattern, label) {
+  const prefix = label ? `${label}: ` : "";
+  const tail = stderr.slice(-1_500);
   assert.match(
     stderr,
     pattern,
-    `${label ? `${label}: ` : ""}stderr ended with:\n${stderr.slice(-1_500)}`,
+    `${prefix}stderr did not match ${pattern}; it ended with:\n${tail}`,
   );
 }
 
