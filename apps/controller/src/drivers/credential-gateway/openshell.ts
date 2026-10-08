@@ -11,7 +11,7 @@ import type {
   CredentialSourceStatus,
   CredentialSourceType,
 } from "@openclaw-enterprise/contracts";
-import { ScopeViolationError } from "@openclaw-enterprise/occ";
+import { CredentialSourceRevisionError, ScopeViolationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 
@@ -485,7 +485,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       // Two sources cannot place their placeholders in the same Sandbox variable.
       for (const name of Object.values(type.credentials(source.config))) {
         if (environment.has(name)) {
-          throw new ScopeViolationError(
+          throw new CredentialSourceRevisionError(
+            "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
             "Two credential sources bound to the revision use the same environment variable.",
           );
         }

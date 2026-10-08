@@ -99,7 +99,7 @@ Installation selects another Credential Gateway, an update that leaves
 `credentialSources` out still succeeds, and one that sets `harnessAuth` to
 another method or source and lists only new sources, or `[]`, removes the old
 ones. Listing an old source again fails with `503`, and so does deploying an
-Agent that still lists one. Deployment also requires the Agent's
+Agent that still lists one; see [After a Credential Gateway change](#after-a-credential-gateway-change). Deployment also requires the Agent's
 service principal to have `operate` on each source; grant it with a
 [Namespace IAM](authorization.md#manage-namespace-policy) Role and an exact
 `credential_source` AccessBinding. The principal needs no permission on the
@@ -217,6 +217,9 @@ requires exact `delete` and returns `204`:
 
 - It returns `409` while an Agent draft, active revision, or pending deployment
   references the source.
+- On an Installation with no Credential Gateway it returns
+  `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
+  did not register it returns `503`; neither changes the record.
 - It marks the record `deleting` before it asks the gateway to remove its copy.
   A gateway failure returns `503` and leaves the record `deleting`. Send the same
   request again; an already-removed copy counts as deleted.
@@ -227,6 +230,24 @@ requires exact `delete` and returns `204`:
 While a source exists, including one in `deleting`, its Namespace cannot be
 deleted, and its referenced Secrets cannot be deleted.
 
+## After a Credential Gateway change
+
+A source belongs to the Credential Gateway Driver that registered it. After the
+Installation selects another driver in `drivers.credential_gateway`, binding,
+deploying, updating, or deleting an old source returns
+`503 DEPENDENCY_UNAVAILABLE` with one fixed message: "The selected Credential
+Gateway Driver did not register this credential source. …". OCC answers it only
+after the caller's grant and the source lookup. `GET` on such a source reports a
+`failed` status whose reason names the driver change.
+
+- To keep an Agent running, register a replacement source through the selected
+  driver, list it in place of the old one, and deploy again.
+- To delete an old source, an administrator changes the Installation
+  configuration to select the driver ID that registered it again, deletes the
+  source, then selects the new driver. The same steps finish a source that an earlier release left
+  `deleting` after a gateway change, which otherwise keeps its Namespace and
+  Secrets from being deleted.
+
 ## Errors
 
 | Status                                  | Meaning                                                                                                                                                                                  |
@@ -236,7 +257,7 @@ deleted, and its referenced Secrets cannot be deleted.
 | `404 NOT_FOUND`                         | The source, Secret, or type is not in the exact Namespace or catalog, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it. |
 | `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                            |
 | `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update, or changed during the request; the Agent has no active revision to withdraw from; or sources need a Sandbox Driver.           |
-| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                                           |
+| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, update, deletion, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                         |
 | `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway or the Secret Driver is unavailable, the gateway call failed, or the source was registered through a previously selected gateway.                        |
 
 ## Related

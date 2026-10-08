@@ -14,6 +14,7 @@ import {
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
+  CredentialSourceRevisionError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
@@ -2042,7 +2043,13 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
       sources: [bearer(first), bearer(second)],
       signal,
     }),
-    /use the same environment variable/,
+    (error) => {
+      // A permanent refusal: the worker fails the deployment instead of retrying it.
+      assert.ok(error instanceof CredentialSourceRevisionError, String(error));
+      assert.equal(error.code, "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT");
+      assert.match(error.message, /use the same environment variable/);
+      return true;
+    },
   );
   assert.equal(
     (await driver.attachForRevision({ namespace, revision, sources: [bearer(first)], signal }))

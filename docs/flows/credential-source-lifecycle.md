@@ -184,19 +184,20 @@ the model source. The next owner is the [OpenShell Sandbox provisioning flow](op
 `packages/occ/src/index.ts:deleteCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:removeSource`
 
-The first transaction authorizes `delete`, locks the source, and returns `409`
-while an Agent draft, active revision, or pending deployment references it. It
-moves a `registering` or `ready` record to `deleting`; database triggers prevent
-leaving `deleting` and returning to `registering`. Outside the transaction, OCC calls `removeSource`. The OpenShell Driver
-deletes the owned provider, confirms it is gone, and deletes the profile when no
-provider of its type remains. A gateway failure returns `503` and leaves the
-record `deleting` for the caller to retry. Until
-`CREDENTIAL_REGISTRATION_FENCE_MS` (70 seconds) after `createdAt`, OCC keeps the
-record and returns `503` even after a successful removal: a Driver finishes an
-aborted registration's effects within 30 seconds of the abort, and the Backend
-caps each gateway call's deadline at 30 seconds. A second transaction deletes the
-record and appends the handler's audit event, so a completed deletion is always
-audited; if the append fails, the record stays `deleting` for a retry. Namespace deletion returns
+The first transaction authorizes `delete`, requires a selected gateway (`409`),
+locks the source, and returns `409` while an Agent draft, active revision, or
+pending deployment references it, or `503` if another driver registered it. Only
+then does it move a `registering` or `ready` record to `deleting`; triggers
+prevent leaving `deleting` and returning to `registering`. Outside the
+transaction, OCC calls `removeSource`. The OpenShell Driver deletes and confirms
+the owned provider, then the profile once no provider of its type remains. A
+gateway failure returns `503` and leaves the record `deleting` for a retry.
+Until `CREDENTIAL_REGISTRATION_FENCE_MS` (70 seconds) after `createdAt`, OCC
+keeps the record and returns `503` even after a successful removal: an aborted
+registration's effects finish within 30 seconds of the abort, and the Backend
+caps each gateway call at 30 seconds. A second transaction deletes the record
+and appends the audit event, so a completed deletion is always audited; if the
+append fails, the record stays `deleting`. Namespace deletion returns
 `NAMESPACE_NOT_EMPTY` while any record remains.
 
 ### 8. Update a source
@@ -274,9 +275,8 @@ attach again, so removing their grants cannot end maintenance.
 ## Debugging and Verification
 
 - `node --test tests/conformance/credential-source-occ.test.mjs` covers catalog
-  validation, Secret `operate`, registration compensation, recovery of an
-  uncertain registration, audit commit with the final state change, deletion
-  refusal and retry, Namespace gating, admission snapshots, and rejection of Secret-backed
+  validation, Secret `operate`, registration compensation, uncertain-registration
+  recovery, audit with the final state change, deletion refusal and retry, Namespace gating, admission snapshots, and rejection of Secret-backed
   methods with a gateway selected. It uses an in-process gateway double, not
   OpenShell.
 - `node --test tests/conformance/openshell-gateway-wire.test.mjs` checks the
@@ -288,11 +288,10 @@ attach again, so removing their grants cannot end maintenance.
   replays, maintenance, retries that omit withdrawn sources, per-requester
   authorization, an admitted successor revision, and a lost source grant.
 - The real OpenShell test updates the source through the API, withdraws it from
-  the running Agent, and checks that a model turn in the same Codex process
-  then fails. Before that, it calls an in-cluster echo service with a
-  `bearer-token` source's placeholder, checks the substituted token's digest,
-  and checks that withdrawing that source stops delivery while model turns
-  continue.
+  the running Agent, and checks that the next model turn in that Codex process
+  fails. First, a `bearer-token` placeholder sent to an in-cluster echo service
+  arrives substituted (digest checked), and withdrawing that source stops
+  delivery while model turns continue.
 - `OCC_TEST_OPENSHELL_K3D_REAL=1 node --env-file="$TEST_ENV_FILE" --test tests/integration/sandbox-driver-openshell-k3d-real.test.mjs`
   registers an `openai` source through the production API against a real
   gateway and reads its live `ready` status. See [OpenShell tests](../testing/openshell.md).
@@ -322,6 +321,7 @@ attach again, so removing their grants cannot end maintenance.
 ## Changelog
 
 - 2026-10-08 12:00: A withdrawal also covers later revisions admitted with the source. (fix-810)
+- 2026-10-08 11:45: DELETE checks gateway ownership before `deleting`. (fix-811-812 - e461e1621)
 - 2026-10-08 10:00: Replays take over stranded withdrawals; withdrawn sources skip the grant recheck. (fix-787-788)
 - 2026-10-08 09:30: Agent PATCH needs only `operate` on already-bound sources. (fix-782)
 - 2026-10-08 09:00: Deploying listed sources without a Sandbox Driver returns `409` with its message, not the generic "already exists". (fix-786)
