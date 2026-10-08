@@ -5171,6 +5171,46 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
       }),
     /required profile.*owned by the selected Compute Driver/i,
   );
+  // OpenClaw's default Agent (sole entry or `default: true`) keeps its own workspace, while
+  // the Gateway, file transfer and workspace files address main.
+  const withEntries = (entries) => ({
+    ...revision.configuration,
+    agents: { ...revision.configuration.agents, entries },
+  });
+  for (const entries of [
+    {},
+    { helper: { workspace: "/home/node/helper" } },
+    { main: {}, helper: { default: true, workspace: "/home/node/helper" } },
+    { Main: {}, helper: { default: true } },
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withEntries(entries)),
+      (error) =>
+        error instanceof ConfigurationHarnessError &&
+        /serves the main Agent: agents\.entries must include main/.test(error.message),
+      JSON.stringify(entries),
+    );
+  }
+  for (const entries of [
+    { main: { workspace: "/home/node/main" } },
+    { Main: { default: true }, helper: { default: false, workspace: "/home/node/helper" } },
+    { main: {}, helper: { workspace: "/home/node/helper" } },
+  ]) {
+    assert.doesNotThrow(
+      () =>
+        driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withEntries(entries)),
+      JSON.stringify(entries),
+    );
+  }
+  // Embedded OpenClaw and dedicated Codex keep their own rosters.
+  assert.doesNotThrow(() =>
+    driver.validateHarnessAuth(
+      { ...revision.harness, mode: "embedded" },
+      revision.harnessAuth,
+      withEntries({ helper: { default: true } }),
+    ),
+  );
   const ownership = { namespaceId: tenant.id, agentId };
   const nativeInference = {
     models: {

@@ -1928,6 +1928,27 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
   };
 }
 
+// OpenClaw's default Agent (the sole entry, or one marked `default: true`) keeps its own
+// workspace, while the Gateway, file transfer and workspace files address main. A refusal,
+// not a rewrite: this runs at admission and preparation only, never on status reads.
+function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocument): void {
+  const agents = asRecord(configuration.agents);
+  if (agents?.entries === undefined) {
+    return;
+  }
+  const entries = Object.entries(asRecord(agents.entries) ?? {});
+  // OpenClaw resolves entry keys case-insensitively, as the OpenShell workspace pin does.
+  const isMain = (id: string) => id.toLowerCase() === "main";
+  if (
+    !entries.some(([id]) => isMain(id)) ||
+    entries.some(([id, entry]) => !isMain(id) && asRecord(entry)?.default === true)
+  ) {
+    throw new ConfigurationHarnessError(
+      "Dedicated OpenClaw serves the main Agent: agents.entries must include main, and no other entry may set default: true.",
+    );
+  }
+}
+
 function requireNativeWorkerSandbox(
   harness: RevisionHarnessDescriptor,
   sandboxDriver: SandboxDriver | undefined,
@@ -2817,6 +2838,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new ConfigurationFailure(
         `Dedicated OpenClaw required profile ${NATIVE_WORKER_PROFILE} is owned by the selected Compute Driver.`,
       );
+    }
+    if (native) {
+      requireNativeMainAgentDefault(configuration);
     }
     if (
       (!embedded && !codex && !native) ||
