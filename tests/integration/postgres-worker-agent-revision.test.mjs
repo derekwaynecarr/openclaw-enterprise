@@ -3065,6 +3065,116 @@ test(
   },
 );
 
+test(
+  "a terminally failing credential withdrawal takes the Namespace and Agent before its withdrawal rows",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const { owner, candidate: active } = await fixture.admitInitialRevision("withdraw-lock-order", {
+      agent: { auth: "credential_source" },
+    });
+    let calls = 0;
+    let reachLastAttempt;
+    const lastAttempt = new Promise((resolve) => {
+      reachLastAttempt = resolve;
+    });
+    let releaseLastAttempt;
+    const lastAttemptReleased = new Promise((resolve) => {
+      releaseLastAttempt = resolve;
+    });
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async withdrawCredentialSource(_revision, source) {
+          // The last attempt stays pending, so the worker fails the work permanently.
+          if (++calls === 2) {
+            reachLastAttempt();
+            await lastAttemptReleased;
+          }
+          return { sourceId: source.id, state: "pending" };
+        },
+      },
+      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
+    );
+    await fixture.work(active, "succeeded");
+    const sourceId = owner.harnessAuth.sourceId;
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      credentialSourceId: sourceId,
+    });
+    const work = await fixture.observerPool.query(
+      `SELECT idempotency_key FROM occ.controller_work
+       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
+      [active.id],
+    );
+    assert.equal(work.rowCount, 1);
+    const withdrawal = { id: active.id, idempotencyKey: work.rows[0].idempotency_key };
+
+    // A withdrawal request locks the Namespace, then the Agent, then the withdrawal row. Hold
+    // the Namespace until the worker's final pass waits on it; that pass must not hold the
+    // withdrawal row or the Agent yet, or the two transactions deadlock.
+    let admission;
+    let released = false;
+    let failed = false;
+    try {
+      await lastAttempt;
+      admission = await fixture.observerPool.connect();
+      await admission.query("BEGIN");
+      const admissionBackend = await admission.query("SELECT pg_backend_pid() AS pid");
+      await admission.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
+        fixture.namespace.id,
+      ]);
+      releaseLastAttempt();
+      // The worker has one connection, and its next transaction is the final pass's.
+      await waitFor("the worker's real wait on the Namespace lock", async () => {
+        const waiting = await fixture.observerPool.query(
+          `SELECT pid FROM pg_stat_activity
+           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
+          [admissionBackend.rows[0].pid],
+        );
+        return waiting.rowCount > 0 ? true : undefined;
+      });
+      await assert.doesNotReject(
+        admission.query(
+          `SELECT state FROM occ.credential_withdrawals
+           WHERE namespace_id = $1 AND revision_id = $2 AND credential_source_id = $3
+           FOR UPDATE NOWAIT`,
+          [fixture.namespace.id, active.id, sourceId],
+        ),
+        "a worker waiting for the Namespace must not already hold the withdrawal row",
+      );
+      await assert.doesNotReject(
+        admission.query(
+          "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2 FOR UPDATE NOWAIT",
+          [fixture.namespace.id, owner.id],
+        ),
+        "a worker waiting for the Namespace must not already hold the Agent",
+      );
+      await admission.query("ROLLBACK");
+      released = true;
+      await fixture.work(withdrawal, "failed_permanent");
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      releaseLastAttempt();
+      if (admission !== undefined) {
+        if (!released) {
+          await admission.query("ROLLBACK").catch(() => {});
+        }
+        // Discard the connection after a failure instead of returning it to the pool.
+        admission.release(failed);
+      }
+    }
+    const recorded = await fixture.state.read((view) =>
+      view.credentialSources.findCredentialWithdrawal(fixture.namespace.id, active.id, sourceId),
+    );
+    assert.equal(recorded.state, "pending");
+    assert.equal(recorded.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
+  },
+);
+
 revisionTest(
   "maintenance of a withdrawn revision retries the withdrawal and stops once it is revoked",
   async (fixture) => {
