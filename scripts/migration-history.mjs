@@ -166,6 +166,9 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 48) {
         return "preCodexPatSources";
       }
+      if (receipts.length === 49) {
+        return "preAgentCredentialSources";
+      }
       return "providerCompleted";
     }
     if (!receiptsMatchEntries(receipts, manifest.entries)) {
@@ -251,6 +254,9 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 48) {
     return "preCodexPatSources";
+  }
+  if (receipts.length === 49) {
+    return "preAgentCredentialSources";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

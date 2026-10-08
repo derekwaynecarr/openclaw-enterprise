@@ -380,8 +380,19 @@ test(
     ]) {
       await assert.rejects(render(override), /scraperNamespaceLabels/);
     }
-    for (const port of ["0", "65536", "8080", "9.5"]) {
+    for (const port of ["0", "010", "65536", "8080", "9.5"]) {
       await assert.rejects(render({ "metrics.port": port }), /metrics.port/);
+    }
+    const shortPort = await resources((await render({ "metrics.port": "8" })).stdout);
+    for (const component of ["api", "worker"]) {
+      const container = shortPort.find(
+        (item) =>
+          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
+      ).spec.template.spec.containers[0];
+      assert.equal(container.env.find((item) => item.name === "OCC_METRICS_PORT").value, "8");
+      assert.ok(
+        container.ports.some((port) => port.name === "metrics" && port.containerPort === 8),
+      );
     }
     const selected = {
       "metrics.enabled": "true",
@@ -421,6 +432,31 @@ test(
     }
   },
 );
+
+test("the chart refuses an API port the server does not bind", tooling, async () => {
+  for (const port of ["0", "010", "65536", "9.5"]) {
+    await assert.rejects(render({ "api.port": port }), /api\.port must be an integer TCP port/);
+  }
+  const objects = await resources((await render({ "api.port": "8081" })).stdout);
+  const container = objects.find(
+    (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
+  ).spec.template.spec.containers[0];
+  assert.equal(container.env.find((item) => item.name === "OCC_PORT").value, "8081");
+  assert.ok(container.ports.some((port) => port.name === "http" && port.containerPort === 8081));
+  assert.equal(
+    objects.find(
+      (item) => item.kind === "Service" && item.metadata.name === "openclaw-enterprise-api",
+    ).spec.ports[0].port,
+    8081,
+  );
+  assert.equal(
+    objects.find(
+      (item) =>
+        item.kind === "NetworkPolicy" && item.metadata.name === "openclaw-enterprise-api-ingress",
+    ).spec.ingress[0].ports[0].port,
+    8081,
+  );
+});
 
 function routeNamespaceLabel(namespace, gatewayName) {
   return createHash("sha256").update(`${namespace}/${gatewayName}`).digest("hex").slice(0, 12);
@@ -2297,6 +2333,14 @@ test(
     ]) {
       await assert.rejects(render({ ...slackProxyValues, ...override }), /slackProxy/);
     }
+    await assert.rejects(
+      render(slackProxyValues, { strings: { "slackProxy.port": "010" } }),
+      /slackProxy\.port must be an integer TCP port/,
+    );
+    await assert.rejects(
+      render(slackProxyValues, { strings: { "slackProxy.port": "9223372036854775808" } }),
+      /slackProxy\.port must be an integer TCP port/,
+    );
   },
 );
 

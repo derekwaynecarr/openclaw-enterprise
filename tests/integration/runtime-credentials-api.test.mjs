@@ -17,6 +17,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { reservePort } from "../helpers/available-port.mjs";
@@ -37,9 +38,7 @@ function createRuntimeCredentialComputeDriver(options = {}) {
   const explicitKeyOf = (namespaceId, agentId) => `${namespaceId}:${agentId}`;
   const statusOf = (binding) => statusByAgent.get(keyOf(binding)) ?? emptyStatus;
 
-  return {
-    id: options.id ?? "runtime-credential-compute",
-    capability: "compute",
+  return createReadyComputeDriver(options.id ?? "runtime-credential-compute", {
     implementation: "in-memory-runtime-credential-test",
     requiresAgentRuntimeCredentials: true,
     calls,
@@ -47,21 +46,6 @@ function createRuntimeCredentialComputeDriver(options = {}) {
       statusByAgent.set(explicitKeyOf(namespaceId, agentId), { ...status });
     },
     validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
     async getAgentRuntimeCredentialStatus(binding) {
       calls.push({ operation: "status", agentId: binding.agent.id });
       if (options.statusError !== undefined) {
@@ -110,7 +94,7 @@ function createRuntimeCredentialComputeDriver(options = {}) {
         ],
       };
     },
-  };
+  });
 }
 
 async function createFixture(t, options = {}) {

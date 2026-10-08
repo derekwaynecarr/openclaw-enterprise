@@ -4062,9 +4062,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       repositoryConsumer?.role !== "gateway"
         ? revision.configuration
         : repositoryNativeConfiguration(revision.configuration);
-    const admittedNativeConfiguration = this.gatewaySandboxConfiguration(
+    const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
       revision,
-      this.kubernetesGatewayConfigurationDocument(nativeConfiguration),
+      this.gatewaySandboxConfiguration(
+        revision,
+        this.kubernetesGatewayConfigurationDocument(nativeConfiguration),
+      ),
     );
     const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
     const embedded = revision.harness.mode === "embedded";
@@ -4107,6 +4110,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
         : await this.controlNamespace(revision.namespaceId);
     const secretEnvironment = this.secretEnvironmentForRevision(revision, context, sourceNamespace);
     const harnessAuth = this.harnessAuthForRevision(admittedRevision, context, sourceNamespace);
+    const credentialSources = this.credentialSourcesForRevision(admittedRevision, context);
+    if (credentialSources.length > 0 && sandboxDriver?.provisionHarness === undefined) {
+      throw new ConfigurationFailure(
+        "Agent credential sources require a SandboxDriver that provisions the Harness.",
+      );
+    }
     const gatewayNamespace = await this.requireGatewayNamespace(revision, namespace);
     const nativeRuntime = nativeRuntimeSnapshot(admittedRevision);
     const tenantOwnership = { namespaceId: revision.namespaceId };
@@ -4745,13 +4754,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.sandboxNamespaceForRevision(revision, namespace),
           namespace,
         );
+        const sources = [
+          ...(harnessAuth.credentialSource === undefined ? [] : [harnessAuth.credentialSource]),
+          ...credentialSources,
+        ];
         const credentialContext =
-          harnessAuth.credentialSource === undefined
+          sources.length === 0
             ? undefined
             : {
                 namespace: sandboxContext.namespace,
                 revision,
-                sources: [harnessAuth.credentialSource],
+                sources,
                 signal: sandboxContext.signal,
               };
         const attachments =
@@ -4999,9 +5012,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       repositoryConsumer?.role !== "gateway"
         ? revision.configuration
         : repositoryNativeConfiguration(revision.configuration);
-    const admittedNativeConfiguration = this.gatewaySandboxConfiguration(
+    const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
       revision,
-      this.kubernetesGatewayConfigurationDocument(nativeConfiguration),
+      this.gatewaySandboxConfiguration(
+        revision,
+        this.kubernetesGatewayConfigurationDocument(nativeConfiguration),
+      ),
     );
     const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
     if (this.options.runtime === undefined) {
@@ -9518,6 +9534,41 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return `https://${host}${port === 443 ? "" : `:${port}`}`;
   }
 
+  private gatewayNativeHookRelayConfiguration(
+    revision: AgentRevision,
+    configuration: OpenClawConfigurationDocument,
+  ): OpenClawConfigurationDocument {
+    if (revision.harness.mode !== "dedicated" || revision.harness.id !== "codex") {
+      return configuration;
+    }
+    const endpoint = this.getGatewayEndpoint(revision);
+    if (this.options.runtime === undefined || endpoint === undefined) {
+      return configuration;
+    }
+    const document = structuredClone(configuration) as Record<string, OpenClawConfigurationValue>;
+    let appServer = document;
+    for (const key of ["plugins", "entries", "codex", "config", "appServer"]) {
+      const value = appServer[key] ?? {};
+      if (asRecord(value) === undefined) {
+        throw new ConfigurationFailure(
+          "Dedicated Codex plugin configuration must contain objects.",
+        );
+      }
+      appServer[key] = value;
+      appServer = value as Record<string, OpenClawConfigurationValue>;
+    }
+    if (appServer.nativeHookRelay !== undefined) {
+      throw new ConfigurationFailure(
+        "Dedicated Codex native hook relay is owned by the Compute Driver.",
+      );
+    }
+    appServer.nativeHookRelay = {
+      url: `${endpoint.replace(/^wss:/, "https:")}/node/__openclaw__/native-hook`,
+      credentialDirectory: "/home/node/.oce-native-hooks",
+    };
+    return document;
+  }
+
   private gatewaySandboxConfiguration(
     revision: AgentRevision,
     configuration: OpenClawConfigurationDocument,
@@ -10051,6 +10102,34 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                         ],
                         backendRefs: [this.gatewayRouteBackendRef(service)],
                       },
+                      ...(revision.harness.id === "codex"
+                        ? [
+                            {
+                              matches: [
+                                {
+                                  method: "POST",
+                                  path: {
+                                    type: "PathPrefix",
+                                    value: `${this.gatewayRoutePath(revision)}/node/__openclaw__/native-hook/`,
+                                  },
+                                },
+                              ],
+                              filters: [
+                                {
+                                  type: "URLRewrite",
+                                  urlRewrite: {
+                                    path: {
+                                      type: "ReplacePrefixMatch",
+                                      replacePrefixMatch: "/__openclaw__/native-hook/",
+                                    },
+                                  },
+                                },
+                                this.gatewayRouteHeaderFilter("node-transfer"),
+                              ],
+                              backendRefs: [this.gatewayRouteBackendRef(service)],
+                            },
+                          ]
+                        : []),
                       ...["worker-bundle/v1", "worker-transfer/v1"].map((transferPath) => ({
                         matches: [
                           {
@@ -11170,6 +11249,34 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }),
       ...statusPolicies,
     ];
+  }
+
+  /**
+   * Non-model sources resolved at dispatch must match the revision's admitted snapshots. The
+   * worker omits withdrawn ones, so the resolved list may be shorter than the admitted one.
+   */
+  private credentialSourcesForRevision(
+    revision: AgentRevision,
+    context: ComputeRevisionContext | undefined,
+  ): readonly Readonly<CredentialSource>[] {
+    const resolved = context?.credentialSources ?? [];
+    const admitted = revision.credentialSources ?? [];
+    const seen = new Set<string>();
+    for (const source of resolved) {
+      const snapshot = admitted.find(({ sourceId }) => sourceId === source.id);
+      if (
+        snapshot === undefined ||
+        seen.has(source.id) ||
+        source.namespaceId !== revision.namespaceId ||
+        source.driverId !== snapshot.credentialGatewayId ||
+        source.type !== snapshot.sourceType ||
+        source.state !== "ready"
+      ) {
+        throw new OwnershipFailure("A credential source does not match the admitted source.");
+      }
+      seen.add(source.id);
+    }
+    return resolved;
   }
 
   private harnessAuthForRevision(

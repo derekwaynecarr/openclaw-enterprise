@@ -317,6 +317,16 @@ export const HarnessAuthBindingSchema = Type.Union([
   ),
 ]);
 
+export const AgentCredentialSourcesSchema = Type.Array(
+  Type.Object({ sourceId: CredentialSourceId }, { additionalProperties: false }),
+  {
+    maxItems: 8,
+    uniqueItems: true,
+    description:
+      "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+  },
+);
+
 export const CredentialSourceReference = Type.Object(
   { kind: Type.Literal("credential_source"), namespaceId: NamespaceId, id: CredentialSourceId },
   {
@@ -686,6 +696,7 @@ export const CreateAgentBody = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -732,6 +743,7 @@ export const UpdateAgentBody = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),

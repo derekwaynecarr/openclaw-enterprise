@@ -87,6 +87,12 @@ same-Namespace Secret or through the Console. Managed ServiceAccount
 provisioning for `codex_pat` is optional and renders only when `codex.managedServiceAccounts` is
 supplied.
 
+The shared `digestImage` check in `buildRendered` requires the literal
+`sha256` algorithm and 64 lowercase hexadecimal characters for
+`controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`.
+Noncanonical digest casing adds a field-specific diagnostic; the final error
+branch writes only `preflight.json`, leaving no deployable artifacts.
+
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), and paired metrics scraper selectors. Invalid
@@ -197,6 +203,9 @@ activation, and repository registry creation need separate evidence.
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 
 - 2026-10-07: Refuse a public-suffix shared cookie domain in preflight.
+
+- 2026-10-06 13:20: Reject noncanonical SHA-256 image digests before emitting deployment files. (authoring-run/feaed473-dcbe-4c10-93fc-39e937f1e798 - f2fb8cbe952d7c27b2690f86134c89e6912cb883)
+
 - 2026-09-29 20:30: Stop defaulting the repository broker Service name so the chart upgrade guard applies.
 
 - 2026-09-29 18:00: Carry external sign-in, the recovery user ID, and trusted proxies through profile rerenders.

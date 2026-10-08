@@ -95,6 +95,7 @@ import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
+import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
 import {
   canonicalFailure,
   cappedPath,
@@ -102,12 +103,10 @@ import {
   failure,
   isAuthorizationDenied,
   isDependencyUnavailable,
-  jsonPointer,
   RequestFailure,
   requestFailure,
   responseHeaders,
   unstorableTextFailure,
-  type ErrorDetail,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
 import {
@@ -1053,7 +1052,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     },
     ajv: {
       // `verbose` attaches each failure's schema and value, so contract errors can tell which
-      // shape of a discriminated union a request chose (http/errors.ts). Neither is logged or
+      // shape of a discriminated union a request chose (http/error-details.ts). Neither is logged or
       // returned: problems name only paths and the schema's accepted values, and http/errors.ts
       // drops both from the error once its problems are built. An onError hook runs before
       // that, so none may log `error.validation`.

@@ -162,6 +162,7 @@ intentional development-state break; in-place conversion is unsupported.
 For dedicated Codex with a Credential Gateway, use
 `{ "method": "credential_source", "sourceId": "cs_…" }`; see
 [credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
+It must also be listed in `credentialSources`.
 
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor

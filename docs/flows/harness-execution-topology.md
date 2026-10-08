@@ -133,12 +133,17 @@ stable route. These selectors match NetworkPolicy before destination translation
 owns app-server DNS, NetworkPolicy peers and Service selectors.
 `runtime.gatewayNodeSelector`
 independently places the Gateway Pod and private-state initializer on trusted nodes.
-Because the predecessor Gateway is stopped first (step 3) or otherwise not ready, preparation starts the candidate Gateway after the candidate Harness is
-otherwise ready. That candidate Gateway provides the bootstrap endpoint and changes no unrelated
-Gateway; the revision remains not ready, and never activates, until its exact workspace node is
-enrolled and observed.
-A dedicated Codex Harness names its workspace node `agent-<agent digest>-workspace` on every
-start, so the Gateway's node list keeps one stable name across revisions.
+With the predecessor Gateway stopped or not ready, preparation starts the candidate
+Gateway once its Harness is otherwise ready. It provides the bootstrap endpoint
+without changing unrelated Gateways. The revision cannot activate until its exact
+workspace node is enrolled and observed.
+`KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds dedicated Codex
+callbacks to the Agent's route. `AGENT_WITH_NODE_ENTRYPOINT` prepares private
+capability storage and TLS trust; OpenClaw authorizes callbacks. See
+[native hook routing](../reference/gateway-routing.md#native-node-endpoint).
+
+Dedicated Codex uses workspace-node name `agent-<agent digest>-workspace`, stable
+across restarts and revisions.
 
 Dedicated Codex and dedicated OpenClaw keep separate Agent-owned Gateway and
 Harness ServiceAccounts. Compute owns the Gateway Pod; the selected SandboxDriver
@@ -314,6 +319,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 ## Changelog
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
+
+- 2026-10-05 14:24: Route dedicated Codex native hook callbacks with per-relay capabilities. (authoring-run/05067642-df93-4716-8f90-5b7430e50c41 - dfa091b6)
 
 - 2026-10-03 16:02: Run configured development API and worker Compute preflight before admitting work. (01a0fe72-58b2-7cc3-b770-7310f5401deb - c04093189f2ba6240f8dc431847c2f487afd11de)
 
