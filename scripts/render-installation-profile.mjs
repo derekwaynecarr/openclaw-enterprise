@@ -181,6 +181,19 @@ function sha256Hex(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+// The bootstrap Job and the chart apply the Name rule to installation.name: 1 to 200
+// code points, no leading or trailing whitespace (including U+FEFF), and no controls.
+const installationNameText = /^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/u;
+const loneSurrogate = /\p{Cs}/u;
+
+function isInstallationName(value) {
+  return (
+    installationNameText.test(value) &&
+    !loneSurrogate.test(value) &&
+    Array.from(value).length <= 200
+  );
+}
+
 function asString(source, path, diagnostics, { pattern, validate, description } = {}) {
   const value = source[path.at(-1)];
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -864,7 +877,11 @@ function buildRendered(profile, parsed, diagnostics) {
   } = parsed;
   const releaseName = asString(controlPlane, ["controlPlane", "releaseName"], diagnostics);
   const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics);
-  const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics);
+  const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics, {
+    validate: isInstallationName,
+    description:
+      "1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators",
+  });
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
     pattern: digestImage,
     description: "an immutable image reference with a SHA-256 digest",
