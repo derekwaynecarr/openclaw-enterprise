@@ -158,8 +158,16 @@ export function createWorkerRevisionFixtures(testFile) {
     };
     let worker;
     const lockOrderViolations = [];
+    // A throwing after hook skips every later one, which can leave a worker running and the
+    // file hanging. A hook added while after hooks run goes last, so check from there.
     context.after(() =>
-      assert.deepEqual(lockOrderViolations, [], "the worker locked an Agent before its Namespace"),
+      context.after(() =>
+        assert.deepEqual(
+          lockOrderViolations,
+          [],
+          "the worker locked an Agent before its Namespace",
+        ),
+      ),
     );
     await state.transact((unit) => unit.namespaces.createNamespace(namespace));
     const compute = {
