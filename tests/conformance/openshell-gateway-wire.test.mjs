@@ -400,7 +400,13 @@ test("OpenShell client reports a Sandbox deleted only once OpenShell confirms it
     "sandbox-accepted": { outcome: "DELETION_OUTCOME_ACCEPTED", presentFor: 2 },
     "sandbox-no-outcome": { presentFor: 1 },
     "sandbox-replaced": { outcome: "DELETION_OUTCOME_ACCEPTED", replacedBy: "sandbox-id-2" },
-    "sandbox-stuck": { outcome: "DELETION_OUTCOME_ACCEPTED", presentFor: Infinity },
+    // Without the targeted ID only absence by name counts, so even a replacement holds the
+    // wait until the bound.
+    "sandbox-stuck": {
+      outcome: "DELETION_OUTCOME_ACCEPTED",
+      unnamed: true,
+      replacedBy: "sandbox-id-2",
+    },
   };
   const server = new grpc.Server();
   server.addService(OpenShell.service, {
@@ -411,7 +417,7 @@ test("OpenShell client reports a Sandbox deleted only once OpenShell confirms it
         () =>
           callback(null, {
             ...(scenario.outcome === undefined ? {} : { outcome: scenario.outcome }),
-            sandbox_id: "sandbox-id-1",
+            ...(scenario.unnamed ? {} : { sandbox_id: "sandbox-id-1" }),
           }),
         scenario.delayMs ?? 0,
       );
@@ -431,7 +437,6 @@ test("OpenShell client reports a Sandbox deleted only once OpenShell confirms it
             name: call.request.name,
             workspace: call.request.workspace_scope.workspace,
           },
-          status: { phase: "SANDBOX_PHASE_DELETING" },
         },
       });
     },

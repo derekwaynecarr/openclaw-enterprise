@@ -382,10 +382,12 @@ const CLIENT_MODULE = "@grpc/grpc-js";
 const LOADER_MODULE = "@grpc/proto-loader";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 // At the pinned OpenShell revision, DeleteSandbox answers only after the Kubernetes driver
-// has watched the Sandbox Pod go: up to the Pod's 30 s termination grace plus a 30 s
-// Kubernetes API timeout, after the list and delete calls (30 s each at most). A running
-// Sandbox takes about 30 s, so the ordinary request deadline (at most 30 s) expired on every
-// redeploy and the worker retried the whole prepare pass (finding 857).
+// has watched the Sandbox Pod go (a 30 s termination grace plus a 30 s Kubernetes API
+// timeout, around list, delete and get calls of up to 30 s each). A running Sandbox takes
+// about 30 s, so the ordinary request deadline (at most 30 s) expired on every redeploy and
+// the worker retried the whole prepare pass (finding 857). 120 s covers that with headroom;
+// a rarer longer run fails this attempt, and OpenShell's delete keeps going regardless of
+// the client, so the retry sees ACCEPTED or NOT_FOUND.
 const DEFAULT_SANDBOX_DELETE_TIMEOUT_MS = 120_000;
 const SANDBOX_DELETE_POLL_INTERVAL_MS = 500;
 
@@ -1123,9 +1125,10 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   /**
    * Resolves only once OpenShell reports the Sandbox gone: COMPLETED, ALREADY_ABSENT or
    * NOT_FOUND from DeleteSandbox, or, after ACCEPTED (or no outcome), GetSandbox no longer
-   * finding the targeted Sandbox. One deadline bounds the call and that wait; past it the
-   * deletion is reported as an unavailable dependency, so the caller retries the idempotent
-   * delete instead of treating the Sandbox as removed.
+   * finding the targeted Sandbox. One deadline bounds the call and that wait (a GetSandbox in
+   * flight can overrun it by one request timeout); past it the deletion is reported as an
+   * unavailable dependency, so the caller retries the idempotent delete instead of treating
+   * the Sandbox as removed.
    */
   async deleteSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal): Promise<void> {
     const deadlineAt = Date.now() + this.sandboxDeleteTimeoutMs;
