@@ -721,7 +721,9 @@ function metadataValue(token: string): string {
 // TLS forbids an IP address in SNI, and Node 25 and later reject one (DEP0123), but
 // grpc-js always sends the target host as the servername. An IP endpoint therefore
 // connects through this connector: no SNI, and the certificate must carry the
-// endpoint IP, as the service transport verifies it. A DNS endpoint uses createSsl.
+// endpoint IP, verified the same way the service transport does (`tlsIdentity`).
+// A DNS endpoint uses createSsl. grpc-js's GRPC_SSL_CIPHER_SUITES and
+// GRPC_DEFAULT_SSL_ROOTS_FILE_PATH overrides do not apply to this path.
 function ipEndpointCredentials(
   grpc: typeof import("@grpc/grpc-js"),
   address: string,
@@ -737,6 +739,7 @@ function ipEndpointCredentials(
     _equals(other: ChannelCredentials): boolean {
       return other === this;
     }
+    // Typed through Parameters: grpc-js does not export the GrpcUri target type.
     _createSecureConnector(
       ...[, , callCredentials]: Parameters<ChannelCredentials["_createSecureConnector"]>
     ): ReturnType<ChannelCredentials["_createSecureConnector"]> {

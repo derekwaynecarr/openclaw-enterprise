@@ -806,6 +806,7 @@ test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP 
   const directory = await mkdtemp(join(tmpdir(), "openshell-grpc-tls-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   // IPv6 loopback is optional on CI hosts; without it the IPv6 cases are skipped.
+  // The probe only binds, so it needs no certificate.
   const probe = createSecureServer();
   const ipv6 = await new Promise((resolve) => {
     probe.once("error", () => resolve(false));
