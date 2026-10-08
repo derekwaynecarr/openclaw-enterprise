@@ -791,18 +791,6 @@ const SECRET_CONSUMER_FIELDS: Readonly<
   provisioning_request: "provisioningRequests",
 });
 
-/** The revision was admitted with the source, as its Harness authentication or in its list. */
-function revisionHoldsCredentialSource(
-  revision: Readonly<AgentRevision>,
-  credentialSourceId: string,
-): boolean {
-  return (
-    (revision.harnessAuth.method === "credential_source" &&
-      revision.harnessAuth.sourceId === credentialSourceId) ||
-    (revision.credentialSources ?? []).some(({ sourceId }) => sourceId === credentialSourceId)
-  );
-}
-
 /**
  * Revisions other than `active` that may still run with the sources they were admitted with,
  * and so need their own withdrawal of a source withdrawn from the Agent: earlier revisions not
@@ -844,6 +832,18 @@ export async function credentialWithdrawalCompanionRevisions(
       .sort((left, right) => left.revision - right.revision),
   );
   return companions;
+}
+
+/** The revision was admitted with the source, as its Harness authentication or in its list. */
+function revisionHoldsCredentialSource(
+  revision: Readonly<AgentRevision>,
+  credentialSourceId: string,
+): boolean {
+  return (
+    (revision.harnessAuth.method === "credential_source" &&
+      revision.harnessAuth.sourceId === credentialSourceId) ||
+    (revision.credentialSources ?? []).some(({ sourceId }) => sourceId === credentialSourceId)
+  );
 }
 
 /** Rejects unknown and missing catalog fields before any Credential Gateway effect. */
