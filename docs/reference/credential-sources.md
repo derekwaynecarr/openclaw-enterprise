@@ -167,7 +167,9 @@ admitted with that source, as its Harness authentication or in
 A deployment admitted with the source but not yet active gets its own
 withdrawal, so it never attaches the source. A withdrawn Harness source fails
 that deployment with `CREDENTIAL_WITHDRAWN`; otherwise it activates without the
-source, and the read below then returns its withdrawal. A replay returns the
+source, and the read below then returns its withdrawal. An earlier revision
+that still runs because the active revision's deployment has not finished
+replacing it gets its own withdrawal too. A replay returns the
 same withdrawal. It queues another attempt only if no
 attempt is already queued or running, and the caller then becomes the
 withdrawal's `requestedBy`.

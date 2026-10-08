@@ -3439,6 +3439,86 @@ revisionTest(
 );
 
 revisionTest(
+  "a withdrawal reaches the predecessor that runs until its successor's deployment activates",
+  async (fixture) => {
+    const owner = await fixture.agent("withdraw-predecessor", {
+      auth: "credential_source",
+      nonModelSources: 1,
+    });
+    const [tool] = toolSources(owner).map(({ sourceId }) => sourceId);
+    const withdrawn = [];
+    const compute = {
+      ...fixture.compute,
+      async withdrawCredentialSource(revision, source) {
+        withdrawn.push([revision.id, source.id]);
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    const first = await fixture.revision(owner, 1);
+    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    await fixture.work(first, "succeeded");
+    const second = await fixture.revision(owner, 2);
+    await fixture.work(second, "succeeded", 30_000);
+    await fixture.stop();
+
+    // A worker published the third revision as active but has not yet activated it or retired
+    // the second, whose Sandbox still runs with the source.
+    const third = await fixture.revision(owner, 3);
+    await fixture.state.transact((unit) =>
+      unit.agents.compareAndSetActiveRevision(fixture.namespace.id, owner.id, second.id, third.id),
+    );
+    const request = {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      credentialSourceId: tool,
+    };
+    const requested = await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      request,
+    );
+    assert.equal(requested.revisionId, third.id);
+    const recorded = () =>
+      fixture.state.read((view) =>
+        Promise.all(
+          [first, second, third].map((revision) =>
+            view.credentialSources.findCredentialWithdrawal(
+              fixture.namespace.id,
+              revision.id,
+              tool,
+            ),
+          ),
+        ),
+      );
+    // The second deployment's activation retired the first, so only the second gets a row.
+    assert.deepEqual(
+      (await recorded()).map((withdrawal) => withdrawal?.state),
+      [undefined, "pending", "pending"],
+    );
+
+    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    await fixture.work(third, "succeeded", 30_000);
+    await waitFor(
+      "both withdrawals to be revoked",
+      async () => {
+        const found = await recorded();
+        return found[1]?.state === "revoked" && found[2]?.state === "revoked" ? found : undefined;
+      },
+      30_000,
+    );
+    await fixture.stop();
+
+    assert.deepEqual(
+      [...withdrawn].sort(),
+      [
+        [second.id, tool],
+        [third.id, tool],
+      ].sort(),
+    );
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, third.id);
+  },
+);
+
+revisionTest(
   "a withdrawn Harness source fails a deployment admitted before the withdrawal",
   async (fixture) => {
     const { owner, candidate: first } = await fixture.admitInitialRevision(
@@ -4420,7 +4500,8 @@ revisionTest(
     });
     assert.equal(requested.revisionId, legacy.id);
     assert.equal(requested.state, "pending");
-    // The admitted legacy successor gets its own withdrawal too; the older revision does not.
+    // The admitted legacy successor gets its own withdrawal too. So does the older revision:
+    // no deployment has activated the legacy revision yet, so nothing has retired it.
     const recorded = await fixture.state.read((view) =>
       Promise.all(
         [listed, legacy, successor].map((revision) =>
@@ -4434,7 +4515,7 @@ revisionTest(
     );
     assert.deepEqual(
       recorded.map((withdrawal) => withdrawal?.state),
-      [undefined, "pending", "pending"],
+      ["pending", "pending", "pending"],
     );
   },
 );

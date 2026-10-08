@@ -477,10 +477,17 @@ export function controllerWorkDeploymentStatus(
 }
 
 function completedWithoutActivation(work: Readonly<ControllerWork>): boolean {
+  return work.state === "succeeded" && !controllerWorkActivatedRevision(work);
+}
+
+/**
+ * The deployment's reconcile work activated its revision. The worker completes it only after
+ * retiring every earlier revision, so none of those still has a Sandbox.
+ */
+export function controllerWorkActivatedRevision(work: Readonly<ControllerWork>): boolean {
   return (
     work.state === "succeeded" &&
-    work.reasonCode !== "REVISION_ACTIVATED" &&
-    work.reasonCode !== "REVISION_ALREADY_ACTIVE"
+    (work.reasonCode === "REVISION_ACTIVATED" || work.reasonCode === "REVISION_ALREADY_ACTIVE")
   );
 }
 

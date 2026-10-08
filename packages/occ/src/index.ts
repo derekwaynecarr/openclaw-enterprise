@@ -213,6 +213,7 @@ import {
   type PlatformUnitOfWork,
 } from "./state/platform-state.ts";
 import {
+  controllerWorkActivatedRevision,
   controllerWorkDeploymentStatus,
   deploymentErrorForWork,
   deploymentProgressForWork,
@@ -6087,10 +6088,12 @@ export class OpenClawController {
   /**
    * Records a withdrawal of `credentialSourceId` from the Agent's active revision and queues
    * worker work to revoke it. Every admitted successor revision that holds the source gets its
-   * own withdrawal too, so a deployment still in flight cannot attach it again. A replay of a
-   * pending withdrawal queues another attempt only when no earlier attempt is still queued or
-   * running, and that attempt runs on the replaying operator's authority; a revoked withdrawal
-   * is returned unchanged. The response describes the active revision's withdrawal.
+   * own withdrawal too, so a deployment still in flight cannot attach it again, and so does
+   * each predecessor that may still run until the active revision's deployment retires it.
+   * A replay of a pending withdrawal queues another attempt only when no earlier attempt is
+   * still queued or running, and that attempt runs on the replaying operator's authority; a
+   * revoked withdrawal is returned unchanged. The response describes the active revision's
+   * withdrawal.
    */
   async withdrawAgentCredentialSource(
     principalId: string,
@@ -6120,18 +6123,25 @@ export class OpenClawController {
         revision,
         input.credentialSourceId,
       );
+      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
       // A deployment admitted before this request may activate after it. Its revision was
       // admitted with the source, and the worker reads withdrawals by each revision's own id.
-      const successors = (await state.revisions.listRevisions(agent.namespaceId, agent.id)).filter(
+      const successors = revisions.filter(
         (candidate) =>
           candidate.revision > revision.revision &&
           revisionHoldsCredentialSource(candidate, input.credentialSourceId),
       );
-      for (const successor of successors) {
+      const others = [
+        ...(await this.unretiredPredecessorRevisions(state, revisions, revision)).filter(
+          (candidate) => revisionHoldsCredentialSource(candidate, input.credentialSourceId),
+        ),
+        ...successors,
+      ];
+      for (const other of others) {
         await this.requestRevisionCredentialWithdrawal(
           state,
           principalId,
-          successor,
+          other,
           input.credentialSourceId,
         );
       }
@@ -6140,6 +6150,34 @@ export class OpenClawController {
       // attempt counts until recoverStale fails it.
       return Object.freeze({ ...withdrawal, withdrawalInProgress: withdrawal.state === "pending" });
     });
+  }
+
+  /**
+   * Earlier revisions whose Sandbox may still run. The worker publishes a revision as active
+   * before it retires the earlier ones, and completes the deployment only after that, so
+   * until the active revision's deployment has activated it, its predecessor keeps serving
+   * with the sources it was admitted with. The walk stops at the newest revision whose
+   * deployment activated: everything before it was retired then.
+   */
+  private async unretiredPredecessorRevisions(
+    state: PlatformUnitOfWork,
+    revisions: readonly Readonly<AgentRevision>[],
+    active: Readonly<AgentRevision>,
+  ): Promise<readonly Readonly<AgentRevision>[]> {
+    const ordered = revisions
+      .filter((candidate) => candidate.revision <= active.revision)
+      .sort((left, right) => right.revision - left.revision);
+    const predecessors: Readonly<AgentRevision>[] = [];
+    for (const candidate of ordered) {
+      if (candidate.id !== active.id) {
+        predecessors.push(candidate);
+      }
+      const work = await state.operations.findWork(`agent_revision:${candidate.id}:reconcile`);
+      if (work !== undefined && controllerWorkActivatedRevision(work)) {
+        break;
+      }
+    }
+    return predecessors;
   }
 
   /**
