@@ -6893,6 +6893,12 @@ revisionTest(
       [candidates[1].id],
     );
     assert.deepEqual(failures.rows, [{ reason_code: "SERVICE_ACCOUNT_BACKEND_MISMATCH" }]);
+    // The status names the fix instead of the generic failure text (finding 828).
+    assert.deepEqual((await fixture.deploymentStatus(owners[1], candidates[1])).error, {
+      code: "SERVICE_ACCOUNT_BACKEND_MISMATCH",
+      message:
+        "The ServiceAccount's Backend binding no longer matches the Agent's Backend, or its credential is no longer issued. Bind a ServiceAccount created and issued under the Agent's current Backend, then deploy again.",
+    });
   },
 );
 
@@ -8653,6 +8659,12 @@ revisionTest(
     assert.equal(activeByAgent.get(dedicated.id), dedicatedRevision.id);
     assert.equal(activeByAgent.get(unsupported.id), null);
     assert.equal(activeByAgent.get(mismatched.id), null);
+    // The status names the way out, not the generic failure text (finding 828).
+    assert.deepEqual((await fixture.deploymentStatus(unsupported, unsupportedRevision)).error, {
+      code: "HARNESS_DESCRIPTOR_MISMATCH",
+      message:
+        "This revision's Harness or Harness version is no longer approved, for example after a controller upgrade. Deploy again to admit a revision with the approved version.",
+    });
   },
 );
 
@@ -8904,6 +8916,42 @@ revisionTest(
       [candidate.id],
     );
     assert.equal(work.rows[0].reason_code, "SECRET_DRIVER_MISMATCH");
+    // The status names the fix, without IDs, instead of the generic failure text (finding 828).
+    assert.deepEqual((await fixture.deploymentStatus(owner, candidate)).error, {
+      code: "SECRET_DRIVER_MISMATCH",
+      message:
+        "The Installation no longer selects the Secret Driver this revision was admitted with. Bind Secrets created through the selected Secret Driver, or remove the old Secret bindings, then deploy again.",
+    });
+  },
+);
+
+revisionTest(
+  "revision dispatch refuses a different selected Compute Driver with a fixed status message",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("changed-compute-owner");
+    // Installation composition changed after admission: the revision stays pinned to the
+    // Compute Driver it was admitted with, so dispatch refuses it before any Compute effect.
+    const effects = [];
+    await fixture.start({
+      ...fixture.compute,
+      id: "compute-replacement",
+      async bindAgent() {
+        effects.push("bind");
+      },
+      async prepareRevision(revision) {
+        effects.push("prepare");
+        return fixture.compute.prepareRevision(revision);
+      },
+    });
+    await fixture.work(candidate, "failed_permanent");
+    await fixture.stop();
+    assert.deepEqual(effects, []);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+    assert.deepEqual((await fixture.deploymentStatus(owner, candidate)).error, {
+      code: "COMPUTE_DRIVER_MISMATCH",
+      message:
+        "The Installation no longer selects the Compute Driver this revision was admitted with. Deploy again to admit a revision for the selected driver.",
+    });
   },
 );
 
