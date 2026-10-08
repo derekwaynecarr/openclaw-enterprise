@@ -6088,9 +6088,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const suffix = sha256Hex(revision.agentId, 12);
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
+    // Keep these lists in step with every Agent-scoped name agentNetworkPolicies,
+    // pluginStatusNetworkPolicies and channelNetworkPolicy can write (finding 860).
     for (const name of [
       "allow-gateway-agent",
       "allow-gateway-channels",
+      "allow-gateway-workspace-node",
       "allow-plugin-status-gateway",
     ]) {
       await this.deleteOwnedNamespacedResource(
@@ -6115,6 +6118,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       "allow-agent-runtime",
       "allow-plugin-status-proxy",
       "allow-plugin-status-agent",
+      "allow-workspace-node-gateway",
     ]) {
       await this.deleteOwnedNamespacedResource(
         "NetworkPolicy",
