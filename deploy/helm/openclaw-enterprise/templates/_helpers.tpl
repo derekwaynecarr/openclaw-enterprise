@@ -34,7 +34,7 @@
 {{- $passwordSignIn := toString (default "all" .Values.auth.passwordSignIn) -}}
 {{- if not (has $passwordSignIn (list "all" "recovery-only")) -}}{{- fail "auth.passwordSignIn must be all or recovery-only" -}}{{- end -}}
 {{- if and (eq $passwordSignIn "recovery-only") (not $external) -}}{{- fail "auth.passwordSignIn: recovery-only requires auth.github.enabled, auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
-{{- /* JavaScript's trim. Go's TrimSpace also drops U+0085, which the API keeps and then rejects. */ -}}
+{{- /* JavaScript's trim for the allowlists below and the OIDC URLs: ASCII whitespace, Unicode Zs, U+2028, U+2029 and U+FEFF. Go's TrimSpace also drops U+0085, which the API keeps and then rejects, and keeps U+FEFF, which the API trims. The rendered env keeps the value as written. */ -}}
 {{- $jsTrim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
 {{- /* Allowlists are checked whether or not their provider is enabled, as the API does, and
 an allowlist without its provider is refused: the API treats it as a startup error. */ -}}
@@ -116,13 +116,11 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.oidc requires agentNativeAdmin.enabled: false; OIDC sign-in supports host-only cookies only" -}}{{- end -}}
 {{- /* The API's startup checks, mirrored: https on 443, a DNS host, no userinfo, query or fragment, and one host for all four. */ -}}
 {{- $endpoint := "^(?i)https://(([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?)(:443)?(/[^?#]*)?$" -}}
-{{- /* The API trims each value with JavaScript's trim before these checks: ASCII whitespace, Unicode Zs, U+2028, U+2029 and U+FEFF. The rendered env keeps the value as written. */ -}}
-{{- $trim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
-{{- $issuer := regexReplaceAll $trim (toString (default "" $oidc.issuer)) "" -}}
+{{- $issuer := regexReplaceAll $jsTrim (toString (default "" $oidc.issuer)) "" -}}
 {{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^(?i)https://[^/]*:" $issuer) (gt (len (regexReplaceAll $endpoint $issuer "${1}")) 253) -}}{{- fail "auth.oidc.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" -}}{{- end -}}
 {{- $host := lower (regexReplaceAll $endpoint $issuer "${1}") -}}
 {{- range $key := list "authorizationUrl" "tokenUrl" "jwksUrl" -}}
-{{- $url := regexReplaceAll $trim (toString (default "" (index $oidc $key))) "" -}}
+{{- $url := regexReplaceAll $jsTrim (toString (default "" (index $oidc $key))) "" -}}
 {{- if or (not (regexMatch $endpoint $url)) (ne (lower (regexReplaceAll $endpoint $url "${1}")) $host) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 on the issuer's host, with no query or fragment" $key) -}}{{- end -}}
 {{- end -}}
 {{- if not (has (toString (default "client_secret_post" $oidc.tokenAuth)) (list "client_secret_post" "client_secret_basic")) -}}{{- fail "auth.oidc.tokenAuth must be client_secret_post or client_secret_basic" -}}{{- end -}}

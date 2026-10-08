@@ -264,6 +264,35 @@ test("the API accepts exactly the GitHub allowlist the chart renders", tooling, 
   );
 });
 
+test("the API accepts sign-in values padded by U+FEFF, which Go trim keeps", tooling, async (t) => {
+  const directory = await startupDirectory(t);
+  // Go's TrimSpace keeps U+FEFF, so the chart used to refuse these. JavaScript's trim drops
+  // it, and the chart now uses that trim. The rendered env keeps the character.
+  const org = "\uFEFFacme";
+  const team = "\uFEFFacme/platform";
+  const domain = "\uFEFFexample.com";
+  const displayName = "\uFEFFContinue";
+  const objects = await renderChart({
+    ...githubUpgradeValues(recoveryUserId),
+    ...googleUpgradeValues(recoveryUserId),
+    ...oidcUpgradeValues(recoveryUserId, fixtureOidcIssuer, { displayName }),
+    "auth.github.allowedOrgs[0]": org,
+    "auth.github.allowedTeams[0]": team,
+    "auth.google.allowedDomains[0]": domain,
+  });
+  const rendered = signInSettings(deploymentEnv(objects, "api"));
+  assert.equal(rendered.OCC_AUTH_GITHUB_ALLOWED_ORGS, org);
+  assert.equal(rendered.OCC_AUTH_GITHUB_ALLOWED_TEAMS, team);
+  assert.equal(rendered.OCC_AUTH_GOOGLE_ALLOWED_DOMAINS, domain);
+  assert.equal(rendered.OCC_AUTH_OIDC_DISPLAY_NAME, displayName);
+  const parsed = humanLoginConfiguration(resolveSecrets(rendered));
+  assert.deepEqual(parsed.github.allowedOrgs, ["acme"]);
+  assert.deepEqual(parsed.github.allowedTeams, ["acme/platform"]);
+  assert.deepEqual(parsed.google.allowedDomains, ["example.com"]);
+  assert.equal(parsed.oidc.displayName, "Continue");
+  assert.equal(await startupCode(directory, resolveSecrets(rendered)), "PERSISTENCE_UNAVAILABLE");
+});
+
 test(
   "the API accepts exactly the Google sign-in settings the chart renders, alone and with GitHub",
   tooling,
