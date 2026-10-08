@@ -55,14 +55,14 @@ supported runtime policy.
 Dedicated Codex accepts only the native `codex` provider, or `openai` when the
 Codex plugin is explicitly enabled with `websocket` app-server transport.
 
-Selectable model catalogs and model fallbacks under Agent defaults or entries
-must retain the selected provider. Additional catalog models also need an
+Selectable model catalogs and fallbacks under Agent defaults or entries
+must retain the selected provider. Additional catalog models need an
 explicit matching Harness runtime; fallbacks must resolve through the same
-policy checks to the same Harness. A provider's native `models` array is limited
+policy checks to the same Harness. A provider's `models` array is limited
 to the resolved primary and fallback models; each entry's `id` is the full
 reference or the ID after its first slash, and IDs may contain slashes. Nonempty
-native `agents.list` configurations remain unsupported. Admission preserves the
-fallback order in the immutable revision but does not implement fallback
+`agents.list` is unsupported; Kubernetes refuses rosters OpenClaw rejects. Admission
+preserves fallback order in the immutable revision but does not implement fallback
 execution or allow changing topology.
 
 ## Admission and immutable execution

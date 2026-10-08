@@ -256,6 +256,17 @@ const LEGACY_WORKSPACE_NODE_POLICY_SELECTOR: {
 const OPENSHELL_SUPERVISOR_SELECTOR = Object.freeze({
   "openshell.ai/boundary-role": "supervisor",
 });
+/** Every Agent-scoped NetworkPolicy name agentNetworkPolicies and
+ * pluginStatusNetworkPolicies can write (each gets the Agent's suffix). */
+const AGENT_NETWORK_POLICY_NAMES = Object.freeze([
+  "allow-gateway-agent",
+  "allow-gateway-workspace-node",
+  "allow-workspace-node-gateway",
+  "allow-agent-runtime",
+  "allow-plugin-status-proxy",
+  "allow-plugin-status-agent",
+  "allow-plugin-status-gateway",
+]);
 
 interface LifecycleOwnerSelection {
   readonly driver: Driver;
@@ -1931,11 +1942,55 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
   };
 }
 
-// OpenClaw's default Agent (the sole entry, one marked `default: true`, or a named session
-// store or system owner) keeps its own workspace, while the Gateway, file transfer and
-// workspace files address main. A refusal, not a rewrite: OCC skips this on status reads.
+// Every topology here (embedded OpenClaw, dedicated OpenClaw or Codex) runs the pinned OpenClaw
+// Gateway on the admitted document. Its config validation rejects these roster shapes and the
+// Gateway then exits at startup (EX_CONFIG) instead of serving, so refuse them here. It drops
+// only an empty agents.list beside an implicit empty roster. A refusal, not a rewrite: OCC
+// skips this on status reads.
+function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): void {
+  const agents = asRecord(configuration.agents);
+  const roster = asRecord(agents?.entries);
+  // OpenClaw's schema: entries is a record of objects whose keys stay unique after its
+  // normalizeAgentId (lowercase; a key starting with _ also drops trailing dashes).
+  const ids = Object.keys(roster ?? {});
+  if (
+    (configuration.agents !== undefined && agents === undefined) ||
+    (agents?.entries !== undefined && roster === undefined) ||
+    Object.values(roster ?? {}).some((entry) => asRecord(entry) === undefined) ||
+    ids.some((id) => !/^[a-z0-9_][a-z0-9_-]{0,63}$/i.test(id)) ||
+    new Set(
+      ids.map((id) =>
+        id.startsWith("_") ? id.toLowerCase().replace(/-+$/, "") : id.toLowerCase(),
+      ),
+    ).size !== ids.length
+  ) {
+    throw new ConfigurationHarnessError(
+      "The OpenClaw Gateway requires agents and agents.entries to be objects, and each entry to be an object keyed by an Agent ID of up to 64 letters, digits, _ or -, not starting with -, that stays unique once OpenClaw normalizes it.",
+    );
+  }
+  const rosterSize = ids.length;
+  const explicit = agents?.ownership === "explicit";
+  if (
+    (agents?.list !== undefined &&
+      !(Array.isArray(agents.list) && agents.list.length === 0 && rosterSize === 0 && !explicit)) ||
+    Object.values(roster ?? {}).some((entry) => asRecord(entry)?.default !== undefined) ||
+    (agents?.ownership !== undefined && !explicit) ||
+    (rosterSize > 1 && !explicit) ||
+    (explicit && rosterSize === 0)
+  ) {
+    throw new ConfigurationHarnessError(
+      'The OpenClaw Gateway rejects agents.list, agents.entries default markers, an agents.ownership other than "explicit", a multi-Agent roster without it, and an explicit one without entries.',
+    );
+  }
+}
+
+// OpenClaw's default Agent (the sole entry, or a named session store or system owner) keeps
+// its own workspace, while the Gateway, file transfer and workspace files address main. A
+// refusal, not a rewrite: OCC skips this on status reads.
 function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocument): void {
   const agents = asRecord(configuration.agents);
+  const roster = asRecord(agents?.entries);
+  const explicit = agents?.ownership === "explicit";
   const defaults = asRecord(agents?.defaults);
   // OpenClaw matches normalized ids case-insensitively, as the OpenShell workspace pin does.
   const isMain = (id: unknown) => typeof id === "string" && id.trim().toLowerCase() === "main";
@@ -1943,19 +1998,17 @@ function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocum
     asRecord(defaults?.sessionStore)?.agentId,
     asRecord(defaults?.systemAgent)?.agentId,
   ];
-  const record = asRecord(agents?.entries);
-  const entries = Object.entries(record ?? {});
+  const entries = Object.entries(roster ?? {});
   // OpenClaw reads an empty roster as `{ main: {} }` unless ownership is explicit.
-  const implicitMain =
-    record !== undefined && entries.length === 0 && agents?.ownership !== "explicit";
+  const implicitMain = roster !== undefined && entries.length === 0 && !explicit;
   if (
     owners.some((owner) => owner !== undefined && !isMain(owner)) ||
-    (agents?.entries !== undefined &&
+    // An explicit roster without entries has no Agent, so it fails like an empty one.
+    ((agents?.entries !== undefined || explicit) &&
       !implicitMain &&
       // Other spellings normalize to ids OpenClaw may match first, so keys must be canonical.
       (entries.some(([id]) => !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id)) ||
-        !entries.some(([id]) => isMain(id)) ||
-        entries.some(([id, entry]) => !isMain(id) && asRecord(entry)?.default === true)))
+        !entries.some(([id]) => isMain(id))))
   ) {
     throw new ConfigurationHarnessError(
       "Dedicated OpenClaw serves the main Agent: agents.entries needs canonical keys including main, and only main may be the default, session store, or system Agent.",
@@ -2853,6 +2906,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         `Dedicated OpenClaw required profile ${NATIVE_WORKER_PROFILE} is owned by the selected Compute Driver.`,
       );
     }
+    requireOpenClawRoster(configuration);
     if (native) {
       requireNativeMainAgentDefault(configuration);
     }
@@ -5210,12 +5264,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // activation never becomes ready, retirement would not run before stop.
         await this.deleteReplacedPredecessorArtifacts(revision, gateway, namespace);
       }
-      for (const { resource: policy, namespace: target } of this.agentNetworkPolicies(
-        revision,
-        namespace,
-      )) {
+      const policies = this.agentNetworkPolicies(revision, namespace);
+      for (const { resource: policy, namespace: target } of policies) {
         await this.reconcile(policy, gatewayOwnership, target);
       }
+      await this.deleteUnwrittenAgentPolicies(revision, namespace, policies);
       await this.reconcile(
         this.service(gatewayName, gatewayOwnership, namespace, {
           "app.kubernetes.io/name": gatewayName,
@@ -5486,12 +5539,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (!providerOwnsHarnessEndpoint) {
       await this.reconcileHarnessRoute(revision, namespace);
     }
-    for (const { resource: policy, namespace: target } of this.agentNetworkPolicies(
-      revision,
-      namespace,
-    )) {
+    const policies = this.agentNetworkPolicies(revision, namespace);
+    for (const { resource: policy, namespace: target } of policies) {
       await this.reconcile(policy, gatewayOwnership, target);
     }
+    await this.deleteUnwrittenAgentPolicies(revision, namespace, policies);
     if (!(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace))) {
       throw new Error("The exact AgentRevision gateway is not ready.");
     }
@@ -6055,6 +6107,47 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  // Agent-scoped policies have one name per Agent and every revision applies its
+  // own set additively, so a name the active revision no longer writes kept
+  // selecting its Gateway: after a switch away from OpenShell the workspace-node
+  // pair still admitted every supervisor Pod on the Gateway port (finding 861).
+  // Activation therefore drops the names this revision does not write in its
+  // Gateway namespace, the only one where a policy can select that Gateway (the
+  // pair exists only on a single cluster, where both namespaces are one). It runs
+  // after the revision's own set is applied, so the new Gateway never lacks a
+  // grant it needs. Preparation never calls it: there, the serving predecessor
+  // still needs its own names. A later revision, repair or rollback included,
+  // applies and trims its own set the same way. A maintenance re-activation of the
+  // serving revision also drops names a prepared successor wrote; that successor's
+  // next preparation pass writes them again before its readiness probe.
+  private async deleteUnwrittenAgentPolicies(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    written: readonly TargetedKubernetesResource[],
+  ): Promise<void> {
+    const gatewayNamespace = this.gatewayNamespace(revision, namespace);
+    const suffix = sha256Hex(revision.agentId, 12);
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const kept = new Set(
+      written
+        .filter(
+          ({ namespace: target }) =>
+            target.name === gatewayNamespace.name && target.plane === gatewayNamespace.plane,
+        )
+        .map(({ resource }) => resource.metadata.name),
+    );
+    for (const name of AGENT_NETWORK_POLICY_NAMES) {
+      if (!kept.has(`${name}-${suffix}`)) {
+        await this.deleteOwnedNamespacedResource(
+          "NetworkPolicy",
+          `${name}-${suffix}`,
+          ownership,
+          gatewayNamespace,
+        );
+      }
+    }
+  }
+
   private async deleteRetiredAgentPolicies(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
@@ -6063,9 +6156,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const suffix = sha256Hex(revision.agentId, 12);
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
+    // Keep these lists in step with AGENT_NETWORK_POLICY_NAMES and the channel
+    // and authentication policies (finding 860).
     for (const name of [
       "allow-gateway-agent",
       "allow-gateway-channels",
+      "allow-gateway-workspace-node",
       "allow-plugin-status-gateway",
     ]) {
       await this.deleteOwnedNamespacedResource(
@@ -6090,6 +6186,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       "allow-agent-runtime",
       "allow-plugin-status-proxy",
       "allow-plugin-status-agent",
+      "allow-workspace-node-gateway",
     ]) {
       await this.deleteOwnedNamespacedResource(
         "NetworkPolicy",

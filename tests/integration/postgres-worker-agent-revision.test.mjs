@@ -27,6 +27,7 @@ import {
   seedBackendBinding,
 } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import {
   assertFailedDeployment,
   runPreparationFailureCase,
@@ -3052,22 +3053,16 @@ test(
       agent: { auth: "credential_source" },
     });
     let calls = 0;
-    let reachLastAttempt;
-    const lastAttempt = new Promise((resolve) => {
-      reachLastAttempt = resolve;
-    });
-    let releaseLastAttempt;
-    const lastAttemptReleased = new Promise((resolve) => {
-      releaseLastAttempt = resolve;
-    });
+    const lastAttempt = Promise.withResolvers();
+    const lastAttemptReleased = Promise.withResolvers();
     await fixture.start(
       {
         ...fixture.compute,
         async withdrawCredentialSource(_revision, source) {
           // The last attempt stays pending, so the worker fails the work permanently.
           if (++calls === 2) {
-            reachLastAttempt();
-            await lastAttemptReleased;
+            lastAttempt.resolve();
+            await lastAttemptReleased.promise;
           }
           return { sourceId: source.id, state: "pending" };
         },
@@ -3087,58 +3082,28 @@ test(
     // A withdrawal request locks the Namespace, then the Agent, then the withdrawal row. Hold
     // the Namespace until the worker's final pass waits on it; that pass must not hold the
     // withdrawal row or the Agent yet, or the two transactions deadlock.
-    let admission;
-    let released = false;
-    let failed = false;
     try {
-      await lastAttempt;
-      admission = await fixture.observerPool.connect();
-      await admission.query("BEGIN");
-      const admissionBackend = await admission.query("SELECT pg_backend_pid() AS pid");
-      await admission.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
-        fixture.namespace.id,
-      ]);
-      releaseLastAttempt();
-      // The worker has one connection, and its next transaction is the final pass's.
-      await waitFor("the worker's real wait on the Namespace lock", async () => {
-        const waiting = await fixture.observerPool.query(
-          `SELECT pid FROM pg_stat_activity
-           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
-          [admissionBackend.rows[0].pid],
-        );
-        return waiting.rowCount > 0 ? true : undefined;
-      });
-      await assert.doesNotReject(
-        admission.query(
+      await lastAttempt.promise;
+      await withNamespaceLockHeld(fixture.observerPool, fixture.namespace.id, async (lock) => {
+        lastAttemptReleased.resolve();
+        // The worker has one connection, and its next transaction is the final pass's.
+        await lock.waitForBlocked("the worker's real wait on the Namespace lock");
+        await lock.assertNotHeld(
           `SELECT state FROM occ.credential_withdrawals
            WHERE namespace_id = $1 AND revision_id = $2 AND credential_source_id = $3
            FOR UPDATE NOWAIT`,
           [fixture.namespace.id, active.id, sourceId],
-        ),
-        "a worker waiting for the Namespace must not already hold the withdrawal row",
-      );
-      await assert.doesNotReject(
-        admission.query(
+          "a worker waiting for the Namespace must not already hold the withdrawal row",
+        );
+        await lock.assertNotHeld(
           "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2 FOR UPDATE NOWAIT",
           [fixture.namespace.id, owner.id],
-        ),
-        "a worker waiting for the Namespace must not already hold the Agent",
-      );
-      await admission.query("ROLLBACK");
-      released = true;
+          "a worker waiting for the Namespace must not already hold the Agent",
+        );
+      });
       await fixture.work(withdrawal, "failed_permanent");
-    } catch (error) {
-      failed = true;
-      throw error;
     } finally {
-      releaseLastAttempt();
-      if (admission !== undefined) {
-        if (!released) {
-          await admission.query("ROLLBACK").catch(() => {});
-        }
-        // Discard the connection after a failure instead of returning it to the pool.
-        admission.release(failed);
-      }
+      lastAttemptReleased.resolve();
     }
     const recorded = await findWithdrawal(fixture, active, sourceId);
     assert.equal(recorded.state, "pending");
@@ -7088,46 +7053,23 @@ revisionTest(
     // Deployment admission locks the Namespace, then the Agent. Hold the Namespace
     // until the worker waits on it; the waiting worker must not hold the Agent, or
     // admission and maintenance completion deadlock.
-    const admission = await fixture.observerPool.connect();
-    let released = false;
-    let failed = false;
-    try {
-      await admission.query("BEGIN");
-      const admissionBackend = await admission.query("SELECT pg_backend_pid() AS pid");
-      await admission.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
-        fixture.namespace.id,
-      ]);
-      await waitFor("the worker's real wait on the Namespace lock", async () => {
-        const waiting = await fixture.observerPool.query(
-          `SELECT pid FROM pg_stat_activity
-           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
-          [admissionBackend.rows[0].pid],
-        );
-        return waiting.rowCount > 0 ? true : undefined;
-      });
-      const before = await succeededMaintenance();
-      await assert.doesNotReject(
-        admission.query(
+    const before = await withNamespaceLockHeld(
+      fixture.observerPool,
+      fixture.namespace.id,
+      async (lock) => {
+        await lock.waitForBlocked("the worker's real wait on the Namespace lock");
+        const succeeded = await succeededMaintenance();
+        await lock.assertNotHeld(
           "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2 FOR UPDATE NOWAIT",
           [fixture.namespace.id, owner.id],
-        ),
-        "a worker waiting for the Namespace must not already hold the Agent",
-      );
-      await admission.query("ROLLBACK");
-      released = true;
-      await waitFor("the maintenance chain to continue", async () =>
-        (await succeededMaintenance()) > before ? true : undefined,
-      );
-    } catch (error) {
-      failed = true;
-      throw error;
-    } finally {
-      if (!released) {
-        await admission.query("ROLLBACK").catch(() => {});
-      }
-      // Discard the connection after a failure instead of returning it to the pool.
-      admission.release(failed);
-    }
+          "a worker waiting for the Namespace must not already hold the Agent",
+        );
+        return succeeded;
+      },
+    );
+    await waitFor("the maintenance chain to continue", async () =>
+      (await succeededMaintenance()) > before ? true : undefined,
+    );
   },
 );
 

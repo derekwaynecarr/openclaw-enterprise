@@ -2340,6 +2340,9 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "First version",
     path: draft,
+    steps: [
+      "Resize through desktop, tablet, and phone widths. Prepare this version keeps each numbered step on its own row, with continuation lines aligned under the step text.",
+    ],
     description:
       "An Agent without a version can edit saved settings and deploy its first immutable version.",
   },
@@ -2746,11 +2749,37 @@ export const scenarios = {
   deploymentFailed: {
     group: "Pages/Agent detail",
     name: "New version failed",
-    path: candidateVersion,
+    path: currentVersion,
     deployed: true,
     candidateDeploymentStatus: "failed",
     description:
-      "v7 failed before activation; v6 remains selected. The record includes bounded startup failure evidence.",
+      "While viewing current v6, deployment activity reports failed v7 with bounded startup failure evidence. Open v7 Logs selects that failed version and brings its output into view.",
+    steps: [
+      "Select Open v7 Logs in Deployment activity. The version selector changes from v6 to v7 and the Logs tab receives focus and its panel scrolls into view.",
+      "Check the simulated Pod status and operational output, then use Back to return to v6. Browsing leaves v6 selected for service.",
+    ],
+    gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
+  },
+  deploymentFailedLogsFromDraft: {
+    group: "Pages/Agent detail",
+    name: "Failed deployment logs from draft",
+    path: draft,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime/logs",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "The draft has no Logs tab, but failed v7 activity links directly to v7 Logs. Simulated log access is denied and the visible panel explains the required permission.",
+    steps: [
+      "Select Open v7 Logs in Deployment activity. Confirm v7 is viewed, the Logs tab is selected and focused, and its panel scrolls into view.",
+      "Check that the log permission error is visible instead of output; use Back to restore the draft.",
+    ],
+    gap: "The failure and permission denial are simulated UI evidence; they do not establish backend authorization or live log availability.",
   },
   deploymentModelProbeFailed: {
     group: "Pages/Agent detail",
@@ -2845,6 +2874,12 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     description:
       "The Logs tab shows the Gateway Pod, its OOMKilled restart and BackOff Event, then redacted operational output with a withheld-structured-output row. Previous instance is available after the restart.",
+    steps: [
+      "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
+      "Expand the runtime.startup_phase row to inspect its fields. The timestamp, level, origin, and message remain aligned in the collapsed rows.",
+      "Select Follow, confirm it changes to Following, then select Following to stop. Resize the preview to 390px and check that controls remain usable and log metadata wraps without clipping messages.",
+    ],
+    gap: "Runtime records and refreshes are simulated UI evidence; source reads, filtering, and following require real backend verification.",
   },
   runtimeLogsStartupWarnings: {
     group: "Pages/Agent detail",
@@ -2869,6 +2904,10 @@ export const scenarios = {
     ],
     description:
       "Download saves the redacted text tail as a .log file through its own audited read. Hiding info and filtering for slack narrows the loaded window to the redacted reconnect warning; the status line counts the hidden rows.",
+    steps: [
+      "Check that info is deselected, the Filter field contains slack, and the visible row keeps its level, origin, and redacted message readable.",
+      "Clear Filter and enable info to restore the loaded rows; the filter status and source retention notice stay visible.",
+    ],
   },
   runtimeLogsDenied: {
     group: "Pages/Agent detail",
@@ -2885,6 +2924,9 @@ export const scenarios = {
     ],
     description:
       "An Agent operator sees Pod status and Events but no log text. The page names the missing grants and does not request the log view again.",
+    steps: [
+      "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
+    ],
   },
   runtimeLogsClusterRbac: {
     group: "Pages/Agent detail",

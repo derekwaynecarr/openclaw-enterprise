@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-03
-last_updated_session: 01a10328-9de5-7081-ada2-d88ff80161e4
+updated: 2026-10-08
+last_updated_session: 01a11d68-d6e8-7033-ab93-03767bced2da
 ---
 
 # Platform console request flow
@@ -273,6 +273,15 @@ Password values clear while [draft captures](platform-console/agent-editing.md#4
 Secret saves update the shared draft snapshot used by other tabs and deployment
 preflight.
 
+`agents/detail.mjs:renderAgentDetail` passes an `agents/list.mjs:link` to
+`deploymentFailure` for **Open vN Logs**. Client navigation selects the failed
+revision's `tab=logs`, even from the draft or a different version. After mounting
+the Logs panel and finishing the snapshot read, it focuses the Logs tab and
+scrolls the panel into view if the view is still current. The panel's
+`agents/logs.mjs:renderAgentLogs` reads that revision's runtime status and output,
+or displays its access or availability error;
+[Agent runtime logs](agent-runtime-logs.md) owns those reads.
+
 ### 7. Commit only the current response, or clear the view
 
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
@@ -346,6 +355,7 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-08 14:30: Trace client navigation from a failed deployment to its exact version and focus its Logs tab and scroll the panel into view. (01a11d68-d6e8-7033-ab93-03767bced2da - 0ff96342dc416325770eebed5963e9886fd3dff3)
 - 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
 - 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
 - 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.

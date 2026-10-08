@@ -118,6 +118,10 @@ displays `activeRevisionId`, which can differ from the viewed snapshot and does
 not prove live serving.
 **Deployment activity** shows the latest visible version's persisted result;
 the viewed version shows its own recorded outcome.
+For a failed deployment, **Open vN Logs** opens that exact version and brings
+its Logs panel into view, including when starting from the draft or another
+version. The panel shows runtime output or the applicable access or availability
+message; see [Agent logs](../guides/topics/agent-logs.md).
 
 **Run diagnostics for this version** fills **Current observations** with a
 bodyless POST that checks the exact viewed version. It requires Agent

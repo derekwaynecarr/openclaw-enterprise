@@ -147,7 +147,9 @@ Its closed `configuration` accepts:
 - `auth`: `{ mode: unauthenticated }` or `{ mode: bearerTokenFile, path }` with
   an absolute path.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
-  limits how late a timed-out credential registration can land.
+  limits how late a timed-out credential registration can land. Sandbox
+  deletion has its own 120-second bound: OpenShell answers only after the
+  Sandbox Pod terminates, and OCE waits until the Sandbox is gone.
 - `rootCertificatePath`: an absolute path to the gateway CA. An `https`
   `endpoint` at an IP address sends no TLS server name, so the gateway
   certificate must carry that IP address.
