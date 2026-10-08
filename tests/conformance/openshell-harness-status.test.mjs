@@ -59,6 +59,9 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
               const real = http.createServer(handler);
               server.real = real;
               return {
+                on(event, listener) {
+                  real.on(event, listener);
+                },
                 listen(port, host) {
                   server.listening = { port, host };
                   real.listen(http.port, "127.0.0.1");
@@ -66,6 +69,11 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
               };
             }
             return {
+              on(event, listener) {
+                if (event === "error") {
+                  server.onError = listener;
+                }
+              },
               listen(port, host) {
                 server.listening = { port, host };
               },
@@ -174,6 +182,13 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
       assert.equal(listening.length, 1);
       assert.deepEqual(listening[0].listening, { port: 4500, host: "0.0.0.0" });
       const { handler } = listening[0];
+      // A listen error is logged by code only and the wrapper keeps holding.
+      listening[0].onError(
+        Object.assign(new Error("listen EADDRINUSE 0.0.0.0:4500"), {
+          code: "EADDRINUSE",
+        }),
+      );
+      assert.equal(diagnostics.at(-1), "Held runtime failure server failed: EADDRINUSE");
 
       const answer = call(handler, { authorization: `Bearer ${TOKEN}` });
       assert.equal(answer.status, 200);

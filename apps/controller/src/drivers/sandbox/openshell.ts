@@ -2067,7 +2067,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // Handshake first, so a serving app-server never receives a plain request. A
     // Harness wrapper holding a startup failure refuses the upgrade and serves the
     // failure instead.
-    if (await client.serviceWebSocketHandshake(service.url, context.transportToken, context.signal)) {
+    if (
+      await client.serviceWebSocketHandshake(service.url, context.transportToken, context.signal)
+    ) {
       return Object.freeze({ state: "serving" });
     }
     const document = await client.getServiceDocument(

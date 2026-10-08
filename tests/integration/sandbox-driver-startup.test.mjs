@@ -2269,24 +2269,31 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
   const { context, revision, requirements } = codexSandboxFixture(driver);
   const statusContext = { ...context, revision, requirements, transportToken: "transport-token" };
 
-  // Nothing listens yet: OpenShell's own 502 and a refused handshake mean starting.
+  // Nothing listens yet: a refused handshake and OpenShell's own 502 mean starting.
   assert.deepEqual(await driver.harnessStatus(statusContext), { state: "starting" });
   const sandboxName = observed[0][1];
   assert.deepEqual(observed, [
     ["getService", sandboxName, ""],
+    ["serviceWebSocketHandshake", "http://codex.example.test:9443/", "transport-token"],
     [
       "getServiceDocument",
       "http://codex.example.test:9443/",
       "/openclaw/runtime/status",
       "transport-token",
     ],
-    ["serviceWebSocketHandshake", "http://codex.example.test:9443/", "transport-token"],
   ]);
 
+  // A serving app-server is never sent a plain request.
   handshake = true;
+  observed.length = 0;
   assert.deepEqual(await driver.harnessStatus(statusContext), { state: "serving" });
+  assert.deepEqual(
+    observed.map(([operation]) => operation),
+    ["getService", "serviceWebSocketHandshake"],
+  );
+  handshake = false;
 
-  // A held failure is returned unvalidated for Compute; no handshake is attempted.
+  // A held failure refuses the upgrade; it is returned unvalidated for Compute.
   const runtimeFailure = {
     component: "agent",
     check: "model-probe",
@@ -2299,8 +2306,8 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     state: "failed",
     runtimeFailure,
   });
-  assert.equal(observed.length, 2);
-  // Only a 200 status document counts; anything else falls through to the handshake.
+  assert.equal(observed.length, 3);
+  // Only a 200 status document with a runtime failure counts; anything else is starting.
   for (const other of [
     { status: 404, json: { runtimeFailure } },
     { status: 200, json: { error: "x" } },
@@ -2308,7 +2315,7 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     { status: 200 },
   ]) {
     document = other;
-    assert.deepEqual(await driver.harnessStatus(statusContext), { state: "serving" });
+    assert.deepEqual(await driver.harnessStatus(statusContext), { state: "starting" });
   }
 
   // The same exactness as harnessEndpoint: wrong port, mode, or a missing service fail closed.
