@@ -161,6 +161,8 @@ unavailable; selection never becomes an API query selector.
 `shell.mjs:namespaceSelector` disables and hides choices through session and
 Namespace checks for loads, Refresh, and admission-starting navigation;
 retained-view reads do not extend this.
+`shell.mjs:createShell` listens for the 760px mobile breakpoint; widening closes
+the drawer without focusing its hidden toggle and releases `main.inert`.
 Empty lists show access guidance. `navigation.mjs:navigate` returns Agent detail/creation
 to Agents; global pages remain open; recovered warnings disappear.
 
@@ -187,6 +189,9 @@ Preset constraints, token handling, permissions, and recovery.
 from Configuration. Invalid JSON and untouched fields survive; clearing overrides
 restores inheritance. Submission, uncertain outcomes, or invalid JSON lock editing.
 `capabilities.pluginPolicies` gates policy edits; unsupported reviewers remain clearable.
+The picker keeps a compact credential/access reminder beside an expandable
+**Access and credential setup** disclosure. Its bounded instructions, list, and
+details scroll within the dialog while search and pagination remain reachable.
 
 `create.mjs:loadPluginCatalog` and `loadPluginTools` implement
 [PAT discovery](agent-plugins.md#credential-scoped-discovery): the selected or
@@ -240,7 +245,9 @@ admit no revision and start no runtime.
 
 `agents/harness-auth.mjs` edits bindings and shows
 [Secret identities](platform-console/agent-editing.md#4-render-draft-revision-or-channels),
-never values.
+never values. Authentication source uses the shared form-field presentation;
+issued-account lookup feedback stays inside its conditionally visible account field.
+Switching methods hides that feedback without changing the lookup or saved choice.
 
 ### 4–6. Edit the Agent and access runtime files
 
@@ -265,6 +272,10 @@ read is an audited denial, so `console.mjs:deniedReadsFor` remembers that path i
 `sessionStorage` for the session owner; later views show **Configuration unavailable**
 without asking again, and **Retry** forgets the path and rereads. Logout clears it.
 
+`agents/detail.mjs:renderTab` brings a clipped selected tab into the horizontal
+strip without moving page focus or vertical scroll. A strip ResizeObserver repeats
+this on viewport changes, disconnects for inactive or detached views, and re-arms
+through the retained view's resume hook.
 Completed tabs retain their DOM and draft capture callbacks within the detail view.
 Returning restores loaded controls and expanded disclosures. Pending or failed
 reads, password values, and mutations invalidate tab reuse. Each tab checks it
@@ -286,6 +297,9 @@ or displays its access or availability error;
 
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
 
+After a full-page client navigation settles, `loadPage` focuses the destination
+heading if focus fell to the document body. It uses `preventScroll` to preserve
+return position; tab navigation and controls that already have focus keep it.
 Navigation, Namespace changes, and logout invalidate reads; generations reject
 late responses. Refocus coalesces events. Agent detail rechecks access in place,
 preserving controls, input, and saves; failures clear the view. Other pages
@@ -355,6 +369,7 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-08 15:59: Trace responsive drawer and tab visibility, destination focus, scoped authentication feedback, and compact plugin setup. (01a11d68-d6e8-7033-ab93-03767bced2da - 58daaa5a3ac4c64bc5fb3af00759b59b365b20ca)
 - 2026-10-08 14:30: Trace client navigation from a failed deployment to its exact version and focus its Logs tab and scroll the panel into view. (01a11d68-d6e8-7033-ab93-03767bced2da - 0ff96342dc416325770eebed5963e9886fd3dff3)
 - 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
 - 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
