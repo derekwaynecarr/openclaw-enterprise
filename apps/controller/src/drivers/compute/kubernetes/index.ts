@@ -4835,6 +4835,35 @@ export class KubernetesComputeDriver implements ComputeDriver {
             return incomplete();
           }
         }
+        if (providerEndpoint !== undefined && sandboxDriver.harnessStatus !== undefined) {
+          // A Ready provider Pod proves only its supervisor. Like the Kubernetes
+          // readiness probe, require the Harness transport to answer, and fail on
+          // the Harness's held startup failure (a failed model probe) instead of
+          // activating a revision whose Codex never started.
+          const transportToken = (
+            await this.prepareRevisionStage("sandbox_provision", () =>
+              this.sandboxTransportToken(revision),
+            )
+          ).toString("utf8");
+          const harness = await this.prepareRevisionStage("sandbox_provision", () =>
+            sandboxDriver.harnessStatus!({
+              ...sandboxContext,
+              revision,
+              requirements,
+              transportToken,
+            }),
+          );
+          if (harness.state === "failed") {
+            const runtimeFailure = this.runtimeFailureEvidence(harness.runtimeFailure);
+            if (runtimeFailure === undefined) {
+              throw new DependencyUnavailableError("Runtime failure status returned invalid data.");
+            }
+            return { ...result, runtimeFailure };
+          }
+          if (harness.state !== "serving") {
+            return incomplete();
+          }
+        }
         return ready();
       }
       await this.reconcile(agentDeployment, revisionOwnership, namespace);
@@ -11904,6 +11933,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private async sandboxTransportVerifier(
     revision: AgentRevision,
   ): Promise<SandboxEnvironmentVariable> {
+    const token = await this.sandboxTransportToken(revision);
+    return { name: APP_TOKEN_SHA, value: createHash("sha256").update(token).digest("hex") };
+  }
+
+  /** The Agent transport token the Agent Gateway presents to its provider-owned Harness. */
+  private async sandboxTransportToken(revision: AgentRevision): Promise<Buffer> {
     const runtime = this.options.runtime;
     if (runtime === undefined) {
       throw new DependencyUnavailableError("The Agent runtime credentials are not configured.");
@@ -11929,7 +11964,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (token.length === 0 || token.length > MAX_RUNTIME_CREDENTIAL_BYTES) {
       throw new OwnershipFailure("Harness transport credential is invalid.");
     }
-    return { name: APP_TOKEN_SHA, value: createHash("sha256").update(token).digest("hex") };
+    return token;
   }
 
   private async deliverGatewaySecrets(

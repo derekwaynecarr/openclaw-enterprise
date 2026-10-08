@@ -2235,3 +2235,96 @@ test("an OpenShell bearer-token source stays deletable after toolBinaries is rem
   // Removal is idempotent once the provider is gone.
   await modelOnly.removeSource(sourceContext(source));
 });
+
+test("OpenShell observes the Codex Harness through its exact bearer-passthrough service", async () => {
+  const service = {
+    sandbox: "",
+    name: "",
+    targetPort: 8080,
+    authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+    advertisedUrl: "http://codex.example.test:8080/",
+    url: "http://codex.example.test:9443/",
+  };
+  const gatewayClient = workspaceGatewayClient();
+  const observed = [];
+  let document = { status: 502 };
+  let handshake = false;
+  gatewayClient.getService = async (_workspace, sandbox, name) => {
+    observed.push(["getService", sandbox, name]);
+    return service === undefined ? undefined : { ...service, sandbox };
+  };
+  gatewayClient.getServiceDocument = async (url, path, bearer) => {
+    observed.push(["getServiceDocument", url, path, bearer]);
+    return document;
+  };
+  gatewayClient.serviceWebSocketHandshake = async (url, bearer) => {
+    observed.push(["serviceWebSocketHandshake", url, bearer]);
+    return handshake;
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const { context, revision, requirements } = codexSandboxFixture(driver);
+  const statusContext = { ...context, revision, requirements, transportToken: "transport-token" };
+
+  // Nothing listens yet: OpenShell's own 502 and a refused handshake mean starting.
+  assert.deepEqual(await driver.harnessStatus(statusContext), { state: "starting" });
+  const sandboxName = observed[0][1];
+  assert.deepEqual(observed, [
+    ["getService", sandboxName, ""],
+    [
+      "getServiceDocument",
+      "http://codex.example.test:9443/",
+      "/openclaw/runtime/status",
+      "transport-token",
+    ],
+    ["serviceWebSocketHandshake", "http://codex.example.test:9443/", "transport-token"],
+  ]);
+
+  handshake = true;
+  assert.deepEqual(await driver.harnessStatus(statusContext), { state: "serving" });
+
+  // A held failure is returned unvalidated for Compute; no handshake is attempted.
+  const runtimeFailure = {
+    component: "agent",
+    check: "model-probe",
+    checkedAt: "2026-10-08T13:00:00.000Z",
+    code: "MODEL_PROBE_FAILED",
+  };
+  document = { status: 200, json: { runtimeFailure } };
+  observed.length = 0;
+  assert.deepEqual(await driver.harnessStatus(statusContext), {
+    state: "failed",
+    runtimeFailure,
+  });
+  assert.equal(observed.length, 2);
+  // Only a 200 status document counts; anything else falls through to the handshake.
+  for (const other of [
+    { status: 404, json: { runtimeFailure } },
+    { status: 200, json: { error: "x" } },
+    { status: 200, json: ["runtimeFailure"] },
+    { status: 200 },
+  ]) {
+    document = other;
+    assert.deepEqual(await driver.harnessStatus(statusContext), { state: "serving" });
+  }
+
+  // The same exactness as harnessEndpoint: wrong port, mode, or a missing service fail closed.
+  for (const changed of [
+    { targetPort: 8081 },
+    { authorizationMode: "SERVICE_AUTHORIZATION_MODE_STRIP" },
+  ]) {
+    Object.assign(service, changed);
+    await assert.rejects(driver.harnessStatus(statusContext), /exact Codex bearer-passthrough/);
+    Object.assign(service, { targetPort: 8080, authorizationMode: 2 });
+  }
+  await assert.rejects(
+    driver.harnessStatus({
+      ...statusContext,
+      revision: { ...revision, harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" } },
+    }),
+    /only for dedicated Codex revisions/,
+  );
+});

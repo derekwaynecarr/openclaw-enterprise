@@ -16,6 +16,11 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import {
+  getServiceDocument,
+  serviceWebSocketHandshake,
+  type OpenShellServiceDocument,
+} from "./openshell-service-transport.ts";
 import { fileURLToPath } from "node:url";
 import type { Client, ClientUnaryCall, Metadata, ServiceClientConstructor } from "@grpc/grpc-js";
 import type { PackageDefinition } from "@grpc/proto-loader";
@@ -235,6 +240,19 @@ export interface OpenShellGatewayClient extends OpenShellSandboxLogReader {
     signal: AbortSignal,
   ): Promise<OpenShellServiceResponse | undefined>;
   deleteSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal): Promise<void>;
+  /** One bounded GET to a bearer-passthrough service path, through the gateway listener. */
+  getServiceDocument(
+    serviceUrl: string,
+    path: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellServiceDocument>;
+  /** True when the service completes an authenticated WebSocket handshake. */
+  serviceWebSocketHandshake(
+    serviceUrl: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<boolean>;
   getProviderProfile(
     workspace: string,
     id: string,
@@ -745,6 +763,35 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (options.rootCertificatePath !== undefined && !isAbsolute(options.rootCertificatePath)) {
       throw new OpenShellGatewayFailure("OpenShell root certificate path must be absolute.");
     }
+  }
+
+  async getServiceDocument(
+    serviceUrl: string,
+    path: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellServiceDocument> {
+    return getServiceDocument(this.serviceTransportOptions(), serviceUrl, path, bearer, signal);
+  }
+
+  async serviceWebSocketHandshake(
+    serviceUrl: string,
+    bearer: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    return serviceWebSocketHandshake(this.serviceTransportOptions(), serviceUrl, bearer, signal);
+  }
+
+  private serviceTransportOptions() {
+    // Validates the endpoint exactly as the gRPC channel does.
+    normalizeEndpoint(this.options.endpoint);
+    return {
+      endpoint: this.options.endpoint,
+      requestTimeoutMs: this.requestTimeoutMs,
+      ...(this.options.rootCertificatePath === undefined
+        ? {}
+        : { rootCertificatePath: this.options.rootCertificatePath }),
+    };
   }
 
   async health(signal: AbortSignal): Promise<void> {
