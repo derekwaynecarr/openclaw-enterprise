@@ -255,12 +255,11 @@ Maintenance of the active revision (scheduled only when Compute or repository
 credentials declare an interval) stops preparing it once its Harness source is
 withdrawn
 (`apps/controller/src/worker.ts:completeWithdrawnRevisionMaintenance`). While
-any withdrawal is `pending`, the pass re-queues it if none is
-outstanding and keeps the chain; once all are `revoked`, it stops. Deploy and repair work never re-attach a withdrawn source:
-a Harness source fails them with `CREDENTIAL_WITHDRAWN`. Maintenance also re-queues the
-pending tool-source withdrawals and those of the other revisions
+any withdrawal is `pending`, the pass keeps the chain; once all are `revoked`, it stops. Deploy and repair work never re-attach a withdrawn source:
+a Harness source fails them with `CREDENTIAL_WITHDRAWN`. Either maintenance pass re-queues
+pending withdrawals with no work outstanding, the other revisions' too
 (`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`), so one
-exhausted during a gateway outage resumes; a denied one waits for a replay. `authorizeRevision` skips the
+exhausted during a gateway outage resumes; one denied to its requester waits for a replay. `authorizeRevision` skips the
 `operate` recheck for withdrawn sources, so removing their grants cannot end
 maintenance.
 

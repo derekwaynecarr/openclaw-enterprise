@@ -359,8 +359,8 @@ export interface CredentialWithdrawal {
  * A withdrawal as the API reports it. `withdrawalInProgress` is true while an attempt is queued
  * or running. A `pending` withdrawal without one has no attempt queued (attempts ran out or a
  * permanent failure ended them): nothing retries it until the withdraw request is sent again,
- * or revision maintenance, where Compute or repository credentials schedule it, queues one;
- * maintenance leaves one whose last attempt was denied to its requester for that request.
+ * or revision maintenance, where Compute or repository credentials schedule it, queues one.
+ * Maintenance never re-queues one whose last attempt was denied to its requester.
  * The API reports the active revision's withdrawal unless another revision that may still run
  * with the source has a `pending` one, preferring one with no attempt queued.
  */

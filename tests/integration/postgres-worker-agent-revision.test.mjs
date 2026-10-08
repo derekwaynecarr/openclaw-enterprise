@@ -3850,6 +3850,7 @@ for (const successor of [false, true]) {
       });
       const sourceId = successor ? owner.harnessAuth.sourceId : toolSources(owner)[0].sourceId;
       let revoke = false;
+      let iamUnavailable = false;
       const compute = {
         ...fixture.compute,
         maintenanceIntervalMs: 3_600_000,
@@ -3858,7 +3859,31 @@ for (const successor of [false, true]) {
           return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
         },
       };
-      const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+      const options = {
+        convergenceTimeoutMs: 50,
+        transformDrivers: (drivers) => {
+          const withGateway = withCredentialGateway(drivers);
+          const createIAMDriver = withGateway.createIAMDriver;
+          return {
+            ...withGateway,
+            createIAMDriver(state) {
+              const iam = createIAMDriver(state);
+              return {
+                id: iam.id,
+                implementation: iam.implementation,
+                capability: iam.capability,
+                lookupIdentity: iam.lookupIdentity.bind(iam),
+                async authorize(request) {
+                  if (iamUnavailable) {
+                    throw new Error("IAM is temporarily unavailable");
+                  }
+                  return iam.authorize(request);
+                },
+              };
+            },
+          };
+        },
+      };
       const first = await fixture.revision(owner, 1);
       await fixture.start(compute, options);
       await fixture.work(first, "succeeded");
@@ -3931,30 +3956,47 @@ for (const successor of [false, true]) {
       assert.equal(waiting.requestedBy, requester);
       assert.equal(waiting.lastReason, "AUTHORIZATION_DENIED");
 
-      // An authorized replay takes the withdrawal over. Its attempts run out during the
-      // outage, and the next maintenance pass queues them again, as for any outage.
+      // An authorized replay takes the withdrawal over. Its attempts run out while IAM is
+      // unavailable; they record that outage, not the earlier denial, so the next maintenance
+      // pass queues them again.
+      iamUnavailable = true;
       const replayed = await fixture.controller.withdrawAgentCredentialSource(
         fixture.actor.id,
         request,
       );
       assert.equal(replayed.requestedBy, fixture.actor.id);
       assert.equal(replayed.withdrawalInProgress, true);
-      for (const revision of withdrawing) {
-        const retried = (await withdrawalWorkFor(fixture, revision)).at(-1);
-        await fixture.work(
-          { id: revision.id, idempotencyKey: retried.idempotency_key },
-          "failed_permanent",
-          30_000,
-        );
-      }
-      const exhausted = await read();
-      assert.equal(exhausted.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
-      assert.equal(exhausted.withdrawalInProgress, false);
-      revoke = true;
+      const exhaustAttempts = async () => {
+        for (const revision of withdrawing) {
+          const latest = (await withdrawalWorkFor(fixture, revision)).at(-1);
+          await fixture.work(
+            { id: revision.id, idempotencyKey: latest.idempotency_key },
+            "failed_permanent",
+            30_000,
+          );
+        }
+      };
+      await exhaustAttempts();
+      const iamOutage = await read();
+      assert.equal(iamOutage.lastReason, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(iamOutage.withdrawalInProgress, false);
+      iamUnavailable = false;
       await runMaintenance();
       assert.deepEqual(
         await attemptCounts(),
         withdrawing.map(() => 3),
+      );
+
+      // Those attempts run out during a gateway outage, and the next pass queues them again.
+      await exhaustAttempts();
+      const gatewayOutage = await read();
+      assert.equal(gatewayOutage.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
+      assert.equal(gatewayOutage.withdrawalInProgress, false);
+      revoke = true;
+      await runMaintenance();
+      assert.deepEqual(
+        await attemptCounts(),
+        withdrawing.map(() => 4),
       );
       for (const revision of withdrawing) {
         const recovered = (await withdrawalWorkFor(fixture, revision)).at(-1);

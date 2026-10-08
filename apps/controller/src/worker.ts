@@ -2810,7 +2810,8 @@ export class ControllerWorker {
    * Queues withdrawal work for each revision's pending withdrawal that has no attempt queued
    * or running, so one outage costs one bounded series of attempts per maintenance pass. The
    * work re-checks each withdrawal's own requester, as for a replay. A withdrawal that awaits a
-   * replay is skipped, so a denied requester costs one denial per attempt, not one per pass.
+   * replay is skipped, so a denied requester's withdrawal is not retried on every pass. Its
+   * revision's work, re-queued for another of its withdrawals, still rechecks and audits it.
    */
   private async requeueCredentialWithdrawals(
     unit: PlatformUnitOfWork,
