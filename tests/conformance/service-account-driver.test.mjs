@@ -276,7 +276,10 @@ test("deleting an account with an issued token without a ChatGPT Backend names t
     (error) => {
       assert.ok(error instanceof ServiceAccountDriverNotConfiguredError, error.name);
       assert.ok(!(error instanceof DependencyUnavailableError));
-      assert.match(error.message, /no ChatGPT Backend to revoke it.*guides\/integrations\/chatgpt\//);
+      assert.match(
+        error.message,
+        /no ChatGPT Backend to revoke it.*guides\/integrations\/chatgpt\//,
+      );
       assert.doesNotMatch(error.message, new RegExp(account.id));
       return true;
     },
