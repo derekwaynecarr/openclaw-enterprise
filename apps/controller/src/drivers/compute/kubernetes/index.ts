@@ -1931,28 +1931,37 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
   };
 }
 
+// Every topology here (embedded OpenClaw, dedicated OpenClaw or Codex) runs the pinned OpenClaw
+// Gateway on the admitted document. Its config validation rejects these roster shapes and the
+// Gateway then exits at startup (EX_CONFIG) instead of serving, so refuse them here. It drops
+// only an empty agents.list beside an implicit empty roster. A refusal, not a rewrite: OCC
+// skips this on status reads.
+function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): void {
+  const agents = asRecord(configuration.agents);
+  const roster = asRecord(agents?.entries);
+  const rosterSize = Object.keys(roster ?? {}).length;
+  const explicit = agents?.ownership === "explicit";
+  if (
+    (agents?.list !== undefined &&
+      !(Array.isArray(agents.list) && agents.list.length === 0 && rosterSize === 0 && !explicit)) ||
+    Object.values(roster ?? {}).some((entry) => asRecord(entry)?.default !== undefined) ||
+    (agents?.ownership !== undefined && !explicit) ||
+    (rosterSize > 1 && !explicit) ||
+    (explicit && rosterSize === 0)
+  ) {
+    throw new ConfigurationHarnessError(
+      'The OpenClaw Gateway rejects agents.list, agents.entries default markers, an agents.ownership other than "explicit", a multi-Agent roster without it, and an explicit one without entries.',
+    );
+  }
+}
+
 // OpenClaw's default Agent (the sole entry, or a named session store or system owner) keeps
 // its own workspace, while the Gateway, file transfer and workspace files address main. A
 // refusal, not a rewrite: OCC skips this on status reads.
 function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocument): void {
   const agents = asRecord(configuration.agents);
   const roster = asRecord(agents?.entries);
-  const rosterSize = Object.keys(roster ?? {}).length;
   const explicit = agents?.ownership === "explicit";
-  // OpenClaw config validation rejects these roster shapes, and the Gateway then exits at
-  // startup (EX_CONFIG) instead of serving, so refuse them here. It drops only an empty
-  // agents.list beside an implicit empty roster.
-  if (
-    (agents?.list !== undefined &&
-      !(Array.isArray(agents.list) && agents.list.length === 0 && rosterSize === 0 && !explicit)) ||
-    Object.values(roster ?? {}).some((entry) => asRecord(entry)?.default !== undefined) ||
-    (agents?.ownership !== undefined && !explicit) ||
-    (rosterSize > 1 && !explicit)
-  ) {
-    throw new ConfigurationHarnessError(
-      'Dedicated OpenClaw rejects agents.list, agents.entries default markers, an agents.ownership other than "explicit", and a multi-Agent roster without it.',
-    );
-  }
   const defaults = asRecord(agents?.defaults);
   // OpenClaw matches normalized ids case-insensitively, as the OpenShell workspace pin does.
   const isMain = (id: unknown) => typeof id === "string" && id.trim().toLowerCase() === "main";
@@ -2868,6 +2877,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         `Dedicated OpenClaw required profile ${NATIVE_WORKER_PROFILE} is owned by the selected Compute Driver.`,
       );
     }
+    requireOpenClawRoster(configuration);
     if (native) {
       requireNativeMainAgentDefault(configuration);
     }

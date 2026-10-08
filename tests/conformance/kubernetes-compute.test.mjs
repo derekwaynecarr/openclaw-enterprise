@@ -5183,8 +5183,6 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   });
   for (const agents of [
     { entries: null },
-    { ownership: "explicit", entries: {} },
-    { ownership: "explicit" },
     { entries: { helper: { workspace: "/home/node/helper" } } },
     // OpenClaw normalizes `main!` to main and may match it first.
     {
@@ -5231,8 +5229,26 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     message: refusal.message,
   });
   // OpenClaw's config validation rejects retired roster shapes, and its Gateway then exits at
-  // startup (EX_CONFIG 78) instead of serving, so admission refuses them up front.
-  for (const agents of [
+  // startup (EX_CONFIG 78) instead of serving, so admission refuses them up front. Embedded
+  // OpenClaw and dedicated Codex run the same Gateway on the admitted document.
+  const codexConfiguration = admitLoggingConfiguration(
+    createHarnessConfiguration("codex", "gpt-5"),
+    "info",
+  );
+  const topologies = [
+    [revision.harness, withAgents],
+    [{ ...revision.harness, mode: "embedded" }, withAgents],
+    [
+      { id: "codex", version: "1.0.0", mode: "dedicated" },
+      (agents) => ({
+        ...codexConfiguration,
+        agents: { ...codexConfiguration.agents, ...agents },
+      }),
+    ],
+  ];
+  const rejectedRosters = [
+    { ownership: "explicit", entries: {} },
+    { ownership: "explicit" },
     { entries: { main: { default: true } } },
     { entries: { main: { default: false } } },
     { entries: { main: {}, helper: { default: true, workspace: "/home/node/helper" } } },
@@ -5242,16 +5258,19 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     { list: [], ownership: "explicit", entries: { main: {} } },
     { entries: { main: {}, helper: {} } },
     { ownership: "shared", entries: { main: {} } },
-  ]) {
-    assert.throws(
-      () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withAgents(agents)),
-      (error) =>
-        error instanceof ConfigurationHarnessError &&
-        /rejects agents\.list, agents\.entries default markers, an agents\.ownership other than/.test(
-          error.message,
-        ),
-      JSON.stringify(agents),
-    );
+  ];
+  for (const [harness, configure] of topologies) {
+    for (const agents of rejectedRosters) {
+      assert.throws(
+        () => driver.validateHarnessAuth(harness, apiKeyAuth, configure(agents)),
+        (error) =>
+          error instanceof ConfigurationHarnessError &&
+          /^The OpenClaw Gateway rejects agents\.list, agents\.entries default markers/.test(
+            error.message,
+          ),
+        `${harness.mode} ${harness.id} ${JSON.stringify(agents)}`,
+      );
+    }
   }
   for (const agents of [
     // OpenClaw reads an empty roster as `{ main: {} }` and drops an empty list beside it.
@@ -5271,24 +5290,19 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
       JSON.stringify(agents),
     );
   }
-  // Embedded OpenClaw and dedicated Codex keep their own rosters.
-  assert.doesNotThrow(() =>
-    driver.validateHarnessAuth(
-      { ...revision.harness, mode: "embedded" },
-      revision.harnessAuth,
-      withAgents({ entries: { helper: { default: true } } }),
-    ),
-  );
-  const codexConfiguration = admitLoggingConfiguration(
-    createHarnessConfiguration("codex", "gpt-5"),
-    "info",
-  );
-  assert.doesNotThrow(() =>
-    driver.validateHarnessAuth({ id: "codex", version: "1.0.0", mode: "dedicated" }, apiKeyAuth, {
-      ...codexConfiguration,
-      agents: { ...codexConfiguration.agents, entries: { helper: { default: true } } },
-    }),
-  );
+  // Only dedicated OpenClaw serves main; the other topologies keep any valid roster.
+  for (const [harness, configure] of topologies.slice(1)) {
+    for (const agents of [
+      { entries: { helper: {} } },
+      { list: [] },
+      { ownership: "explicit", entries: { helper: {}, reviewer: {} } },
+    ]) {
+      assert.doesNotThrow(
+        () => driver.validateHarnessAuth(harness, apiKeyAuth, configure(agents)),
+        `${harness.mode} ${harness.id} ${JSON.stringify(agents)}`,
+      );
+    }
+  }
   const ownership = { namespaceId: tenant.id, agentId };
   const nativeInference = {
     models: {
