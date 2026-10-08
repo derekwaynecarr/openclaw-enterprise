@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
@@ -443,6 +444,19 @@ if (command === "k3d") {
     assert.deepEqual(args.slice(11), ["--kubeconfig-update-default=false", "--kubeconfig-switch-context=false"]);
     }
     state.cluster = args[2];
+    state.clusterDeleted = false;
+    if (scenario === "cluster-create-hangs" ||
+        (scenario === "cluster-create-hangs-once" && !state.createHung)) {
+      state.createHung = true;
+      commitState();
+      // A descendant that shares the output pipes, as a credential helper would.
+      // The timeout must reach it, or "close" never comes.
+      const descendant = spawn(process.execPath, ["-e", "setTimeout(() => {}, 40_000)"], {
+        stdio: ["ignore", "inherit", "inherit"],
+      });
+      appendFileSync(join(root, "hung-pids"), process.pid + "\n" + descendant.pid + "\n");
+      await hang();
+    }
     if (scenario === "cluster-create-failed") {
       state.containersAvailable = args.includes("--no-rollback");
       commitState();
@@ -930,6 +944,98 @@ for (const { scenario, stage, error } of [
     assert.equal(await readFile(artifactPath, "utf8"), artifactText);
   });
 }
+
+// Linux reports an exited but unreaped process as a zombie; it holds nothing.
+function processRunning(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    return !/^\d+ \(.*\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+  } catch {
+    return true;
+  }
+}
+
+async function hungK3dProcesses(commands) {
+  const text = await readFile(join(dirname(commands.statePath), "hung-pids"), "utf8");
+  return text.trim().split("\n").map(Number);
+}
+
+test("k3d preparation times out a hung cluster create, discards it and retries once", async (t) => {
+  const commands = await fixtureImageCommands(t, "cluster-create-hangs-once", undefined, {
+    OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "5000",
+  });
+  const result = commands.prepare();
+  assert.equal(result.error, undefined, "a hung create must not reach the CLI watchdog");
+  assert.equal(result.status, 0, result.stderr);
+  assertStderrMatch(
+    result.stderr,
+    /k3d cluster create openclaw-k8s-\S+ did not finish within 5000 ms \(attempt 1 of 2\)/,
+  );
+  const stages = fixturePreparationMetrics(result.stderr)
+    .filter(({ stage, status }) => stage.startsWith("k3d-create") && status !== "started")
+    .map(({ stage, status }) => `${stage}:${status}`);
+  assert.deepEqual(stages, ["k3d-create:failed", "k3d-create-discard:passed", "k3d-create:passed"]);
+  for (const pid of await hungK3dProcesses(commands)) {
+    assert.equal(processRunning(pid), false, `hung k3d process ${pid} must not survive`);
+  }
+
+  // The retry reuses the owned name, deleting the first attempt before creating again.
+  const k3d = (await commands.commands())
+    .filter(({ command, args }) => command === "k3d" && args[0] === "cluster")
+    .map(({ args }) => args.slice(0, 2).join(" "));
+  const firstCreate = k3d.indexOf("cluster create");
+  const secondCreate = k3d.indexOf("cluster create", firstCreate + 1);
+  assert.ok(secondCreate > firstCreate);
+  assert.ok(k3d.slice(firstCreate, secondCreate).includes("cluster delete"));
+  const evidence = JSON.parse(await readFile(`${commands.statePath}.diagnostics.json`, "utf8"));
+  assert.match(evidence.failure, /\(attempt 1 of 2\)$/);
+
+  const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+  const clusters = state.resources.filter(({ kind }) => kind === "k3d-cluster");
+  assert.equal(clusters.length, 1);
+  assert.equal(clusters[0].status, "ready");
+  const cleanup = commands.cleanup();
+  assert.equal(cleanup.status, 0, cleanup.stderr);
+  await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
+});
+
+test("k3d preparation fails clearly when every cluster create attempt hangs", async (t) => {
+  const commands = await fixtureImageCommands(t, "cluster-create-hangs", undefined, {
+    OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "3000",
+  });
+  const result = commands.prepare();
+  assert.equal(result.error, undefined, "a hung create must not reach the CLI watchdog");
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr.trim().split("\n").at(-1),
+    /^k3d cluster create openclaw-k8s-\S+ did not finish within 3000 ms \(attempt 2 of 2\); giving up\./,
+  );
+  for (const pid of await hungK3dProcesses(commands)) {
+    assert.equal(processRunning(pid), false, `hung k3d process ${pid} must not survive`);
+  }
+  const creates = (await commands.commands()).filter(
+    ({ command, args }) => command === "k3d" && args[0] === "cluster" && args[1] === "create",
+  );
+  assert.equal(creates.length, 2);
+  const evidence = JSON.parse(await readFile(`${commands.statePath}.diagnostics.json`, "utf8"));
+  assert.match(evidence.failure, /\(attempt 2 of 2\)$/);
+  assert.equal(evidence.containers.length, 2);
+
+  // The partial cluster stays registered for cleanup; nothing is published.
+  const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+  const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
+  assert.equal(cluster.status, "planned");
+  assert.equal(state.env, undefined);
+  await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+  const cleanup = commands.cleanup();
+  assert.equal(cleanup.status, 0, cleanup.stderr);
+  await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
+  await assert.rejects(() => stat(cluster.directory), { code: "ENOENT" });
+});
 
 test("k3d node log excerpts stay bounded and keep the start, later errors and the end", () => {
   const at = (second) => new Date(Date.UTC(2026, 8, 23, 0, 0, second)).toISOString();
