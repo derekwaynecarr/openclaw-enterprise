@@ -230,11 +230,13 @@ async function containerCpu(containerName) {
       ],
       { timeout: 10_000 * imageSmokeTimeoutMultiplier },
     );
-    return stdout
-      .trim()
-      .split(/\s*\n\s*/)
-      .join("; ")
-      .slice(0, 600);
+    const text = stdout.trim();
+    return text === ""
+      ? "unavailable"
+      : text
+          .split(/\s*\n\s*/)
+          .join("; ")
+          .slice(0, 600);
   } catch {
     return "unavailable";
   }
