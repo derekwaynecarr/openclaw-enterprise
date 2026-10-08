@@ -1144,15 +1144,6 @@ function bridgeRequirements(context, claimName, subPath) {
       if (needsNativeTemporary && entry.name === "NODE_COMPILE_CACHE") {
         return { name: entry.name, value: `${bridgedNodeStateMountPath}/.cache/node-compile` };
       }
-      if (needsNativeTemporary && entry.name === "OPENCLAW_NATIVE_INFERENCE_CONFIG") {
-        const configuration = JSON.parse(entry.value);
-        assert.ok(Array.isArray(configuration.workspaces));
-        configuration.workspaces = configuration.workspaces.map((workspace) => {
-          assert.equal(workspace.path, `${nodeStateMountPath}/node-host`);
-          return { ...workspace, path: `${bridgedNodeStateMountPath}/node-host` };
-        });
-        return { name: entry.name, value: JSON.stringify(configuration) };
-      }
       return entry;
     });
   return {
@@ -1382,14 +1373,12 @@ function assertBridgedNativeStateMount(pod) {
   const nativeInference = JSON.parse(
     environment.find(({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG")?.value,
   );
-  assert.equal(nativeInference.workspaces.length > 0, true);
-  assert.equal(
-    nativeInference.workspaces.every(
-      ({ path }) => path === `${bridgedNodeStateMountPath}/node-host`,
-    ),
-    true,
-    "the native inference grant must follow the bridged node-state mount.",
-  );
+  assert.ok(nativeInference.models.providers.openai.models.length > 0);
+  assert.deepEqual(nativeInference.models.providers.openai.apiKey, {
+    source: "env",
+    provider: "model",
+    id: "OPENAI_API_KEY",
+  });
   const mounts = container.volumeMounts ?? [];
   assert.equal(
     mounts.some(
@@ -1930,6 +1919,12 @@ async function prepareProductionInstallation(
     // scripts/k3d builds this runtime from an OpenClaw source with native worker support.
     configuration.runtime = { nativeWorkerSupport: "custom-image" };
     configuration.drivers.compute.configuration.runtime.nativeOpenClawSessionCapacity = 2;
+    // The node and two retained session workers share one container; the single-Harness
+    // 2 GiB budget OOM-kills the second turn. Keep Compute and Sandbox budgets aligned.
+    configuration.drivers.compute.configuration.resources.agent.limits.memory = "6Gi";
+    configuration.drivers.sandbox.configuration.kubernetes.agentResources.limits.memory =
+      configuration.drivers.compute.configuration.resources.agent.limits.memory;
+    configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "16Gi";
     configuration.drivers.credential_gateway.configuration.binaries = ["/usr/local/bin/node"];
     // Automatic enrollment egress belongs to the Driver's Codex runtime provider. The native
     // verification bridge must admit only its Node executable and exact Gateway endpoint.

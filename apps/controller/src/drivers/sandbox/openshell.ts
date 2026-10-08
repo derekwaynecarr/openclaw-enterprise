@@ -1787,7 +1787,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     if (harness.id === "openclaw") {
-      return { ...configuration };
+      const agents = optionalAgentConfiguration(
+        configuration.agents,
+        "OpenShell Agent configuration",
+      );
+      const defaults = optionalAgentConfiguration(agents.defaults, "OpenShell Agent defaults");
+      return {
+        ...configuration,
+        agents: {
+          ...agents,
+          defaults: { ...defaults, workspace: this.options.kubernetes.sandboxDataMount.mountPath },
+        },
+      };
     }
     if (harness.id !== "codex") {
       throw new OpenShellSandboxConfigurationFailure(
