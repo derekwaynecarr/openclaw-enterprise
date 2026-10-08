@@ -150,7 +150,8 @@ OpenShell cannot delete a Workspace that still holds profiles.
 
 For a revision, `attachForRevision` brings each source's profile up to date and
 returns its provider name. It fails when two of the revision's sources would use
-the same environment variable. The
+the same environment variable, and the worker then fails the deployment with
+`CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT` without retrying. The
 OpenShell SandboxDriver appends those names to `SandboxSpec.providers`.
 `attachmentStatus` calls `GetSandboxProviderStatus` for each provider and maps
 OpenShell readiness states to `ready`, `withheld`, `revoked`, `failed`, or
@@ -237,7 +238,7 @@ Driver startup integration covers Backend membership and selection rules.
 | `OpenShell Credential Gateway binaries must be a nonempty list of absolute paths.`                | Correct `binaries`.                                                                                              |
 | Registering `bearer-token` returns `404` for an unsupported type                                  | Configure `toolBinaries`.                                                                                        |
 | A tool request reaches the endpoint with the placeholder, or OpenShell denies it                  | Call it from a `toolBinaries` executable, at the source's exact host, port, and path.                            |
-| Deployment fails because two sources use the same environment variable                            | Give each source bound to the Agent a distinct `env_var`.                                                        |
+| Deployment fails with `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`                                    | Two sources share a variable. Bind one `openai` source; give each `bearer-token` a distinct `env_var`.           |
 | Model requests fail with `403` "A credential placeholder in the request body cannot be forwarded" | A tool printed a placeholder into the conversation. Start a new thread, and avoid printing credential variables. |
 | Registration returns `503`                                                                        | Check that the API reaches the gateway, the token file is mounted, and the Workspace exists.                     |
 | Registration returns `404` for a name conflict                                                    | A provider named for this source exists without OCC's labels. Remove it in OpenShell, then retry.                |

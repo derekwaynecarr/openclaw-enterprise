@@ -165,6 +165,22 @@ export class SecretStorageDriverError extends SecretDriverOwnershipError {
 }
 
 /**
+ * A credential source registered through a Credential Gateway Driver the Installation no longer
+ * selects. OCC never binds, deploys, updates or deletes a source through a driver that did not
+ * register it. Raised only after the caller's grant and the source lookup, so it reveals nothing
+ * a 403 or 404 hides; one fixed message names the fix on every path. An Installation with no
+ * Credential Gateway, or a selected one that is unusable, is not this error.
+ */
+export class CredentialSourceDriverError extends DependencyUnavailableError {
+  constructor() {
+    super(
+      "The selected Credential Gateway Driver did not register this credential source. Bind a replacement registered through the selected driver instead. To update or delete this source, an administrator must first re-select the driver that registered it.",
+    );
+    this.name = "CredentialSourceDriverError";
+  }
+}
+
+/**
  * A running Agent has no active revision yet (its first deployment, or a redeploy after a
  * stop, is still activating). A lifecycle state, not an outage; it stays a
  * DependencyUnavailableError so callers that need a revision still answer 503.
@@ -653,6 +669,23 @@ export class SandboxRevisionUnsupportedError extends Error {
   constructor(code: SandboxRevisionUnsupportedError["code"], message: string) {
     super(message);
     this.name = "SandboxRevisionUnsupportedError";
+    this.code = code;
+  }
+}
+
+/**
+ * A Credential Gateway cannot attach this exact AgentRevision's credential sources: two of them
+ * would place their placeholders in the same Sandbox environment variable. The revision's
+ * source list and each source's config are fixed, so retrying cannot change the outcome; the
+ * worker fails the deployment with `code`. The message stays in the controller; status shows a
+ * fixed text.
+ */
+export class CredentialSourceRevisionError extends Error {
+  readonly code: "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT";
+
+  constructor(code: CredentialSourceRevisionError["code"], message: string) {
+    super(message);
+    this.name = "CredentialSourceRevisionError";
     this.code = code;
   }
 }

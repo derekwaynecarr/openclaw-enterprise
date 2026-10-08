@@ -40,6 +40,10 @@ method below. Startup rejects a Driver that omits one.
 | `attachmentStatus`  | The same context plus the provisioned `SandboxResourceRef`.                                | Per-source state: `ready`, `pending`, `withheld`, `failed`, `revoked`, or `absent`.                                                                      | Compute blocks activation on any state other than `ready` or `pending`.           |
 | `withdraw`          | Placement, revision, its required `SandboxResourceRef`, and one source ID; no source list. | Revokes that revision's access, including running processes. `revoked` only on gateway evidence, `absent` when the Sandbox is gone, otherwise `pending`. | Anything but `revoked` or `absent` keeps the OCC withdrawal `pending` for retry.  |
 
+`attachForRevision` throws `CredentialSourceRevisionError` when two sources would
+share a placeholder environment variable; the worker then fails the deployment
+at once instead of retrying.
+
 A `CredentialSourceType` declares:
 
 - `type`: an implementation-defined name, such as `openai`.
@@ -162,6 +166,7 @@ adopt or delete the same stored copy.
 | Registration or binding returns `403`                | Check `credential_source:create` or `operate`, and `secret:operate` on each referenced Secret.                                    |
 | Deployment returns `409` with a gateway selected     | Change `harnessAuth` to `credential_source`. Secret-backed and account methods are rejected while a gateway is selected.          |
 | Registration, read status, or deletion returns `503` | Check gateway connectivity and credentials. Retry deletion; the record stays `deleting` until the stored copy is removed.         |
+| `503` naming the driver that registered the source   | Another driver is selected; see [After a Credential Gateway change](../credential-sources.md#after-a-credential-gateway-change).  |
 | A revision never activates                           | Check the worker's reason code and the source's live `status`. A `failed` attachment state requires repairing the gateway source. |
 
 ## Implementations

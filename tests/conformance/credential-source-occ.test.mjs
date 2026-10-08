@@ -7,6 +7,7 @@ import {
   AgentCredentialSourceBindingError,
   AuthorizationDeniedError,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceDriverError,
   DependencyUnavailableError,
   InMemoryPlatformState,
   NamespaceNotEmptyError,
@@ -2296,4 +2297,179 @@ test("deploy admission rechecks every listed source for the deployer, Sandbox an
       message: "Agent credential sources require a selected Sandbox Driver.",
     },
   );
+});
+
+test("after a Credential Gateway change, every path refuses an old source with one fixed message and DELETE keeps it ready", async () => {
+  const {
+    controller,
+    dedicatedAgent,
+    gateway,
+    makeReady,
+    modelSecret,
+    namespace,
+    passRegistrationFence,
+  } = await fixture();
+  await makeReady();
+  const registry = (name) =>
+    controller.createCredentialSource(administrator, {
+      namespaceId: namespace.id,
+      name,
+      type: "registry",
+      config: { host: `${name}.example.com` },
+    });
+  const bound = await registry("registry-bound");
+  const unbound = await registry("registry-unbound");
+  const model = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai-old",
+    type: "openai",
+    secrets: { api_key: (await modelSecret()).ref },
+  });
+  // A source an earlier deletion left `deleting` through the old gateway, as before this fix.
+  const stuck = await controller.transact((unit) =>
+    unit.credentialSources.createCredentialSource({
+      id: `cs_${crypto.randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "registry-stuck",
+      type: "registry",
+      config: { host: "registry-stuck.example.com" },
+      secrets: {},
+      driverId: gateway.id,
+      state: "deleting",
+      createdAt: "2026-09-27T12:00:00.000Z",
+    }),
+  );
+  const agent = await dedicatedAgent();
+  const update = (fields) =>
+    controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: agent.configurationId,
+      ...fields,
+    });
+  await update({ harnessAuth: { method: "runtime" }, credentialSources: [{ sourceId: bound.id }] });
+
+  controller.registerDriver({ ...gateway, id: "credential-gateway-replacement" });
+  controller.selectDriver("credential_gateway", "credential-gateway-replacement");
+  const removals = () => gateway.calls.filter(({ operation }) => operation === "removeSource");
+  const removalsBefore = removals().length;
+  const ownership = (error) => {
+    assert.ok(error instanceof CredentialSourceDriverError, `${error.name}: ${error.message}`);
+    const { status, code, message } = requestFailure(error);
+    assert.deepEqual(
+      { status, code, message },
+      {
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        message: new CredentialSourceDriverError().message,
+      },
+    );
+    assert.doesNotMatch(message, /cs_|credential-gateway-/);
+    return true;
+  };
+  // Bind (list and Harness), deploy admission, update and delete all name the same fix.
+  await assert.rejects(
+    update({ credentialSources: [{ sourceId: bound.id }, { sourceId: unbound.id }] }),
+    ownership,
+  );
+  await assert.rejects(
+    update({
+      harnessAuth: { method: "credential_source", sourceId: model.id },
+      credentialSources: [{ sourceId: model.id }],
+    }),
+    ownership,
+  );
+  await assert.rejects(
+    controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    ),
+    ownership,
+  );
+  await assert.rejects(
+    controller.updateCredentialSource(administrator, {
+      namespaceId: namespace.id,
+      credentialSourceId: model.id,
+    }),
+    ownership,
+  );
+  for (const source of [unbound, stuck]) {
+    await assert.rejects(
+      controller.deleteCredentialSource(administrator, namespace.id, source.id),
+      ownership,
+    );
+  }
+  // The refused deletion committed nothing: the source is still ready, so it is not stranded
+  // in the one-way `deleting` state, and no gateway was asked to remove anything.
+  const unchanged = await controller.readCredentialSource(administrator, namespace.id, unbound.id);
+  assert.equal(unchanged.state, "ready");
+  // Its live status names the driver change rather than an outage.
+  assert.deepEqual(unchanged.status, {
+    state: "failed",
+    reason: "A Credential Gateway Driver that is no longer selected registered the source.",
+  });
+  assert.equal(removals().length, removalsBefore);
+  // A referenced source still reports the reference first.
+  await assert.rejects(
+    controller.deleteCredentialSource(administrator, namespace.id, bound.id),
+    ResourceConflictError,
+  );
+
+  // Selecting the registering driver again lets both sources be deleted.
+  controller.selectDriver("credential_gateway", gateway.id);
+  passRegistrationFence();
+  for (const source of [unbound, stuck]) {
+    await controller.deleteCredentialSource(administrator, namespace.id, source.id);
+  }
+  assert.deepEqual(
+    (await controller.listCredentialSources(administrator, namespace.id))
+      .map(({ name }) => name)
+      .toSorted(),
+    ["openai-old", "registry-bound"],
+  );
+});
+
+test("update and delete without a Credential Gateway are a 409 after the grant, whether or not the source exists", async () => {
+  const { controller, makeReady, namespace } = await fixture({ withoutGateway: true });
+  await makeReady();
+  const stored = await controller.transact((unit) =>
+    unit.credentialSources.createCredentialSource({
+      id: `cs_${crypto.randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "stored",
+      type: "registry",
+      config: { host: "registry.example.com" },
+      secrets: {},
+      driverId: "credential-gateway-test",
+      state: "ready",
+      createdAt: "2026-09-27T12:00:00.000Z",
+    }),
+  );
+  const missing = "cs_00000000-0000-4000-8000-00000000ffff";
+  const notConfigured = (error) => {
+    assert.ok(error instanceof CredentialGatewayNotConfiguredError, error.name);
+    assert.equal(requestFailure(error).status, 409);
+    return true;
+  };
+  for (const id of [stored.id, missing]) {
+    await assert.rejects(
+      controller.updateCredentialSource(administrator, {
+        namespaceId: namespace.id,
+        credentialSourceId: id,
+      }),
+      notConfigured,
+    );
+    await assert.rejects(
+      controller.deleteCredentialSource(administrator, namespace.id, id),
+      notConfigured,
+    );
+    // A caller without the grant is denied first.
+    await assert.rejects(
+      controller.deleteCredentialSource(zeroGrant, namespace.id, id),
+      AuthorizationDeniedError,
+    );
+  }
+  const [after] = await controller.listCredentialSources(administrator, namespace.id);
+  assert.equal(after.state, "ready");
 });

@@ -151,6 +151,7 @@ import {
   ComputeProvisioningRefusedError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceDriverError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
@@ -274,6 +275,8 @@ export {
   ComputeProvisioningRefusedError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceDriverError,
+  CredentialSourceRevisionError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
@@ -3939,6 +3942,8 @@ export class OpenClawController {
         namespaceId: input.namespaceId,
       });
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // An Installation property, so it is reported before any Namespace or source state.
+      this.assertCredentialGatewaySelected();
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -3954,7 +3959,7 @@ export class OpenClawController {
       if (source.state !== "ready") {
         throw new ResourceStateConflictError("Only a ready credential source can be updated.");
       }
-      const gateway = this.credentialGatewayDriver(source.driverId);
+      const gateway = this.ownedCredentialGatewayDriver(source.driverId);
       const type = await this.credentialSourceType(gateway, source.type);
       const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
       credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
@@ -4054,14 +4059,21 @@ export class OpenClawController {
     });
     let status: CredentialSourceStatus;
     try {
-      const gateway = this.credentialGatewayDriver(source.driverId);
+      const gateway = this.ownedCredentialGatewayDriver(source.driverId);
       status = await gateway.sourceStatus({
         namespace: await this.credentialNamespace(namespace),
         source,
         signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       });
-    } catch {
-      status = { state: "failed", reason: "The Credential Gateway status is unavailable." };
+    } catch (error) {
+      // After the grant and the lookup, so naming a driver change reveals nothing new.
+      status = {
+        state: "failed",
+        reason:
+          error instanceof CredentialSourceDriverError
+            ? "A Credential Gateway Driver that is no longer selected registered the source."
+            : "The Credential Gateway status is unavailable.",
+      };
     }
     return this.credentialSourceMetadata(source, status);
   }
@@ -4090,7 +4102,9 @@ export class OpenClawController {
 
   /**
    * Deletion is caller-retried: the record stays `deleting` until the gateway copy is gone,
-   * which keeps the Namespace nonempty and blocks new bindings in the meantime.
+   * which keeps the Namespace nonempty and blocks new bindings in the meantime. The record moves
+   * to `deleting`, which is one-way, only once the selected gateway registered it, so a refusal
+   * after a gateway change leaves the source as it was.
    */
   async deleteCredentialSource(
     principalId: string,
@@ -4100,12 +4114,14 @@ export class OpenClawController {
   ): Promise<void> {
     this.assertCredentialSourceTransactionBoundary();
     this.namespaceIdentity(namespaceId);
-    const { namespace, source } = await this.mutate(async (state) => {
+    const { namespace, source, gateway } = await this.mutate(async (state) => {
       const locked = await this.lockNamespaceForPolicyDelete(state, principalId, {
         kind: "credential_source",
         id: credentialSourceId,
         namespaceId,
       });
+      // An Installation property, so it is reported before any source lookup.
+      this.assertCredentialGatewaySelected();
       const found = await state.credentialSources.lockCredentialSource(
         locked.id,
         credentialSourceId,
@@ -4120,6 +4136,7 @@ export class OpenClawController {
           "An Agent, active revision, or pending deployment still references the credential source. Delete those Agents, or deploy them without it, first.",
         );
       }
+      const owner = this.ownedCredentialGatewayDriver(found.driverId);
       const deleting =
         found.state === "deleting"
           ? found
@@ -4127,9 +4144,8 @@ export class OpenClawController {
       if (deleting === undefined) {
         throw new ResourceStateConflictError("The credential source changed during deletion.");
       }
-      return { namespace: locked, source: deleting };
+      return { namespace: locked, source: deleting, gateway: owner };
     });
-    const gateway = this.credentialGatewayDriver(source.driverId);
     const placed = await this.credentialNamespace(namespace);
     await this.credentialGatewayOperation(() =>
       gateway.removeSource({
@@ -7127,7 +7143,7 @@ export class OpenClawController {
           "The Harness credential source is unavailable in the exact Namespace.",
         );
       }
-      this.credentialGatewayDriver(source.driverId);
+      this.ownedCredentialGatewayDriver(source.driverId);
     } else {
       if (binding.source.namespaceId !== namespaceId) {
         throw new ScopeViolationError("Harness authentication sources cannot cross Namespaces.");
@@ -7270,7 +7286,7 @@ export class OpenClawController {
           "The credential source is unavailable in the exact Namespace.",
         );
       }
-      this.credentialGatewayDriver(source.driverId);
+      this.ownedCredentialGatewayDriver(source.driverId);
     }
     this.assertHarnessSourceListed(bindings, harnessAuth);
   }
@@ -7316,7 +7332,7 @@ export class OpenClawController {
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError("The credential source is unavailable.");
       }
-      const gateway = this.credentialGatewayDriver(source.driverId);
+      const gateway = this.ownedCredentialGatewayDriver(source.driverId);
       await this.credentialSourceType(gateway, source.type);
       snapshots.push({ sourceId, credentialGatewayId: gateway.id, sourceType: source.type });
     }
@@ -8247,7 +8263,7 @@ export class OpenClawController {
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError("The Harness credential source is unavailable.");
       }
-      const gateway = this.credentialGatewayDriver(source.driverId);
+      const gateway = this.ownedCredentialGatewayDriver(source.driverId);
       const type = await this.credentialSourceType(gateway, source.type);
       if (type.harnessAuth === undefined) {
         throw new ResourceStateConflictError(
@@ -8449,6 +8465,20 @@ export class OpenClawController {
         "The selected Secret Driver is unavailable or does not own this Secret.",
       );
     }
+  }
+
+  /**
+   * The selected Credential Gateway Driver when it registered a source the caller has already
+   * been granted and looked up; otherwise CredentialSourceDriverError, whose fixed message names
+   * the fix. Call it only after the grant and the lookup, so it is no existence oracle. No usable
+   * selected driver is an outage, not an ownership problem: it keeps the generic 503.
+   */
+  private ownedCredentialGatewayDriver(driverId: string): CredentialGatewayDriver {
+    const driver = this.credentialGatewayDriver();
+    if (driver.id !== driverId) {
+      throw new CredentialSourceDriverError();
+    }
+    return driver;
   }
 
   private credentialGatewayDriver(expectedId?: string): CredentialGatewayDriver {
