@@ -7855,9 +7855,10 @@ export class OpenClawController {
    * Inspecting before the fence is safe: the earlier attempt dispatched the write only after its
    * own fence passed; this reads only the target it recorded, through the Driver the accepted
    * plan names (another selected Driver is left to the fence, which then retries the work); and
-   * settling records what it observed, as Agent deletion does for cancelled work. Nothing is
-   * written outside OCC before the fence, and a write it cannot observe stays pending and
-   * retries, as before. Other work, and work whose effect is already settled, is unchanged.
+   * settling records what it observed for that exact pending kind, owner and target (a pending
+   * effect replaced meanwhile settles nothing), as Agent deletion does for cancelled work.
+   * Nothing is written outside OCC before the fence, and a write it cannot observe stays pending
+   * and retries, as before. Other work, and work whose effect is already settled, is unchanged.
    */
   private async reconcileProvisioningEffect(
     record: Readonly<AgentProvisioningRecord>,
@@ -7887,6 +7888,9 @@ export class OpenClawController {
       );
     }
     const driver = this.runtimeCredentialComputeDriver("provision");
+    if (drivers?.compute !== driver.id) {
+      return record;
+    }
     const { namespace, agent } = await this.read(async (state) => {
       const namespace = await state.namespaces.findNamespace(record.namespaceId);
       return {
@@ -7897,7 +7901,7 @@ export class OpenClawController {
             : await state.agents.findAgent(namespace.id, pending.targetId),
       };
     });
-    if (drivers?.compute !== driver.id || namespace === undefined || agent === undefined) {
+    if (namespace === undefined || agent === undefined) {
       return record;
     }
     return this.inspectProvisioningTransportEffect(
