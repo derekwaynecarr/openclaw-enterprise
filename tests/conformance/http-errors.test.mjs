@@ -187,6 +187,16 @@ const cases = [
     },
   ],
   [
+    "deleting a service account with an issued token without a ChatGPT Backend names the fix",
+    new ServiceAccountDriverNotConfiguredError("delete"),
+    {
+      status: 409,
+      code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      message:
+        "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. An administrator must configure it again before deleting the account; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    },
+  ],
+  [
     "a Kubernetes API 409",
     apiError(409),
     {
