@@ -1325,6 +1325,24 @@ test("Agent reads return the bound credentialSources; revision reads return only
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.deepEqual(created.data.credentialSources, [{ sourceId: source.data.id }]);
+  // An object array declared uniqueItems: listing one source twice names the rule.
+  const repeated = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "credential-source-agent-repeated",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "runtime" },
+      credentialSources: [{ sourceId: source.data.id }, { sourceId: source.data.id }],
+    },
+  });
+  assert.equal(repeated.status, 400, JSON.stringify(repeated.body));
+  assert.equal(
+    repeated.body.error.message,
+    "The request does not match the operation contract: body /credentialSources has an unsupported value (expected no duplicate items).",
+  );
+  assert.deepEqual(repeated.body.error.details, [
+    { path: "/credentialSources", code: "INVALID_VALUE" },
+  ]);
   const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
   assert.deepEqual((await controller.request("GET", agentPath)).data.credentialSources, [
     { sourceId: source.data.id },
@@ -2993,6 +3011,16 @@ test("Channel directory lookup checks the exact edit target and Secret before an
     "The request does not match the operation contract: body /query is too long (expected at most 200 characters).",
   );
   assert.deepEqual(longQuery.body.error.details, [{ path: "/query", code: "TOO_LONG" }]);
+  // A string array declared uniqueItems names the rule, not just an unsupported value.
+  const repeatedIds = await controller.request("POST", path, {
+    body: { secretId: secret.data.id, kind: "users", ids: ["U123", "U123"] },
+  });
+  assert.equal(repeatedIds.status, 400);
+  assert.equal(
+    repeatedIds.body.error.message,
+    "The request does not match the operation contract: body /ids has an unsupported value (expected no duplicate items).",
+  );
+  assert.deepEqual(repeatedIds.body.error.details, [{ path: "/ids", code: "INVALID_VALUE" }]);
   // An unknown kind fits no shape, so every shape's problem stays, but the three hydration
   // shapes' identical missing /ids is listed once.
   const unknownKind = await controller.request("POST", path, {
