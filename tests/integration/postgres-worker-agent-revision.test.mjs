@@ -3838,6 +3838,140 @@ for (const harness of [false, true]) {
   );
 }
 
+for (const successor of [false, true]) {
+  test(
+    `maintenance stops re-queuing ${successor ? "an admitted successor's Harness" : "a tool"} source withdrawal denied to its requester until an authorized replay`,
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context, { maxAttempts: 2 });
+      const owner = await fixture.agent(`withdraw-denied-maintenance-${successor}`, {
+        auth: "credential_source",
+        nonModelSources: 1,
+      });
+      const sourceId = successor ? owner.harnessAuth.sourceId : toolSources(owner)[0].sourceId;
+      let revoke = false;
+      const compute = {
+        ...fixture.compute,
+        maintenanceIntervalMs: 3_600_000,
+        // The gateway cannot confirm a revocation until the outage ends.
+        async withdrawCredentialSource(_revision, source) {
+          return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
+        },
+      };
+      const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+      const first = await fixture.revision(owner, 1);
+      await fixture.start(compute, options);
+      await fixture.work(first, "succeeded");
+      await fixture.stop();
+      // The withdrawal reaches the active revision and, in the successor case, a deployment
+      // admitted before it that has not run yet.
+      const withdrawing = successor ? [first, await admitHeldRevision(fixture, owner, 2)] : [first];
+
+      // Another operator requests the withdrawal and is offboarded before the worker runs it,
+      // so each attempt of that request is denied.
+      const requester = `withdraw-denied-requester-${randomUUID()}`;
+      await fixture.copyActorGrants(requester);
+      const request = {
+        namespaceId: fixture.namespace.id,
+        agentId: owner.id,
+        credentialSourceId: sourceId,
+      };
+      await fixture.controller.withdrawAgentCredentialSource(requester, request);
+      await fixture.observerPool.query(
+        `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,
+        [requester],
+      );
+      await fixture.start(compute, options);
+      for (const revision of withdrawing) {
+        const [attempt] = await withdrawalWorkFor(fixture, revision);
+        await fixture.work(
+          { id: revision.id, idempotencyKey: attempt.idempotency_key },
+          "failed_permanent",
+        );
+      }
+      const denials = async () =>
+        (
+          await fixture.observerPool.query(
+            `SELECT count(*)::int AS count FROM occ.audit_events
+             WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.credentials_withdraw'
+               AND kind = 'authorization_denial'`,
+            [fixture.namespace.id],
+          )
+        ).rows[0].count;
+      assert.equal(await denials(), withdrawing.length);
+      const runMaintenance = async () => {
+        const due = await fixture.advanceMaintenance(first);
+        assert.equal(due.rowCount, 1, "the active revision's maintenance chain must continue");
+        await fixture.work(
+          { id: first.id, idempotencyKey: due.rows[0].idempotency_key },
+          "succeeded",
+        );
+      };
+      const attemptCounts = () =>
+        Promise.all(
+          withdrawing.map(async (revision) => (await withdrawalWorkFor(fixture, revision)).length),
+        );
+      const read = () =>
+        fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
+
+      // Only an operator who still holds operate can complete the withdrawal, so maintenance
+      // queues no further denied attempt and audits no further denial, pass after pass, and
+      // the read reports a withdrawal that needs a replay.
+      for (let pass = 0; pass < 3; pass += 1) {
+        await runMaintenance();
+      }
+      assert.deepEqual(
+        await attemptCounts(),
+        withdrawing.map(() => 1),
+      );
+      assert.equal(await denials(), withdrawing.length);
+      const waiting = await read();
+      assert.equal(waiting.state, "pending");
+      assert.equal(waiting.withdrawalInProgress, false);
+      assert.equal(waiting.requestedBy, requester);
+      assert.equal(waiting.lastReason, "AUTHORIZATION_DENIED");
+
+      // An authorized replay takes the withdrawal over. Its attempts run out during the
+      // outage, and the next maintenance pass queues them again, as for any outage.
+      const replayed = await fixture.controller.withdrawAgentCredentialSource(
+        fixture.actor.id,
+        request,
+      );
+      assert.equal(replayed.requestedBy, fixture.actor.id);
+      assert.equal(replayed.withdrawalInProgress, true);
+      for (const revision of withdrawing) {
+        const retried = (await withdrawalWorkFor(fixture, revision)).at(-1);
+        await fixture.work(
+          { id: revision.id, idempotencyKey: retried.idempotency_key },
+          "failed_permanent",
+          30_000,
+        );
+      }
+      const exhausted = await read();
+      assert.equal(exhausted.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
+      assert.equal(exhausted.withdrawalInProgress, false);
+      revoke = true;
+      await runMaintenance();
+      assert.deepEqual(
+        await attemptCounts(),
+        withdrawing.map(() => 3),
+      );
+      for (const revision of withdrawing) {
+        const recovered = (await withdrawalWorkFor(fixture, revision)).at(-1);
+        await fixture.work(
+          { id: revision.id, idempotencyKey: recovered.idempotency_key },
+          "succeeded",
+        );
+      }
+      await fixture.stop();
+      const revoked = await read();
+      assert.equal(revoked.state, "revoked");
+      assert.equal(revoked.requestedBy, fixture.actor.id);
+      assert.equal(await denials(), withdrawing.length);
+    },
+  );
+}
+
 revisionTest(
   "a withdrawn Harness source fails a deployment admitted before the withdrawal",
   async (fixture) => {

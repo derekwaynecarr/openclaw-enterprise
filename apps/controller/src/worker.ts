@@ -348,6 +348,25 @@ function settleCredentialWithdrawal(
     : { outcome: "permanent", code: denied.code, attempts };
 }
 
+/**
+ * A pending withdrawal whose last attempt found its requester without `agent:operate` waits
+ * for a replay: only an operator who still holds it can take it over and queue an attempt
+ * that can succeed, so maintenance does not queue another denied attempt.
+ */
+function credentialWithdrawalAwaitsReplay(withdrawal: Readonly<CredentialWithdrawal>): boolean {
+  return (
+    withdrawal.lastReason === "AUTHORIZATION_DENIED" || withdrawal.lastReason === "ACTOR_REVOKED"
+  );
+}
+
+/** A revision's first pending withdrawal, preferring one that does not await a replay. */
+function firstPendingCredentialWithdrawal(
+  withdrawals: readonly Readonly<CredentialWithdrawal>[],
+): Readonly<CredentialWithdrawal> | undefined {
+  const pending = withdrawals.filter(({ state }) => state === "pending");
+  return pending.find((withdrawal) => !credentialWithdrawalAwaitsReplay(withdrawal)) ?? pending[0];
+}
+
 /** The revision's admitted sources once each: its Harness source first, then the others. */
 function revisionCredentialSourceIds(revision: Readonly<AgentRevision>): readonly string[] {
   const harnessSourceId = revisionHarnessSourceId(revision);
@@ -2305,7 +2324,7 @@ export class ControllerWorker {
    */
   private async processCredentialWithdrawal(claim: ClaimedWork): Promise<void> {
     let result: CredentialWithdrawalDispatchResult;
-    let authorized: readonly Readonly<CredentialWithdrawal>[] = [];
+    let requested: readonly Readonly<CredentialWithdrawal>[] = [];
     const denied: CredentialWithdrawalAttempt[] = [];
     const attempts: CredentialWithdrawalAttempt[] = [];
     try {
@@ -2365,6 +2384,7 @@ export class ControllerWorker {
         });
         return;
       }
+      requested = pending.map(({ withdrawal }) => withdrawal);
       // Earlier attempts already revoked every requested source.
       if (pending.length === 0) {
         await this.finalizeCredentialWithdrawal(claim, {
@@ -2402,7 +2422,7 @@ export class ControllerWorker {
           });
         }
       }
-      authorized = allowed.map(({ withdrawal }) => withdrawal);
+      const authorized = allowed.map(({ withdrawal }) => withdrawal);
       if (allowed.length > 0) {
         if (
           revision.compute.id !== this.compute.id ||
@@ -2445,15 +2465,18 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      // Confirmed revocations stand; every authorized withdrawal not yet confirmed retries.
-      const settled = new Set(attempts.map(({ credentialSourceId }) => credentialSourceId));
+      // Confirmed revocations stand; every withdrawal not yet confirmed or denied retries,
+      // including one IAM failed to authorize, so no earlier denial stays its last reason.
+      const settled = new Set(
+        [...attempts, ...denied].map(({ credentialSourceId }) => credentialSourceId),
+      );
       result = {
         outcome: "retry",
         code: "DEPENDENCY_UNAVAILABLE",
         attempts: [
           ...attempts,
           ...unrevokedAttempts(
-            authorized.filter(({ credentialSourceId }) => !settled.has(credentialSourceId)),
+            requested.filter(({ credentialSourceId }) => !settled.has(credentialSourceId)),
             "DEPENDENCY_UNAVAILABLE",
           ),
           ...denied,
@@ -2719,7 +2742,7 @@ export class ControllerWorker {
     const pending = await this.state.read((view) =>
       this.pendingCredentialWithdrawals(view, revision, sourceIds),
     );
-    if (pending.length === 0) {
+    if (pending.every(credentialWithdrawalAwaitsReplay)) {
       return;
     }
     await this.state.transactWithQueue(async (unit, queue) => {
@@ -2736,12 +2759,13 @@ export class ControllerWorker {
 
   /**
    * The pending credential withdrawals that maintenance of the active `revision` recovers, one
-   * per revision: its own (only of `sourceIds`, when given), then those of the revisions that
-   * may still run with a withdrawn source (credentialWithdrawalCompanionRevisions). No other
-   * pass would ever queue those: a successor has no maintenance before it activates, and a
-   * predecessor's ends once it is superseded. In practice they are admitted successors: an
-   * active revision gets a maintenance chain only once its deployment activated it, which
-   * retires its predecessors, so an unretired predecessor's withdrawal is retried by a replay.
+   * per revision, preferring one that does not await a replay: its own (only of `sourceIds`,
+   * when given), then those of the revisions that may still run with a withdrawn source
+   * (credentialWithdrawalCompanionRevisions). No other pass would ever queue those: a successor
+   * has no maintenance before it activates, and a predecessor's ends once it is superseded. In
+   * practice they are admitted successors: an active revision gets a maintenance chain only once
+   * its deployment activated it, which retires its predecessors, so an unretired predecessor's
+   * withdrawal is retried by a replay.
    */
   private async pendingCredentialWithdrawals(
     view: PlatformReadView,
@@ -2758,9 +2782,10 @@ export class ControllerWorker {
     if (withdrawals.length === 0) {
       return [];
     }
-    const own = withdrawals.find(
-      ({ state, credentialSourceId }) =>
-        state === "pending" && (sourceIds === undefined || sourceIds.has(credentialSourceId)),
+    const own = firstPendingCredentialWithdrawal(
+      withdrawals.filter(
+        ({ credentialSourceId }) => sourceIds === undefined || sourceIds.has(credentialSourceId),
+      ),
     );
     const pending = own === undefined ? [] : [own];
     const companions = await credentialWithdrawalCompanionRevisions(
@@ -2771,9 +2796,9 @@ export class ControllerWorker {
     );
     for (const companion of companions) {
       // Rows exist only for sources the revision holds, so none needs filtering here.
-      const found = (
-        await view.credentialSources.listCredentialWithdrawals(companion.namespaceId, companion.id)
-      ).find(({ state }) => state === "pending");
+      const found = firstPendingCredentialWithdrawal(
+        await view.credentialSources.listCredentialWithdrawals(companion.namespaceId, companion.id),
+      );
       if (found !== undefined) {
         pending.push(found);
       }
@@ -2784,7 +2809,8 @@ export class ControllerWorker {
   /**
    * Queues withdrawal work for each revision's pending withdrawal that has no attempt queued
    * or running, so one outage costs one bounded series of attempts per maintenance pass. The
-   * work re-checks each withdrawal's own requester, as for a replay.
+   * work re-checks each withdrawal's own requester, as for a replay. A withdrawal that awaits a
+   * replay is skipped, so a denied requester costs one denial per attempt, not one per pass.
    */
   private async requeueCredentialWithdrawals(
     unit: PlatformUnitOfWork,
@@ -2792,10 +2818,11 @@ export class ControllerWorker {
   ): Promise<void> {
     for (const withdrawal of pending) {
       if (
-        await unit.operations.hasOutstandingCredentialWithdrawalWork(
+        credentialWithdrawalAwaitsReplay(withdrawal) ||
+        (await unit.operations.hasOutstandingCredentialWithdrawalWork(
           withdrawal.namespaceId,
           withdrawal.revisionId,
-        )
+        ))
       ) {
         continue;
       }
