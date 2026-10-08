@@ -11,6 +11,7 @@ import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/
 import {
   ActivationFailedError,
   ActivationPendingError,
+  CredentialSourceRevisionError,
   DependencyUnavailableError,
   PostgresMetricsSnapshot,
   SandboxRevisionUnsupportedError,
@@ -7459,6 +7460,30 @@ revisionTest(
           code: "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
           message:
             "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness.",
+        },
+      },
+    });
+    assert.equal(preparations, 1);
+  },
+);
+
+revisionTest(
+  "credential sources that share an environment variable fail deployment without retrying",
+  async (fixture) => {
+    // Two bound sources would place their placeholders in one Sandbox variable. The revision's
+    // source list and each source's config are fixed, so every attempt fails the same way.
+    const preparations = await runPreparationFailureCase(fixture, {
+      label: "credential-env-conflict",
+      failure: () =>
+        new CredentialSourceRevisionError(
+          "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
+          "Two credential sources bound to the revision use the same environment variable.",
+        ),
+      expected: {
+        error: {
+          code: "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
+          message:
+            "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.",
         },
       },
     });
