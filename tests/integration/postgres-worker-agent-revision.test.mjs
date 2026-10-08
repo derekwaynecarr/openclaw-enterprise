@@ -3627,6 +3627,7 @@ revisionTest(
        WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
       [active.id],
     );
+    // Only the denied attempt and the replay that completed it.
     assert.equal(attempts.rows[0].count, 2);
   },
 );
@@ -4230,7 +4231,8 @@ revisionTest(
   "a withdrawal finds a Harness source on a revision admitted before credential source lists",
   async (fixture) => {
     // Revisions admitted before migration 0050 hold their Harness credential source only as
-    // harnessAuth, with no credential_sources list. Withdrawal must still find it there.
+    // harnessAuth: their admitted spec has no credential_sources key, and 0050 backfilled only
+    // Agents. Withdrawal must still find the source there.
     const owner = await fixture.agent("withdraw-legacy", { auth: "credential_source" });
     const sourceId = owner.harnessAuth.sourceId;
     const listed = await fixture.revision(owner, 1);
@@ -4238,8 +4240,8 @@ revisionTest(
       const id = `rev_${randomUUID()}`;
       await fixture.observerPool.query(
         `INSERT INTO occ.agent_revisions
-           (id, namespace_id, agent_id, revision_number, admitted_spec, admitted_at)
-         SELECT $2, namespace_id, agent_id, $3, admitted_spec - 'credential_sources',
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+         SELECT $2, namespace_id, agent_id, $3, backend_id, admitted_spec - 'credential_sources',
                 clock_timestamp()
          FROM occ.agent_revisions WHERE id = $1`,
         [listed.id, id, number],
@@ -4253,8 +4255,16 @@ revisionTest(
     };
     const legacy = await legacyRevision(2);
     const successor = await legacyRevision(3);
-    await fixture.state.transact((unit) =>
-      unit.agents.compareAndSetActiveRevision(fixture.namespace.id, owner.id, undefined, legacy.id),
+    assert.ok(
+      await fixture.state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(
+          fixture.namespace.id,
+          owner.id,
+          undefined,
+          legacy.id,
+        ),
+      ),
+      "the fixture Agent must have no active revision yet",
     );
 
     const requested = await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, {

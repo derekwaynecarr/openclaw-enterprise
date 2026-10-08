@@ -2196,7 +2196,8 @@ async function verifyCredentialSourceContract(
       ),
       [{ ...withdrawal, requestedBy: "principal-platform-state-replay" }],
     );
-    // A blank requester is refused; the worker would have no principal to authorize.
+    // A blank requester is refused; the worker would have no principal to authorize. Pinned on
+    // a pending withdrawal, the only kind the controller reassigns.
     await assert.rejects(
       transaction.credentialSources.reassignCredentialWithdrawal(
         sourceNamespace.id,

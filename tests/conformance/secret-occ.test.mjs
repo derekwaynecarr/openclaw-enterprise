@@ -1250,7 +1250,8 @@ test("after a Secret Driver change an Agent update and deploy wait for its Confi
   );
 
   // The Agent's own bound Harness Secret answers before the Configuration's bindings: a caller
-  // denied operate on it gets that 403, not the Configuration's 503.
+  // denied operate on it gets that 403, not the Configuration's 503. The Agent keeps this
+  // Secret to the end, so the final deploy admits it through the selected driver too.
   const harnessSecret = await controller.createSecret(administrator, {
     namespaceId: namespace.id,
     name: "harness-key-current",
