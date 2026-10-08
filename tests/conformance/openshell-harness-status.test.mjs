@@ -504,12 +504,9 @@ test("an OpenShell service that never answers times out as a dependency failure"
   }
 });
 
-test("the OpenShell client verifies a TLS gateway listener against its root certificate and name", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "openshell-service-tls-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const keyPath = join(directory, "tls.key");
-  const certPath = join(directory, "tls.crt");
-  // The certificate names only the control endpoint, never the service host.
+function selfSignedCertificate(directory, name, subjectAltName) {
+  const keyPath = join(directory, `${name}.key`);
+  const certPath = join(directory, `${name}.crt`);
   const generated = spawnSync(
     "openssl",
     [
@@ -527,14 +524,18 @@ test("the OpenShell client verifies a TLS gateway listener against its root cert
       "-out",
       certPath,
       "-subj",
-      "/CN=localhost",
+      "/CN=openshell-gateway",
       "-addext",
-      "subjectAltName=DNS:localhost",
+      `subjectAltName=${subjectAltName}`,
     ],
     { encoding: "utf8" },
   );
   assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
-  const seen = [];
+  return { keyPath, certPath };
+}
+
+// A TLS gateway listener that records the SNI and Host of every request it receives.
+function tlsGateway(keyPath, certPath, seen) {
   const gateway = createSecureServer(
     { key: readFileSync(keyPath), cert: readFileSync(certPath) },
     (request, response) => {
@@ -552,6 +553,16 @@ test("the OpenShell client verifies a TLS gateway listener against its root cert
       `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
   });
+  return gateway;
+}
+
+test("the OpenShell client verifies a TLS gateway listener against its root certificate and name", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "openshell-service-tls-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  // The certificate names only the control endpoint, never the service host.
+  const { keyPath, certPath } = selfSignedCertificate(directory, "tls", "DNS:localhost");
+  const seen = [];
+  const gateway = tlsGateway(keyPath, certPath, seen);
   const port = await listen(gateway);
   t.after(() => close(gateway));
   const signal = AbortSignal.timeout(5_000);
@@ -582,4 +593,84 @@ test("the OpenShell client verifies a TLS gateway listener against its root cert
     });
   }
   assert.equal(seen.length, 2, "an unverified listener never receives the bearer");
+});
+
+test("the OpenShell client verifies an IP-literal TLS gateway listener against the endpoint address, not Host", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "openshell-service-tls-ip-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  // IPv6 loopback is optional on CI hosts; without it the IPv6 cases are skipped.
+  const probe = createServer();
+  const ipv6 = await new Promise((resolve) => {
+    probe.once("error", () => resolve(false));
+    probe.listen(0, "::1", () => probe.close(() => resolve(true)));
+  });
+  const cases = [
+    // TLS forbids an IP in SNI: the certificate must carry the endpoint IP itself.
+    { name: "ipv4", san: "IP:127.0.0.1", bind: "127.0.0.1", host: "127.0.0.1", verified: true },
+    { name: "ipv6", san: "IP:::1", bind: "::1", host: "[::1]", verified: true, ipv6: true },
+    // A hex IPv6 literal (IPv4-mapped, so it reaches the IPv4 loopback listener).
+    {
+      name: "ipv6-hex",
+      san: "IP:::ffff:7f00:1",
+      bind: "127.0.0.1",
+      host: "[::ffff:7f00:1]",
+      verified: true,
+      ipv6: true,
+    },
+    {
+      name: "wrong-ip",
+      san: "IP:127.0.0.2",
+      bind: "127.0.0.1",
+      host: "127.0.0.1",
+      verified: false,
+    },
+    // A certificate for the service host named in Host does not vouch for the endpoint.
+    {
+      name: "service-host",
+      san: "DNS:tenant--sandbox.openshell.localhost",
+      bind: "127.0.0.1",
+      host: "127.0.0.1",
+      verified: false,
+    },
+  ];
+  for (const { name, san, bind, host, verified, ipv6: needsIpv6 } of cases) {
+    await t.test(
+      name,
+      { skip: needsIpv6 && !ipv6 && "IPv6 loopback ::1 is unavailable" },
+      async (t) => {
+        const { keyPath, certPath } = selfSignedCertificate(directory, name, san);
+        const seen = [];
+        const gateway = tlsGateway(keyPath, certPath, seen);
+        await new Promise((resolve) => gateway.listen(0, bind, resolve));
+        t.after(() => close(gateway));
+        const endpoint = `https://${host}:${gateway.address().port}`;
+        const client = new GrpcOpenShellGatewayClient({ endpoint, rootCertificatePath: certPath });
+        const signal = AbortSignal.timeout(5_000);
+        const observations = [
+          () => client.getServiceDocument(serviceUrl, "/openclaw/runtime/status", TOKEN, signal),
+          () => client.serviceWebSocketHandshake(serviceUrl, TOKEN, signal),
+        ];
+        if (verified) {
+          assert.deepEqual(await observations[0](), {
+            status: 200,
+            json: { runtimeFailure: { code: "MODEL_PROBE_FAILED" } },
+          });
+          assert.equal(await observations[1](), true);
+          // No SNI is sent for an IP endpoint, and Host still names the service.
+          assert.deepEqual(seen, [
+            { servername: false, host: "tenant--sandbox.openshell.localhost:8080" },
+            { servername: false, host: "tenant--sandbox.openshell.localhost:8080" },
+          ]);
+          return;
+        }
+        for (const observe of observations) {
+          await assert.rejects(observe(), (error) => {
+            assert.ok(error instanceof DependencyUnavailableError, String(error));
+            return true;
+          });
+        }
+        assert.deepEqual(seen, [], "an unverified listener never receives the bearer");
+      },
+    );
+  }
 });

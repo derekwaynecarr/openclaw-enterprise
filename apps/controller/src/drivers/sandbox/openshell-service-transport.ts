@@ -2,7 +2,8 @@ import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { createHash, randomBytes } from "node:crypto";
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
-import type { Socket } from "node:net";
+import { isIP, type Socket } from "node:net";
+import { checkServerIdentity } from "node:tls";
 import { OpenShellGatewayFailure } from "./openshell-gateway-errors.ts";
 
 /** What a bearer-passthrough service answered to one bounded request. */
@@ -64,6 +65,24 @@ function serviceTarget(
   };
 }
 
+// The gateway certificate is verified against the control endpoint, as the gRPC
+// channel does, never against the service named in Host. A DNS endpoint is sent as
+// SNI. TLS forbids an IP address in SNI, so an IP endpoint sends none (an empty
+// servername; left undefined, Node would derive SNI and the identity check from
+// Host) and its certificate must carry that IP.
+function tlsIdentity(hostname: string): {
+  readonly servername: string;
+  readonly checkServerIdentity?: typeof checkServerIdentity;
+} {
+  if (isIP(hostname) === 0) {
+    return { servername: hostname };
+  }
+  return {
+    servername: "",
+    checkServerIdentity: (_name, certificate) => checkServerIdentity(hostname, certificate),
+  };
+}
+
 function bearerHeader(bearer: string): string {
   // OpenShell refuses anything but one RFC 6750 token68 credential before routing.
   if (!/^[A-Za-z0-9\-._~+/]+=*$/.test(bearer)) {
@@ -106,7 +125,7 @@ function send(
       agent: false,
       ...(target.secure
         ? {
-            servername: /^[\d.:]+$/.test(target.hostname) ? undefined : target.hostname,
+            ...tlsIdentity(target.hostname),
             ...(options.rootCertificate === undefined ? {} : { ca: options.rootCertificate }),
           }
         : {}),
