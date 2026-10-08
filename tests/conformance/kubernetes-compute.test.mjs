@@ -5171,36 +5171,66 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
       }),
     /required profile.*owned by the selected Compute Driver/i,
   );
-  // OpenClaw's default Agent (sole entry or `default: true`) keeps its own workspace, while
-  // the Gateway, file transfer and workspace files address main.
-  const withEntries = (entries) => ({
+  // OpenClaw's default Agent (sole entry, `default: true`, or a named session store or system
+  // owner) keeps its own workspace, while the Gateway, file transfer and workspace files
+  // address main.
+  const withAgents = ({ defaults, ...agents }) => ({
     ...revision.configuration,
-    agents: { ...revision.configuration.agents, entries },
+    agents: {
+      ...revision.configuration.agents,
+      ...agents,
+      defaults: { ...revision.configuration.agents.defaults, ...defaults },
+    },
   });
-  for (const entries of [
-    {},
-    { helper: { workspace: "/home/node/helper" } },
-    { main: {}, helper: { default: true, workspace: "/home/node/helper" } },
-    { Main: {}, helper: { default: true } },
+  for (const agents of [
+    { entries: null },
+    { ownership: "explicit", entries: {} },
+    { entries: { helper: { workspace: "/home/node/helper" } } },
+    { entries: { main: {}, helper: { default: true, workspace: "/home/node/helper" } } },
+    { entries: { Main: {}, helper: { default: true } } },
+    // OpenClaw normalizes `main!` to main and may match it first.
+    { entries: { "main!": { workspace: "/home/node/elsewhere" }, main: {} } },
+    { entries: { " main": {} } },
+    { entries: { main: {}, helper: {} }, defaults: { sessionStore: { agentId: "helper" } } },
+    { entries: { main: {}, helper: {} }, defaults: { systemAgent: { agentId: "helper" } } },
   ]) {
     assert.throws(
-      () =>
-        driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withEntries(entries)),
+      () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withAgents(agents)),
       (error) =>
         error instanceof ConfigurationHarnessError &&
-        /serves the main Agent: agents\.entries must include main/.test(error.message),
-      JSON.stringify(entries),
+        /serves the main Agent: agents\.entries needs canonical keys including main/.test(
+          error.message,
+        ),
+      JSON.stringify(agents),
     );
   }
-  for (const entries of [
-    { main: { workspace: "/home/node/main" } },
-    { Main: { default: true }, helper: { default: false, workspace: "/home/node/helper" } },
-    { main: {}, helper: { workspace: "/home/node/helper" } },
+  // A stored revision re-prepared after this check reports the refusal, not a generic failure.
+  let refusal;
+  try {
+    driver.validateHarnessAuth(
+      revision.harness,
+      revision.harnessAuth,
+      withAgents({ entries: { helper: {} } }),
+    );
+  } catch (error) {
+    refusal = error;
+  }
+  assert.deepEqual(driver.describePrepareRevisionFailure(refusal), {
+    code: "KUBERNETES_CONFIGURATION_INVALID",
+    stage: "prepare_revision",
+    errorClass: "ConfigurationHarnessError",
+    message: refusal.message,
+  });
+  for (const agents of [
+    // OpenClaw reads an empty roster as `{ main: {} }`.
+    { entries: {} },
+    { entries: { main: { workspace: "/home/node/main" } } },
+    { entries: { Main: {}, helper: { workspace: "/home/node/helper" } } },
+    { entries: { main: {}, helper: {} }, defaults: { systemAgent: { agentId: "Main" } } },
   ]) {
     assert.doesNotThrow(
-      () =>
-        driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withEntries(entries)),
-      JSON.stringify(entries),
+      () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withAgents(agents)),
+      JSON.stringify(agents),
     );
   }
   // Embedded OpenClaw and dedicated Codex keep their own rosters.
@@ -5208,8 +5238,18 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     driver.validateHarnessAuth(
       { ...revision.harness, mode: "embedded" },
       revision.harnessAuth,
-      withEntries({ helper: { default: true } }),
+      withAgents({ entries: { helper: { default: true } } }),
     ),
+  );
+  const codexConfiguration = admitLoggingConfiguration(
+    createHarnessConfiguration("codex", "gpt-5"),
+    "info",
+  );
+  assert.doesNotThrow(() =>
+    driver.validateHarnessAuth({ id: "codex", version: "1.0.0", mode: "dedicated" }, apiKeyAuth, {
+      ...codexConfiguration,
+      agents: { ...codexConfiguration.agents, entries: { helper: { default: true } } },
+    }),
   );
   const ownership = { namespaceId: tenant.id, agentId };
   const nativeInference = {

@@ -206,13 +206,13 @@ This avoids stacking the Codex sandbox inside OpenShell, which becomes the
 dedicated Harness's outer containment boundary. Native OpenClaw already disables
 inner isolation. Its hook sets `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
-which the Gateway, file transfer, and node address; admission refuses entries
-without `main` or with another `default: true`. Native workers have separate
+which the Gateway, file transfer, and node address; admission refuses a roster
+that makes another Agent the default. Native workers have separate
 workspaces but share the Sandbox's user, filesystem, process, and network
 boundary. OpenShell isolates the AgentRevision from other workloads, not mutually
-untrusted sessions within one Agent. Kubernetes retains eight native workers by
-default; `runtime.nativeOpenClawSessionCapacity` accepts `1` through `1024`. A
-stopped hosted session releases its slot; idle workers are not retired.
+untrusted sessions within one Agent. Kubernetes defaults to eight native workers;
+`runtime.nativeOpenClawSessionCapacity` accepts `1` through `1024`. A stopped
+hosted session releases its slot; idle workers are not automatically retired.
 
 ## Credential attachments
 
