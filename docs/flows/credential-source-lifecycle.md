@@ -241,9 +241,8 @@ The worker rechecks `agent:operate` for each pending withdrawal's own
 `withdrawCredentialSource` for each authorized one in admission order. The work retries while an authorized withdrawal is unconfirmed;
 otherwise a denied requester fails it after the others are revoked. Each
 revocation is audited for its requester in the pass that confirms it; each
-denial, once when the claim ends. Compute derives the Sandbox with the Sandbox Driver's
-`harnessResource` for the gateway's `withdraw`; the OpenShell
-Driver calls `DetachSandboxProvider` and reads the receipt's status. Each
+denial, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
+on the Sandbox from `harnessResource` and reads the receipt's status. Each
 attempt records `last_reason` and `last_attempt_at` when its claim ends. `revoked` or `absent`
 also marks the row `revoked` and appends
 `openclaw.agents.lifecycle.credentials_withdraw`. Any other state retries with
@@ -261,7 +260,7 @@ outstanding and keeps the chain; once all are `revoked`, it stops. Deploy and re
 a Harness source fails them with `CREDENTIAL_WITHDRAWN`. Maintenance also re-queues the
 pending tool-source withdrawals and those of the other revisions
 (`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`), so one
-exhausted during a gateway outage resumes. `authorizeRevision` skips the
+exhausted during a gateway outage resumes; a denied one waits for a replay. `authorizeRevision` skips the
 `operate` recheck for withdrawn sources, so removing their grants cannot end
 maintenance.
 
@@ -283,13 +282,12 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   wire fixture.
 - The credential withdrawal cases in
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
-  and worker against PostgreSQL with a Compute double: retries, exhaustion,
-  replays, maintenance, omitted withdrawn sources, per-requester
-  authorization, admitted successors and unretired predecessors, a lost source
-  grant, and a create landing after a lost claim.
+  and worker against PostgreSQL with a Compute double: retries, replays,
+  maintenance, omitted sources, requester denials, other revisions, lost grants,
+  and late creates.
 - The real OpenShell test updates the source through the API and withdraws a
-  `bearer-token` source (its substituted placeholder stops reaching an echo
-  service while model turns continue), then the model source (the next model
+  `bearer-token` source (its placeholder stops reaching an echo service; model
+  turns continue), then the model source (the next model
   turn in that Codex process fails).
 - `OCC_TEST_OPENSHELL_K3D_REAL=1 node --env-file="$TEST_ENV_FILE" --test tests/integration/sandbox-driver-openshell-k3d-real.test.mjs`
   registers an `openai` source through the production API against a real
@@ -318,6 +316,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 ## Changelog
 
+- 2026-10-08 20:30: Maintenance leaves denied withdrawals for a replay. (fix-853)
 - 2026-10-08 17:30: Withdrawal covers unretired predecessors. (fix-816-819)
 - 2026-10-08 16:00: Preparation rechecks revoked withdrawals against a late Sandbox create. (fix-790)
 - 2026-10-08 14:00: An unoffered source type is a `409` naming the fix, not `404`; worker credential codes have their own status messages. (fix-821-824)
