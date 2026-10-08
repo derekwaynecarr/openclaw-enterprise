@@ -1937,15 +1937,20 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
 function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocument): void {
   const agents = asRecord(configuration.agents);
   const roster = asRecord(agents?.entries);
-  // OpenClaw config validation rejects these retired roster shapes, and the Gateway then exits
-  // at startup (EX_CONFIG) instead of serving, so refuse them here.
+  const rosterSize = Object.keys(roster ?? {}).length;
+  const explicit = agents?.ownership === "explicit";
+  // OpenClaw config validation rejects these roster shapes, and the Gateway then exits at
+  // startup (EX_CONFIG) instead of serving, so refuse them here. It drops only an empty
+  // agents.list beside an implicit empty roster.
   if (
-    agents?.list !== undefined ||
+    (agents?.list !== undefined &&
+      !(Array.isArray(agents.list) && agents.list.length === 0 && rosterSize === 0 && !explicit)) ||
     Object.values(roster ?? {}).some((entry) => asRecord(entry)?.default !== undefined) ||
-    (Object.keys(roster ?? {}).length > 1 && agents?.ownership !== "explicit")
+    (agents?.ownership !== undefined && !explicit) ||
+    (rosterSize > 1 && !explicit)
   ) {
     throw new ConfigurationHarnessError(
-      'Dedicated OpenClaw rejects agents.list, agents.entries default markers, and a multi-Agent roster without agents.ownership "explicit".',
+      'Dedicated OpenClaw rejects agents.list, agents.entries default markers, an agents.ownership other than "explicit", and a multi-Agent roster without it.',
     );
   }
   const defaults = asRecord(agents?.defaults);
@@ -1957,11 +1962,11 @@ function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocum
   ];
   const entries = Object.entries(roster ?? {});
   // OpenClaw reads an empty roster as `{ main: {} }` unless ownership is explicit.
-  const implicitMain =
-    roster !== undefined && entries.length === 0 && agents?.ownership !== "explicit";
+  const implicitMain = roster !== undefined && entries.length === 0 && !explicit;
   if (
     owners.some((owner) => owner !== undefined && !isMain(owner)) ||
-    (agents?.entries !== undefined &&
+    // An explicit roster without entries has no Agent, so it fails like an empty one.
+    ((agents?.entries !== undefined || explicit) &&
       !implicitMain &&
       // Other spellings normalize to ids OpenClaw may match first, so keys must be canonical.
       (entries.some(([id]) => !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id)) ||

@@ -5184,6 +5184,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   for (const agents of [
     { entries: null },
     { ownership: "explicit", entries: {} },
+    { ownership: "explicit" },
     { entries: { helper: { workspace: "/home/node/helper" } } },
     // OpenClaw normalizes `main!` to main and may match it first.
     {
@@ -5237,22 +5238,26 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     { entries: { main: {}, helper: { default: true, workspace: "/home/node/helper" } } },
     { ownership: "explicit", entries: { main: {}, helper: { default: false } } },
     { list: [{ id: "main", default: true }] },
-    { list: [{ id: "main" }], entries: { main: {} } },
+    { list: [], entries: { main: {} } },
+    { list: [], ownership: "explicit", entries: { main: {} } },
     { entries: { main: {}, helper: {} } },
+    { ownership: "shared", entries: { main: {} } },
   ]) {
     assert.throws(
       () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withAgents(agents)),
       (error) =>
         error instanceof ConfigurationHarnessError &&
-        /rejects agents\.list, agents\.entries default markers, and a multi-Agent roster/.test(
+        /rejects agents\.list, agents\.entries default markers, an agents\.ownership other than/.test(
           error.message,
         ),
       JSON.stringify(agents),
     );
   }
   for (const agents of [
-    // OpenClaw reads an empty roster as `{ main: {} }`.
+    // OpenClaw reads an empty roster as `{ main: {} }` and drops an empty list beside it.
     { entries: {} },
+    { list: [] },
+    { list: [], entries: {} },
     { entries: { main: { workspace: "/home/node/main" } } },
     { ownership: "explicit", entries: { Main: {}, helper: { workspace: "/home/node/helper" } } },
     {
