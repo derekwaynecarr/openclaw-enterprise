@@ -1644,8 +1644,11 @@ async function streamImageIntoK3dNodes(cluster, saveArgs) {
       // The first node failure is the cause; later ones may follow from it.
       firstImportError ??= error;
       // A failed node stops reading. Stop a still-running export so it cannot
-      // block on a full pipe until its timeout.
-      if (save.exitCode === null && save.signalCode === null) {
+      // block on a full pipe until its timeout. Once the export's output has
+      // ended, no node can have stopped it, so the export's own exit decides
+      // whether it failed, even if that exit is not seen yet: a node that reads
+      // a truncated stream to its end can report its failure first.
+      if (!save.stdout.readableEnded && save.exitCode === null && save.signalCode === null) {
         stoppedExport = true;
         save.kill("SIGTERM");
       }
