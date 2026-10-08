@@ -1165,3 +1165,27 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     /controlPlane.trustedProxy.cidrs\[0\] must be/,
   );
 });
+
+test("profiles refuse ChatGPT credential lifetimes the API refuses", () => {
+  const accounts = {
+    workspaceId: "11111111-1111-4111-8111-111111111111",
+    adminSecretName: "occ-chatgpt-admin",
+    adminSecretKey: "admin-key",
+    providerCidr: "192.0.2.21/32",
+  };
+  const accepted = render(
+    "codex",
+    managedCodexInput({
+      codex: { managedServiceAccounts: { ...accounts, credentialTtlSeconds: 2_592_000 } },
+    }),
+  );
+  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+  assert.match(accepted.installation, /credentialTtlSeconds: 2592000/);
+  assertPreflightFailure(
+    "codex",
+    managedCodexInput({
+      codex: { managedServiceAccounts: { ...accounts, credentialTtlSeconds: 2_592_001 } },
+    }),
+    /codex.managedServiceAccounts.credentialTtlSeconds must be an integer from 1 through 2592000/,
+  );
+});
