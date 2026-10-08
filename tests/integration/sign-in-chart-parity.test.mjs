@@ -1349,6 +1349,12 @@ test(
         "https://console.oce.example.internal.",
         " https://console.oce.example.internal ",
         "https://192.0.2.10",
+        // A bare 0x, a full-width digit, or an ideographic dot inside a DNS name is not an
+        // IPv4 host. Node keeps the name (mapping the borrowed characters) and the chart
+        // must render it.
+        "https://0x.example.com",
+        "https://console\u3002example.com",
+        "https://\uFF11\uFF12\uFF17.example.com",
         "https://192.168.10.1",
         "https://10.0.0.1",
         "https://[2001:db8::10]:8443",
@@ -1444,20 +1450,28 @@ test(
         ["https://console.oce.example.internal/.", notOrigin],
         ["https://console.oce.example.internal/%2e", notOrigin],
       ].map(([baseUrl, chart]) => ({ baseUrl, chart, api: true, job: true })),
-      // A leading zero is octal (192.168.010.001 publishes 192.168.8.1). Hex, shorthand,
-      // a single integer and a trailing dot also publish a different host. The chart, the
-      // API and the bootstrap Job all refuse those spellings.
+      // A leading zero is octal (192.168.010.001 publishes 192.168.8.1). Hex, including a
+      // bare 0x (which is 0), shorthand, a single integer and a trailing dot also publish
+      // a different host. Full-width digits and the dots U+3002, U+FF0E and U+FF61 do too
+      // when the host is otherwise numeric (１２７.0.0.1 and 127。0。0。1 publish 127.0.0.1).
+      // The chart, the API and the bootstrap Job all refuse those spellings.
       ...[
         "https://192.168.010.001",
         "https://192.168.001.010",
         "https://010.0.0.1",
         "https://127.1",
         "https://0x7f.0.0.1",
+        "https://0x",
+        "https://0x.0.0.1",
         "https://2130706433",
         "http://127.1",
         "http://2130706433",
         "http://0177.0.0.1",
         "http://127.0.0.1.",
+        "https://\uFF11\uFF12\uFF17.0.0.1",
+        "https://127\u30020\u30020\u30021",
+        "https://127\uFF0E0\uFF0E0\uFF0E1",
+        "https://127\uFF610\uFF610\uFF611",
       ].map((baseUrl) => ({
         baseUrl,
         chart:
@@ -1504,6 +1518,16 @@ test(
       await startupCode(directory, {
         ...environment,
         OCC_AUTH_BASE_URL: "console.oce.example.internal",
+      }),
+      "AUTH_BASE_URL_INVALID",
+    );
+    // apiAccepts copies refuseRewrittenIpv4AuthHost, and the loop above starts the
+    // entrypoint only for values the chart renders. This is the entrypoint's own refusal:
+    // deleting the call in server.mjs leaves the rest of this test green.
+    assert.equal(
+      await startupCode(directory, {
+        ...environment,
+        OCC_AUTH_BASE_URL: "https://192.168.010.001",
       }),
       "AUTH_BASE_URL_INVALID",
     );
