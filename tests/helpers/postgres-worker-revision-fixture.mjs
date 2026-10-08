@@ -16,7 +16,7 @@ export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture"
 
 // Admission locks a Namespace, then its Agent. Every worker transaction that locks a claim's
 // Agent must already hold the Namespace (#1742), or it deadlocks with a concurrent deploy,
-// stop, delete or withdrawal. Records each Agent lock taken first, with its stack.
+// stop, delete or withdrawal. Records each Agent row lock taken first, with its stack.
 function checkClaimLockOrder(worker, violations) {
   const transactWithQueue = worker.state.transactWithQueue.bind(worker.state);
   worker.state.transactWithQueue = (work, options) =>
@@ -37,11 +37,15 @@ function trackLockOrder(unit, violations) {
   };
   const agents = {
     ...unit.agents,
-    lockAgent: (namespaceId, ...rest) => {
-      if (!locked.has(namespaceId)) {
-        violations.push(new Error("Agent locked before its Namespace").stack);
+    lockAgent: async (namespaceId, agentId, ...rest) => {
+      const agent = await unit.agents.lockAgent(namespaceId, agentId, ...rest);
+      // A lock that matched no row holds nothing.
+      if (agent !== undefined && !locked.has(namespaceId)) {
+        violations.push(
+          new Error(`Agent ${agentId} locked before its Namespace ${namespaceId}`).stack,
+        );
       }
-      return unit.agents.lockAgent(namespaceId, ...rest);
+      return agent;
     },
   };
   return Object.freeze({ ...unit, namespaces, agents });

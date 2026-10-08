@@ -1002,11 +1002,13 @@ test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP 
     await client(certPath).health(AbortSignal.timeout(10_000));
     await assert.rejects(client(other.certPath).health(AbortSignal.timeout(10_000)), (error) => {
       assert.ok(error instanceof DependencyUnavailableError, String(error));
+      assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
       return true;
     });
     assert.deepEqual(
       seen.filter(([kind]) => kind === "request"),
       [health],
+      "an untrusting client never reaches the gateway over the trusting client's connection",
     );
   });
 });

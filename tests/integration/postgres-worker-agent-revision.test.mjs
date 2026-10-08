@@ -4219,8 +4219,9 @@ revisionTest(
       return { id: active.id, idempotencyKey: due.rows[0].idempotency_key };
     };
 
-    // A gateway outage during the recheck ends only this pass, under the gateway's code; the
-    // chain queues the next pass instead of stopping with a revoked source maybe still attached.
+    // A gateway outage during the recheck ends only this pass, as REVISION_FINALIZATION_INCOMPLETE
+    // (DependencyUnavailableError names no dependency); the chain queues the next pass instead of
+    // stopping with a revoked source maybe still attached.
     recheckFailure = new DependencyUnavailableError("The Credential Gateway did not answer.");
     rechecked.length = 0;
     const failed = await maintenancePass();
