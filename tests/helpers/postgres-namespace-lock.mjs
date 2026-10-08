@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { waitFor } from "./wait-for.mjs";
 
-// Holds a Namespace row lock on its own connection, as deployment admission and withdrawal
-// requests take it first, while `probe` runs. Lock-order tests use it to catch a transaction
-// that waits for the Namespace while it already holds a row admission locks later:
+// Holds a Namespace row lock on its own connection while `probe` runs, as the Namespace-first
+// paths take it (deployment admission, withdrawal requests, Agent stop and delete). Lock-order
+// tests use it to catch a transaction that waits for the Namespace while it already holds a
+// row those paths lock later:
 // - `waitForBlocked(description)` resolves once another backend really waits on this lock.
 // - `assertNotHeld(sql, params, message)` runs the caller's `FOR UPDATE NOWAIT` query on the
 //   holding connection, which fails if the waiting transaction already holds that row.
-// The transaction rolls back when `probe` settles, releasing the lock, and returns `probe`'s
-// result. After a failure the connection is discarded instead of returned to the pool.
+// When `probe` settles the transaction rolls back, releasing the lock, and the helper returns
+// `probe`'s result. After a failure the connection is discarded instead of returned to the pool.
 export async function withNamespaceLockHeld(pool, namespaceId, probe) {
   const holder = await pool.connect();
   let failed = false;
