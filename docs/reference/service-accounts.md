@@ -93,8 +93,8 @@ the exact upstream credential, the account-owned Secret, and the upstream
 account before deleting OCC account state. If the account holds an issued
 access token and the Installation no longer has a ChatGPT Backend, deletion
 fails with `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`, after the `delete`
-check and lookup, and keeps the account: configure the Backend again, then
-retry. Native deletion removes OCC account
+grant and the account lookup, and keeps the account: configure the same
+ChatGPT Backend again (same `backendId`), then retry. Native deletion removes OCC account
 state; the operator owns the referenced source Secret.
 
 ## Revision snapshots and credential delivery

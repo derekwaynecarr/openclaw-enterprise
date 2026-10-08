@@ -125,7 +125,7 @@ issue a credential for a new account.
 - **`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` when issuing, deploying, or
   deleting an account:** the Installation has no ChatGPT Backend (`GET /backends`
   lists none). Complete step 1, then retry. Deleting an account that holds an
-  issued token needs the Backend to revoke that token.
+  issued token needs the same Backend (same `backendId`) to revoke that token.
 - **`503 DEPENDENCY_UNAVAILABLE` when issuing:** the selected ServiceAccount
   Driver failed or does not match its Backend. Have the network operator check
   API Pod DNS and the destination allowed by the NetworkPolicy; also check the
