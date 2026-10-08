@@ -16685,6 +16685,7 @@
                           "type": "string"
                         },
                         "revisionId": {
+                          "description": "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
@@ -16693,7 +16694,7 @@
                             { "const": "pending", "type": "string" },
                             { "const": "revoked", "type": "string" }
                           ],
-                          "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve. The response describes the active revision's withdrawal unless another revision that may still run with the source (an earlier one not yet retired, or a later admitted one) has a `pending` one, which `revisionId` then names: one with no attempt queued first, so `revoked` means every such revision confirmed it."
+                          "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve."
                         },
                         "withdrawalInProgress": {
                           "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it.",
@@ -16851,6 +16852,7 @@
                           "type": "string"
                         },
                         "revisionId": {
+                          "description": "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
@@ -16859,7 +16861,7 @@
                             { "const": "pending", "type": "string" },
                             { "const": "revoked", "type": "string" }
                           ],
-                          "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve. The response describes the active revision's withdrawal unless another revision that may still run with the source (an earlier one not yet retired, or a later admitted one) has a `pending` one, which `revisionId` then names: one with no attempt queued first, so `revoked` means every such revision confirmed it."
+                          "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve."
                         },
                         "withdrawalInProgress": {
                           "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it.",

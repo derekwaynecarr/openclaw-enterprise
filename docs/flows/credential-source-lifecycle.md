@@ -228,9 +228,8 @@ value only to processes started after the update.
 `apps/controller/src/drivers/credential-gateway/openshell.ts:withdraw`
 
 The API authorizes `agent:operate` and requires the active revision to list the
-source in `credential_sources`. For that revision, each later one admitted
-with the source, and each earlier
-one not yet retired, it inserts a `pending` `credential_withdrawals` row keyed by revision
+source in `credential_sources`. For that revision, each later revision
+admitted with the source, and each earlier one not yet retired, it inserts a `pending` `credential_withdrawals` row keyed by revision
 and source, or returns the existing one. For each pending row with no withdrawal
 work outstanding, it makes the caller `requested_by` and queues
 revision-scoped work with target `credentials_withdrawn`
@@ -249,19 +248,18 @@ attempt records `last_reason` and `last_attempt_at` when its claim ends. `revoke
 also marks the row `revoked` and appends
 `openclaw.agents.lifecycle.credentials_withdraw`. Any other state retries with
 backoff until attempts run out, leaving the row `pending`. The read
-(`packages/occ/src/index.ts:readAgentCredentialWithdrawal`) reports an exhausted
-row first, then any `pending` one, the active revision's first. `withdrawalInProgress` reflects outstanding work, so an exhausted
+(`packages/occ/src/index.ts:readAgentCredentialWithdrawal`) prefers these
+revisions' exhausted rows, then `pending` ones, the active revision's first. `withdrawalInProgress` reflects outstanding work, so an exhausted
 withdrawal reads `false`; only a replay or maintenance queues another attempt.
 
 Maintenance of the active revision (scheduled only when Compute or repository
 credentials declare an interval) stops preparing it once its Harness source is
 withdrawn
 (`apps/controller/src/worker.ts:completeWithdrawnRevisionMaintenance`). While
-any withdrawal is `pending`, the pass queues withdrawal work if none is
-outstanding and keeps the maintenance chain; once all are `revoked`, it
-schedules no more. Deploy and repair work never re-attach a withdrawn source:
-a Harness source fails them with `CREDENTIAL_WITHDRAWN`. Maintenance also re-queues other pending withdrawals,
-any revision's
+any withdrawal is `pending`, the pass re-queues it if none is
+outstanding and keeps the chain; once all are `revoked`, it stops. Deploy and repair work never re-attach a withdrawn source:
+a Harness source fails them with `CREDENTIAL_WITHDRAWN`. Maintenance also re-queues the
+pending tool-source withdrawals and those of the other revisions
 (`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`), so one
 exhausted during a gateway outage resumes. `authorizeRevision` skips the
 `operate` recheck for withdrawn sources, so removing their grants cannot end

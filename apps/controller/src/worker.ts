@@ -2737,19 +2737,28 @@ export class ControllerWorker {
   /**
    * The pending credential withdrawals that maintenance of the active `revision` recovers, one
    * per revision: its own (only of `sourceIds`, when given), then those of the revisions that
-   * may still run with a withdrawn source, an earlier one not yet retired or a later admitted
-   * one (credentialWithdrawalCompanionRevisions). No other pass would ever queue those: a
-   * predecessor's maintenance ends once it is superseded, and a successor has none before it
-   * activates.
+   * may still run with a withdrawn source (credentialWithdrawalCompanionRevisions). No other
+   * pass would ever queue those: a successor has no maintenance before it activates, and a
+   * predecessor's ends once it is superseded. In practice they are admitted successors: an
+   * active revision gets a maintenance chain only once its deployment activated it, which
+   * retires its predecessors, so an unretired predecessor's withdrawal is retried by a replay.
    */
   private async pendingCredentialWithdrawals(
     view: PlatformReadView,
     revision: Readonly<AgentRevision>,
     sourceIds?: ReadonlySet<string>,
   ): Promise<readonly Readonly<CredentialWithdrawal>[]> {
-    const [own] = (
-      await view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id)
-    ).filter(
+    const withdrawals = await view.credentialSources.listCredentialWithdrawals(
+      revision.namespaceId,
+      revision.id,
+    );
+    // A withdrawal records a row on the then-active revision with every other revision's, and
+    // a successor that activates has its own, so without one there is nothing to recover. This
+    // keeps the revision walk off the maintenance passes of Agents that never withdrew a source.
+    if (withdrawals.length === 0) {
+      return [];
+    }
+    const own = withdrawals.find(
       ({ state, credentialSourceId }) =>
         state === "pending" && (sourceIds === undefined || sourceIds.has(credentialSourceId)),
     );
@@ -2761,6 +2770,7 @@ export class ControllerWorker {
       new Date(),
     );
     for (const companion of companions) {
+      // Rows exist only for sources the revision holds, so none needs filtering here.
       const found = (
         await view.credentialSources.listCredentialWithdrawals(companion.namespaceId, companion.id)
       ).find(({ state }) => state === "pending");
