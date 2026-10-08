@@ -1,6 +1,6 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-07
+updated: 2026-10-08
 last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
 ---
 
@@ -17,7 +17,7 @@ freezes the source identity in the AgentRevision, and the worker hands the live
 source record to Kubernetes Compute. This flow stops when Compute receives the
 resolved source; the
 [OpenShell Sandbox provisioning flow](openshell-sandbox-provisioning.md) covers
-attachment, provisioning, and attachment readiness.
+attachment, provisioning, and readiness.
 
 ## Entry Points
 
@@ -59,9 +59,8 @@ graph TD
 
 Registration and deletion must start outside a transaction borrowed from the
 same controller instance. OCC rejects an active or inherited stale context with
-`ResourceConflictError` before validation or effects. Each operation uses an
-initial transaction for the intermediate State record; after that transaction
-commits, OCC calls `registerSource` or `removeSource`.
+`ResourceConflictError` before validation or effects. Each first commits its
+intermediate State record, then calls `registerSource` or `removeSource`.
 
 ### 1. Admit the registration request
 
@@ -72,9 +71,10 @@ The route schema accepts `name`, `type`, optional `config`, and optional
 `secrets` keyed by lowercase field names. Inside one transaction, OCC locks the
 Namespace, authorizes `credential_source:create` on it, returns
 `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` when the Installation selects no
-Credential Gateway, and requires a `ready` Namespace. It asks the selected gateway for `listSourceTypes` and rejects an
-unknown type, an unknown field, or a missing required field with
-`ScopeViolationError` (`404`) before any Secret read or gateway write.
+Credential Gateway, and requires a `ready` Namespace. It asks the selected gateway for `listSourceTypes`. Before any Secret
+read or gateway write, it rejects a type the catalog lacks with
+`CredentialSourceTypeNotOfferedError` (`409`), and an unknown or missing field
+with `ScopeViolationError` (`404`).
 
 ### 2. Read Secret values
 
@@ -100,7 +100,7 @@ the gateway's Driver ID, and state `registering`, plus one
 `credential_source_secrets` row per field, then commits. The OpenShell provider
 name derives from that ID, so the record identifies any copy the gateway stores.
 OCC asks Compute's `resolveSandboxNamespace` for the Namespace's runtime
-placement, the same name the paired Sandbox receives, and calls `registerSource`
+placement (the paired Sandbox's name) and calls `registerSource`
 with a 30-second timeout. The OpenShell Driver ensures the Workspace's provider
 profile and creates an OCC-labeled provider whose `profile_workspace` is that
 Workspace; a retried create adopts only a provider with matching labels.
@@ -120,8 +120,12 @@ again and returns `409`.
 
 `packages/occ/src/index.ts:authorizeHarnessAuthSource`
 
-Agent create and PATCH authorize the caller's `credential_source:operate` on the
-requested source and, for PATCH, on the current source. The source must be
+PATCH first authorizes `credential_source:operate` on each already-bound
+source, without a lookup (`authorizeBoundCredentialSources`), so an
+update can drop sources after a gateway change. Create and PATCH then authorize
+`operate` on each requested source; before any lookup, an Installation without
+a Credential Gateway fails with `CredentialGatewayNotConfiguredError` (`409`),
+so source existence never changes the answer. The source must be
 `ready` in the exact Namespace and owned by the selected gateway. The generated
 `agents.harness_auth_credential_source_id` column references the source, so the
 database rejects deleting a source an Agent draft still uses.
@@ -129,7 +133,9 @@ database rejects deleting a source an Agent draft still uses.
 Every entry of `credentialSources` follows the same checks
 (`packages/occ/src/index.ts:authorizeAgentCredentialSources`), which also
 requires a credential-source `harnessAuth` to name a listed entry
-(`assertHarnessSourceListed`). The list is stored in
+(`assertHarnessSourceListed`, `AgentCredentialSourceBindingError`, `400`). That
+rule runs after every source check, so a caller without `operate` gets `403`
+first. The list is stored in
 `agents.credential_sources`; the constraint
 `agents_harness_credential_source_listed` enforces the same rule, and the trigger
 `agent_credential_sources_are_synchronized` mirrors the list into
@@ -149,8 +155,9 @@ requires a selected Sandbox, and Compute `validateHarnessAuth` requires
 a dedicated Codex or native OpenClaw Harness, the paired Sandbox and gateway,
 and an `openai`/`api_key` type. Compute renders no model Secret for either
 Harness and passes the resolved source to Sandbox provisioning.
-`admitCredentialSources` then authorizes the Agent principal's `operate` on
-every listed source, including the Harness source, checks each type against the
+`admitCredentialSources` refuses a list without a selected Sandbox Driver
+(`409` with its message), rechecks the caller's binding grants, then authorizes
+the Agent principal's `operate` on every listed source, including the Harness source, checks each type against the
 catalog, and freezes `{ sourceId, credentialGatewayId, sourceType }` entries in
 the revision's `credential_sources`.
 
@@ -177,19 +184,20 @@ the model source. The next owner is the [OpenShell Sandbox provisioning flow](op
 `packages/occ/src/index.ts:deleteCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:removeSource`
 
-The first transaction authorizes `delete`, locks the source, and returns `409`
-while an Agent draft, active revision, or pending deployment references it. It
-moves a `registering` or `ready` record to `deleting`; database triggers prevent
-leaving `deleting` and returning to `registering`. Outside the transaction, OCC calls `removeSource`. The OpenShell Driver
-deletes the owned provider, confirms it is gone, and deletes the profile when no
-provider of its type remains. A gateway failure returns `503` and leaves the
-record `deleting` for the caller to retry. Until
-`CREDENTIAL_REGISTRATION_FENCE_MS` (70 seconds) after `createdAt`, OCC keeps the
-record and returns `503` even after a successful removal: a Driver finishes an
-aborted registration's effects within 30 seconds of the abort, and the Backend
-caps each gateway call's deadline at 30 seconds. A second transaction deletes the
-record and appends the handler's audit event, so a completed deletion is always
-audited; if the append fails, the record stays `deleting` for a retry. Namespace deletion returns
+The first transaction authorizes `delete`, requires a selected gateway (`409`),
+locks the source, and returns `409` while an Agent draft, active revision, or
+pending deployment references it, or `503` if another driver registered it. Only
+then does it move a `registering` or `ready` record to `deleting`; triggers
+prevent leaving `deleting` and returning to `registering`. Outside the
+transaction, OCC calls `removeSource`. The OpenShell Driver deletes and confirms
+the owned provider, then the profile once no provider of its type remains. A
+gateway failure returns `503` and leaves the record `deleting` for a retry.
+Until `CREDENTIAL_REGISTRATION_FENCE_MS` (70 seconds) after `createdAt`, OCC
+keeps the record and returns `503` even after a successful removal: an aborted
+registration's effects finish within 30 seconds of the abort, and the Backend
+caps each gateway call at 30 seconds. A second transaction deletes the record
+and appends the audit event, so a completed deletion is always audited; if the
+append fails, the record stays `deleting`. Namespace deletion returns
 `NAMESPACE_NOT_EMPTY` while any record remains.
 
 ### 8. Update a source
@@ -198,7 +206,8 @@ audited; if the append fails, the record stays `deleting` for a retry. Namespace
 `apps/controller/src/drivers/credential-gateway/openshell.ts:updateSource`
 
 One transaction locks the Namespace and source, authorizes
-`credential_source:update`, and requires a `ready` source. It validates any
+`credential_source:update`, and requires a `ready` source of a type the
+catalog offers (`409` otherwise). It validates any
 replacement references against the catalog's Secret fields, authorizes
 `secret:operate` on each Secret it reads, and reads the values with
 `withValue`. It calls `updateSource` with Compute's placement while holding the
@@ -206,8 +215,7 @@ source lock; the OpenShell Driver requires the OCC-owned provider and calls
 `UpdateProvider`. It then replaces the Secret references, and the handler
 appends the audit event in the same transaction. The gateway is updated before
 that transaction commits: a gateway failure rolls back the references, and a
-failure after the gateway accepted the values leaves the gateway newer than OCC,
-which repeating the same request converges. An `absent` or `failed` gateway
+later failure leaves the gateway newer than OCC until the request is repeated. An `absent` or `failed` gateway
 status returns `503`. The OpenShell Driver rejects empty values because
 `UpdateProvider` merges them into the existing provider. OpenShell gives the new
 value only to processes started after the update.
@@ -220,9 +228,11 @@ value only to processes started after the update.
 `apps/controller/src/drivers/credential-gateway/openshell.ts:withdraw`
 
 The API authorizes `agent:operate` and requires the active revision to have been
-admitted with the source in `credential_sources`. It inserts a `pending` `credential_withdrawals`
-row keyed by revision and source, or returns the existing one. Unless
-withdrawal work for the revision is already queued or claimed, it queues
+admitted with the source in `credential_sources`. For that revision and each
+later one admitted with the source, so an in-flight deployment never attaches
+it, the API inserts a `pending` `credential_withdrawals` row keyed by revision
+and source, or returns the existing one. For each pending row with no withdrawal
+work queued or claimed, it makes the caller `requested_by` and queues
 revision-scoped work with target `credentials_withdrawn`
 (`packages/occ/src/state/controller-work.ts:credentialWithdrawalWorkKey`). That
 work has its own idempotency key, never deploys the revision, and owns no
@@ -244,50 +254,43 @@ also marks the row `revoked` and appends
 backoff until attempts run out; the row then stays `pending`. The API derives
 `withdrawalInProgress` from outstanding withdrawal work
 (`packages/occ/src/index.ts:readAgentCredentialWithdrawal`), so an exhausted
-withdrawal reads `false` whether its last attempt failed or its claim expired.
-Only a replay of the withdraw request, or maintenance where it exists, queues
-another attempt.
+withdrawal reads `false` even if its claim expired. Only a replay or maintenance
+queues another attempt.
 
-Maintenance of the active revision (scheduled only when the Compute Driver or
-the revision's repository credentials declare an interval) checks for a withdrawal before it resolves
-the revision's credentials
+Maintenance of the active revision (scheduled only when Compute or repository
+credentials declare an interval) checks for a withdrawal before it resolves the
+revision's credentials
 (`apps/controller/src/worker.ts:completeWithdrawnRevisionMaintenance`). While
 any withdrawal is `pending`, including a tool withdrawal after model revocation,
 the pass queues withdrawal work if none is outstanding, completes, and keeps the
-maintenance chain. That work checks each requester's authority. Once all withdrawals
-are `revoked`, the pass completes without scheduling more maintenance. Deploy and
-repair work that reaches the revision fails with `CREDENTIAL_WITHDRAWN` rather
-than re-attach the source. This applies only to the Harness source; deploy and
-repair work omit any other withdrawn source and continue. Maintenance also
-re-queues withdrawal work for any other pending withdrawal
-(`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`), so an
-attempt that exhausted its retries during a gateway outage resumes after it.
+maintenance chain; once all are `revoked`, it completes without scheduling more.
+Deploy and repair work fail with `CREDENTIAL_WITHDRAWN` rather than re-attach a
+withdrawn Harness source, and omit any other withdrawn source. Maintenance also
+re-queues work for other pending withdrawals
+(`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`), so a
+withdrawal exhausted during a gateway outage resumes after it.
+`authorizeRevision` skips the `operate` recheck for withdrawn sources, which never
+attach again, so removing their grants cannot end maintenance.
 
 ## Debugging and Verification
 
 - `node --test tests/conformance/credential-source-occ.test.mjs` covers catalog
-  validation, Secret `operate`, registration compensation, recovery of an
-  uncertain registration, audit commit with the final state change, deletion
-  refusal and retry, Namespace gating, admission snapshots, and rejection of Secret-backed
-  methods with a gateway selected. It uses an in-process gateway double, not
+  validation, grants, registration compensation and recovery, audit, deletion,
+  Namespace gating, admission snapshots, and Secret-backed method rejection. It uses an in-process gateway double, not
   OpenShell.
 - `node --test tests/conformance/openshell-gateway-wire.test.mjs` checks the
   provider, profile, update, and detach RPC encoding against the pinned `v0.1.3-pre.2`
   wire fixture.
 - The credential withdrawal cases in
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
-  and worker against PostgreSQL with a Compute double: revocation after a
-  pending retry, exhaustion followed by a replay, maintenance of a withdrawn
-  revision, a retry that omits two non-model sources revoked in one pass,
-  per-requester authorization of a shared withdrawal claim, maintenance recovery
-  of an exhausted non-model withdrawal, and dispatch refusal after the Agent loses
-  a source grant.
+  and worker against PostgreSQL with a Compute double: retries, exhaustion,
+  replays, maintenance, retries that omit withdrawn sources, per-requester
+  authorization, an admitted successor revision, and a lost source grant.
 - The real OpenShell test updates the source through the API, withdraws it from
-  the running Agent, and checks that a model turn in the same Codex process
-  then fails. Before that, it calls an in-cluster echo service with a
-  `bearer-token` source's placeholder, checks the substituted token's digest,
-  and checks that withdrawing that source stops delivery while model turns
-  continue.
+  the running Agent, and checks that the next model turn in that Codex process
+  fails. First, a `bearer-token` placeholder sent to an in-cluster echo service
+  arrives substituted (digest checked), and withdrawing that source stops
+  delivery while model turns continue.
 - `OCC_TEST_OPENSHELL_K3D_REAL=1 node --env-file="$TEST_ENV_FILE" --test tests/integration/sandbox-driver-openshell-k3d-real.test.mjs`
   registers an `openai` source through the production API against a real
   gateway and reads its live `ready` status. See [OpenShell tests](../testing/openshell.md).
@@ -316,6 +319,13 @@ attempt that exhausted its retries during a gateway outage resumes after it.
 
 ## Changelog
 
+- 2026-10-08 14:00: An unoffered source type is a `409` naming the fix, not `404`; worker credential codes have their own status messages. (fix-821-824)
+- 2026-10-08 12:00: A withdrawal also covers later revisions admitted with the source. (fix-810)
+- 2026-10-08 11:45: DELETE checks gateway ownership before `deleting`. (fix-811-812 - e461e1621)
+- 2026-10-08 10:00: Replays take over stranded withdrawals; withdrawn sources skip the grant recheck. (fix-787-788)
+- 2026-10-08 09:30: Agent PATCH needs only `operate` on already-bound sources. (fix-782)
+- 2026-10-08 09:00: Deploying listed sources without a Sandbox Driver returns `409` with its message, not the generic "already exists". (fix-786)
+- 2026-10-08 08:30: Agent binding reports a missing Credential Gateway as `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` and an unlisted Harness source as `400`, after the caller's `operate` checks. (fix-783-784)
 - 2026-10-07 18:00: Unified binding: one `credentialSources` list holds every source, and a credential-source `harnessAuth` names a listed entry. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - ee950468c)
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 - 2026-10-06 21:30: Keep tool-withdrawal recovery scheduled after model revocation without preparing the revision again. (pr-851-rebase - bb6c7449b)

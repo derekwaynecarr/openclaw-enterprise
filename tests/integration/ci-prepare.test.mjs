@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
 import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.mjs";
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
+import { withStateLock } from "../../scripts/ci/state-lock.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -30,6 +31,18 @@ async function fixture(t) {
 async function writeState(path, state) {
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   await chmod(path, 0o600);
+}
+
+// Lane preparation stderr opens with timing and host metrics, and assert.match's default
+// message keeps only its start (finding 818). Show the end, where the cause is.
+function assertStderrMatch(stderr, pattern, label) {
+  const prefix = label ? `${label}: ` : "";
+  const tail = stderr.slice(-1_500);
+  assert.match(
+    stderr,
+    pattern,
+    `${prefix}stderr did not match ${pattern}; it ended with:\n${tail}`,
+  );
 }
 
 function runPrepare(args, env = {}) {
@@ -63,12 +76,14 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
   rmdirSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -280,6 +295,16 @@ if (command === "docker" || command === "podman") {
     ? ["image", "save", state.tag]
     : ["image", "save", "--platform", "linux/amd64", state.tag];
   if (equals(args, expectedSave)) {
+    if (scenario === "save-failed-late-exit") {
+      // The truncated stream ends before the export's exit is seen. A busy runner can
+      // observe an ordinary exit that late; closing the output a second early
+      // reproduces that order.
+      writeSync(1, "synthetic image");
+      writeSync(2, "synthetic export failure\n");
+      closeSync(1);
+      setTimeout(() => process.exit(23), 1_000);
+      await new Promise(() => {});
+    }
     if (scenario === "save-failed") {
       // A truncated export must fail preparation even if a node accepts it.
       process.stdout.write("synthetic image");
@@ -630,6 +655,7 @@ for (const { scenario, error } of [
   { scenario: "nonzero-import", error: /synthetic import command failure/ },
   { scenario: "nonzero-worker-import", error: /synthetic import command failure/ },
   { scenario: "save-failed", error: /synthetic export failure/ },
+  { scenario: "save-failed-late-exit", error: /synthetic export failure/ },
 ]) {
   test(`fixture image CLI verifies runtime registration and cleanup: ${scenario}`, async (t) => {
     const commands = await fixtureImageCommands(
@@ -644,7 +670,7 @@ for (const { scenario, error } of [
 
     if (error) {
       assert.equal(result.status, 1, "preparation must reject an unusable imported fixture");
-      assert.match(result.stderr, error);
+      assertStderrMatch(result.stderr, error);
       assert.equal(state.env, undefined);
       await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
     } else {
@@ -695,7 +721,7 @@ for (const { scenario, error } of [
       assert.equal(criLookups("server-0"), 1);
     }
     if (scenario === "lagging-worker-cri" || scenario === "absent-worker-cri") {
-      assert.match(
+      assertStderrMatch(
         result.stderr,
         /CRI on k3d-\S+-agent-0 does not list the imported \S+ reference yet \(attempt 1\); retrying\./,
       );
@@ -813,7 +839,7 @@ test("fixture preparation rejects an unknown proxy source before publishing its 
   const commands = await fixtureImageCommands(t, "missing-proxy-source");
   const result = commands.prepare();
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Unable to determine the cross-node plugin status proxy source/);
+  assertStderrMatch(result.stderr, /Unable to determine the cross-node plugin status proxy source/);
   const state = JSON.parse(await readFile(commands.statePath, "utf8"));
   assert.equal(state.env, undefined);
   await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
@@ -943,11 +969,11 @@ for (const scenario of ["storage-unready", "storage-after-image-unready"]) {
     const commands = await fixtureImageCommands(t, scenario);
     const result = commands.prepare();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /CI fixture storage controller is not ready/);
-    assert.match(result.stderr, /CrashLoopBackOff/);
-    assert.match(result.stderr, /fixture configuration rejected/);
-    assert.match(result.stderr, /Unschedulable/);
-    assert.match(result.stderr, /KubeletHasDiskPressure/);
+    assertStderrMatch(result.stderr, /CI fixture storage controller is not ready/);
+    assertStderrMatch(result.stderr, /CrashLoopBackOff/);
+    assertStderrMatch(result.stderr, /fixture configuration rejected/);
+    assertStderrMatch(result.stderr, /Unschedulable/);
+    assertStderrMatch(result.stderr, /KubeletHasDiskPressure/);
     assert.doesNotMatch(result.stderr, /do-not-publish-pod-spec/);
     await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
     const state = JSON.parse(await readFile(commands.statePath, "utf8"));
@@ -997,13 +1023,13 @@ test("k3d preparation reuses only matching local immutable images and verifies f
     const state = JSON.parse(await readFile(commands.statePath, "utf8"));
     const imported = state.resources.filter(({ kind }) => kind === "k3d-image");
     if (scenario === "pull-mismatch") {
-      assert.match(result.stderr, /pull did not materialize the requested registry digest/);
+      assertStderrMatch(result.stderr, /pull did not materialize the requested registry digest/);
       assert.equal(imported.length, 0);
     } else if (scenario === "inspect-failed") {
-      assert.match(result.stderr, /Cannot connect to the Docker daemon/);
+      assertStderrMatch(result.stderr, /Cannot connect to the Docker daemon/);
       assert.equal(imported.length, 0);
     } else {
-      assert.match(result.stderr, /limited to reviewed Codex versions/);
+      assertStderrMatch(result.stderr, /limited to reviewed Codex versions/);
       assert.equal(imported.length, 1);
       assert.equal(imported[0].status, "ready");
       assert.equal(imported[0].sourceImage, immutableImage);
@@ -1044,7 +1070,7 @@ test("k3d preparation times out a hung host image command and never pulls for it
     });
     const result = commands.prepare();
     assert.equal(result.status, 1, scenario);
-    assert.match(
+    assertStderrMatch(
       result.stderr,
       new RegExp(String.raw`The container engine did not answer within 3000 ms \(${shown}\)\.`),
       scenario,
@@ -1080,7 +1106,7 @@ test("fixture preparation times out a hung inspect of its own fixture image", as
   });
   const result = commands.prepare();
   assert.equal(result.status, 1);
-  assert.match(
+  assertStderrMatch(
     result.stderr,
     /The container engine did not answer within 3000 ms \(image inspect localhost\/\S+\/fixture:local\)\./,
   );
@@ -1102,7 +1128,7 @@ test("ordinary k3d preparation forwards an immutable K3s override and retains th
     if (scenario === "success") {
       assert.equal(cluster.kubernetesVersion, "v1.35.8+k3s1");
     } else {
-      assert.match(result.stderr, /must resolve to Kubernetes 1\.35\.x/);
+      assertStderrMatch(result.stderr, /must resolve to Kubernetes 1\.35\.x/);
       // The fixture build overlaps cluster creation; nothing reaches the cluster.
       assert.equal(
         (await commands.commands()).some(({ args }) => args[0] === "exec" && args[1] === "-i"),
@@ -1791,6 +1817,128 @@ console.error(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " 
     `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${copyName}" WITH (FORCE)`,
     `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${templateName}" WITH (FORCE)`,
   ]);
+});
+
+test("prepareFile and cleanup in two processes keep each other's state entries", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state.json");
+  const dockerPath = join(root, "fake-docker.mjs");
+  const corepackPath = join(root, "fake-corepack.mjs");
+  const prefix = "openclaw-ci-synthetic";
+  const server = {
+    id: "compose-postgres-synthetic",
+    kind: "compose-postgres",
+    owner: prefix,
+    status: "ready",
+    name: "openclaw_ci_pg_synthetic",
+    composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+    port: 45431,
+  };
+  await writeState(statePath, {
+    version: 1,
+    repositoryRoot,
+    lane: "postgres-application",
+    prefix,
+    statePath,
+    resources: [server],
+  });
+  // Each command takes a little while, so the two processes' state updates overlap.
+  const slow = `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);\n`;
+  await writeFile(dockerPath, `#!${process.execPath}\n${slow}`, { mode: 0o700 });
+  await writeFile(corepackPath, `#!${process.execPath}\n${slow}`, { mode: 0o700 });
+  // Like the worker revision suite: a template per process, then a copy per test.
+  const program = `
+const { prepareFile } = await import(process.argv[1]);
+const options = {
+  lane: "postgres-application",
+  file: "tests/integration/postgres-worker-agent-revision.test.mjs",
+  statePath: process.argv[2],
+};
+const template = await prepareFile(options);
+for (let index = 0; index < 10; index += 1) {
+  const copy = await prepareFile({ ...options, template: template.env.OCC_TEST_DATABASE_URL });
+  await copy.cleanup();
+}
+await template.cleanup();
+`;
+  const run = () =>
+    new Promise((resolveRun) => {
+      const child = spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          program,
+          new URL("../../scripts/ci/prepare.mjs", import.meta.url).href,
+          statePath,
+        ],
+        {
+          cwd: repositoryRoot,
+          env: {
+            PATH: root,
+            LANG: "C",
+            OCC_DOCKER_BIN: dockerPath,
+            OPENCLAW_CI_COREPACK_BIN: corepackPath,
+          },
+          stdio: ["ignore", "ignore", "pipe"],
+          timeout: 60_000,
+        },
+      );
+      let stderr = "";
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.on("close", (code) => resolveRun({ code, stderr }));
+    });
+  const results = await Promise.all([run(), run()]);
+  for (const result of results) {
+    assert.equal(result.code, 0, result.stderr);
+  }
+  const settled = JSON.parse(await readFile(statePath, "utf8"));
+  assert.deepEqual(settled.resources, [server]);
+  assert.deepEqual((await readdir(root)).sort(), [
+    "fake-corepack.mjs",
+    "fake-docker.mjs",
+    "state.json",
+  ]);
+});
+
+test("the CI state lock removes an exited holder's lock and waits for a live one", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state.json");
+  const lockPath = `${statePath}.lock`;
+  const exited = spawnSync(process.execPath, ["-e", ""]);
+  assert.equal(exited.status, 0);
+  await writeFile(lockPath, `${exited.pid} abandoned\n`, { mode: 0o600 });
+  // A nested call in the same async context reuses the held lock.
+  assert.equal(
+    await withStateLock(statePath, () => withStateLock(statePath, async () => "ran")),
+    "ran",
+  );
+  await assert.rejects(() => stat(lockPath), { code: "ENOENT" });
+
+  const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], {
+    stdio: "ignore",
+  });
+  t.after(() => holder.kill());
+  await writeFile(lockPath, `${holder.pid} live\n`, { mode: 0o600 });
+  let ran = false;
+  await assert.rejects(
+    () =>
+      withStateLock(
+        statePath,
+        async () => {
+          ran = true;
+        },
+        { timeoutMs: 300 },
+      ),
+    new RegExp(
+      `Timed out after 300 ms waiting for the CI state lock .* \\(held by pid ${holder.pid}\\)`,
+    ),
+  );
+  assert.equal(ran, false);
+  assert.equal(await readFile(lockPath, "utf8"), `${holder.pid} live\n`);
+  assert.deepEqual((await readdir(root)).sort(), ["state.json.lock"]);
 });
 
 test("repository platform preparation refuses a public relay gateway before importing images", async (t) => {

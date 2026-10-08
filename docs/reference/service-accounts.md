@@ -68,8 +68,11 @@ account envelope exposes safe credential readiness metadata; backend Secret
 locators and Backend/workspace identities remain private.
 Compute creates one account-owned token Secret in the tenant control plane; the Driver privately
 persists the upstream credential ID for exact cleanup. A second issuance fails
-with `409`; rotation and reconciliation are not implemented. Calling issuance
-without a selected ServiceAccount Driver fails with `503 DEPENDENCY_UNAVAILABLE`.
+with `409`; rotation and reconciliation are not implemented. On an Installation
+with no ChatGPT Backend, and so no ServiceAccount Driver, issuance fails with
+`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix, after the account
+`update` check and lookup. A selected Driver that is unavailable or fails
+returns `503 DEPENDENCY_UNAVAILABLE`.
 
 An Agent binds the same-Namespace account through
 `harnessAuth: { method: "codex_pat", source: { kind: "service_account", namespaceId, id: serviceAccountId } }`.
@@ -153,6 +156,10 @@ provider, not IAM, Compute, OCC, or the Harness.
 - `409 RESOURCE_CONFLICT`: Duplicate account name, existing credential,
   referenced-account deletion, missing credential, or unsupported Harness or
   OAuth deployment, or mismatched managed Backend binding.
+- `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`: The Installation has no ChatGPT
+  Backend, so issuance, and deploying an Agent bound to an account without an
+  access token, cannot succeed. Configure the
+  [ChatGPT Backend](../guides/integrations/chatgpt.md).
 - Provider denial or Kubernetes failure: Creation fails closed; compensation deletes
   only the newly created exact provider account, provider credential, or
   account-owned Secret when durable state confirms it was not committed.

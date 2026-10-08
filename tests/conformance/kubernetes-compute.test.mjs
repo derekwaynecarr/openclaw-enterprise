@@ -4471,6 +4471,45 @@ test("managed PAT preparation projects the account-owned token and rejects a cha
   assert.equal(material.data.CODEX_ACCESS_TOKEN, source.data.token);
   assert.deepEqual(Object.keys(material.data).sort(), ["CODEX_ACCESS_TOKEN", "app-server-token"]);
 
+  // Delivery uses exactly the admitted account snapshot, from the revision's own Namespace.
+  const otherAccountId = "sa_00000000-0000-4000-8000-000000000002";
+  for (const harnessAuth of [
+    {
+      ...revision.harnessAuth,
+      credential: {
+        kind: "access_token",
+        secretRef: {
+          name: `service-account-${createHash("sha256").update(otherAccountId).digest("hex").slice(0, 32)}`,
+          key: "token",
+        },
+      },
+    },
+    { ...revision.harnessAuth, source: { ...revision.harnessAuth.source, id: otherAccountId } },
+    {
+      ...revision.harnessAuth,
+      backendBinding: { ...revision.harnessAuth.backendBinding, workspaceId: "ws_2" },
+    },
+  ]) {
+    await assert.rejects(
+      driver.prepareRevision(revision, { ...context, harnessAuth }),
+      /does not match the admitted account/,
+    );
+  }
+  const foreignAuth = {
+    ...revision.harnessAuth,
+    source: {
+      ...revision.harnessAuth.source,
+      namespaceId: "ns_00000000-0000-4000-8000-0000000000ff",
+    },
+  };
+  await assert.rejects(
+    driver.prepareRevision(
+      { ...revision, harnessAuth: foreignAuth },
+      { ...context, harnessAuth: foreignAuth },
+    ),
+    /does not match the admitted account/,
+  );
+
   // Sharing the PAT login mode must retain the managed source's account ownership fence.
   source.metadata.annotations["openclaw.dev/service-account-id"] = "another-account";
   const before = records.length;
@@ -4958,6 +4997,57 @@ test("credential-source authentication renders no model Secret and requires the 
       ),
     /incompatible.*topology/i,
   );
+});
+
+test("non-model credential sources resolved at dispatch must match the revision's snapshots", () => {
+  const sandboxDriver = {
+    id: "sandbox-openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    provisionHarness() {},
+  };
+  const credentialGatewayDriver = { id: "credential-gateway", capability: "credential_gateway" };
+  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
+  const source = (id) => ({
+    id,
+    namespaceId: tenant.id,
+    name: `token-${id.slice(-4)}`,
+    type: "bearer-token",
+    config: {},
+    secrets: {},
+    driverId: credentialGatewayDriver.id,
+    state: "ready",
+    createdAt: "2026-09-26T00:00:00.000Z",
+  });
+  const first = source("cs_00000000-0000-4000-8000-000000000851");
+  const second = source("cs_00000000-0000-4000-8000-000000000852");
+  const revision = {
+    namespaceId: tenant.id,
+    credentialSources: [first, second].map(({ id }) => ({
+      sourceId: id,
+      credentialGatewayId: credentialGatewayDriver.id,
+      sourceType: "bearer-token",
+    })),
+  };
+  // The worker omits withdrawn sources, so a shorter list is valid.
+  assert.deepEqual(driver.credentialSourcesForRevision(revision, { credentialSources: [second] }), [
+    second,
+  ]);
+  assert.deepEqual(driver.credentialSourcesForRevision(revision, undefined), []);
+  for (const [resolved, why] of [
+    [[source("cs_00000000-0000-4000-8000-000000000853")], "a source the revision never admitted"],
+    [[first, first], "the same source twice"],
+    [[{ ...first, namespaceId: "ns_00000000-0000-4000-8000-0000000000ff" }], "another Namespace"],
+    [[{ ...first, driverId: "other-gateway" }], "another gateway"],
+    [[{ ...first, type: "openai" }], "another type"],
+    [[{ ...first, state: "deleting" }], "a deleting source"],
+  ]) {
+    assert.throws(
+      () => driver.credentialSourcesForRevision(revision, { credentialSources: resolved }),
+      /credential source does not match the admitted source/i,
+      why,
+    );
+  }
 });
 
 test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin selections", () => {
@@ -7890,6 +7980,8 @@ function providerReadinessFixture({
     labels,
     requests,
     core,
+    // The Sandbox Driver Compute holds, so a test can add an optional method later.
+    sandbox: driver.sandboxDriver,
     pod(name, ready = "True") {
       return {
         apiVersion: "v1",
@@ -8547,6 +8639,92 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
       ports: [{ protocol: "TCP", port: 8080 }],
     },
   ]);
+
+  // D546: a Ready provider Pod proves only its supervisor. The Harness transport must
+  // answer, and a held startup failure (a failed Codex model probe) fails the revision
+  // with the evidence the worker turns into RUNTIME_MODEL_PROBE_FAILED.
+  const harnessObservations = [];
+  let harnessAnswer = { state: "serving" };
+  fixture.sandbox.harnessStatus = async (context) => {
+    harnessObservations.push(context);
+    return harnessAnswer;
+  };
+  fixture.setObservation({ items: [fixture.pod("ready")] });
+  assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+    ...expected,
+    ready: true,
+  });
+  assert.equal(harnessObservations.length, 1);
+  const observation = harnessObservations[0];
+  assert.equal(observation.transportToken, "test-transport");
+  assert.equal(observation.revision, revision);
+  assert.deepEqual(observation.requirements.labels, fixture.labels);
+  harnessAnswer = { state: "starting" };
+  assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+    ...expected,
+    ready: false,
+  });
+  const heldFailure = {
+    component: "agent",
+    check: "model-probe",
+    checkedAt: "2026-10-08T13:00:00.000Z",
+    code: "MODEL_PROBE_FAILED",
+    cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
+  };
+  harnessAnswer = { state: "failed", runtimeFailure: heldFailure };
+  assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+    ...expected,
+    ready: false,
+    runtimeFailure: heldFailure,
+  });
+  // A cause outside the closed vocabulary is dropped; the failure code stays.
+  harnessAnswer = {
+    state: "failed",
+    runtimeFailure: { ...heldFailure, cause: { kind: "PROVIDER_TEXT", detail: "key sk-123" } },
+  };
+  const { cause: _dropped, ...withoutCause } = heldFailure;
+  assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+    ...expected,
+    ready: false,
+    runtimeFailure: withoutCause,
+  });
+  // Invalid evidence never activates and never reaches the worker as a failure code.
+  for (const runtimeFailure of [
+    undefined,
+    null,
+    "MODEL_PROBE_FAILED",
+    { ...heldFailure, code: "not a code" },
+    { ...heldFailure, checkedAt: "yesterday" },
+  ]) {
+    harnessAnswer = { state: "failed", runtimeFailure };
+    await assert.rejects(
+      driver.prepareRevision(revision, authContext(revision)),
+      /Runtime failure status returned invalid data/,
+    );
+  }
+  // An unready supervisor Pod still waits before the Harness is observed.
+  harnessAnswer = { state: "failed", runtimeFailure: heldFailure };
+  const observedBefore = harnessObservations.length;
+  fixture.setObservation({ items: [fixture.pod("starting", "False")] });
+  assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+    ...expected,
+    ready: false,
+  });
+  assert.equal(harnessObservations.length, observedBefore);
+  // Activation re-observes the Harness: one that stopped serving is not activated.
+  fixture.setObservation({ items: [fixture.pod("ready")] });
+  for (const answer of [{ state: "starting" }, { state: "failed", runtimeFailure: heldFailure }]) {
+    harnessAnswer = answer;
+    await assert.rejects(
+      driver.activateRevision(revision, authContext(revision)),
+      /The exact AgentRevision workload is not ready/,
+    );
+  }
+  harnessAnswer = { state: "serving" };
+  const observedBeforeActivation = harnessObservations.length;
+  await driver.activateRevision(revision, authContext(revision));
+  assert.equal(harnessObservations.length, observedBeforeActivation + 1);
+  assert.equal(harnessObservations.at(-1).transportToken, "test-transport");
 });
 
 test("provider Harness readiness preserves API errors and owner cancellation", async () => {

@@ -47,6 +47,7 @@ import {
   OpenClawController,
   ActivationFailedError,
   ActivationPendingError,
+  CredentialSourceRevisionError,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
   WorkClaimLostError,
@@ -1613,7 +1614,7 @@ export class ControllerWorker {
       await this.processRepositoryCleanup(claim);
       return;
     }
-    // A withdrawal names an active revision but never deploys it.
+    // A withdrawal names the active revision or an admitted successor, but never deploys it.
     if (isCredentialWithdrawalWork(claim)) {
       await this.processCredentialWithdrawal(claim);
       return;
@@ -3007,7 +3008,10 @@ export class ControllerWorker {
           }
           // As for a lost repository credential authority, this ends a maintenance
           // claim's chain too: the revision cannot activate without a new one.
-          if (error instanceof ActivationFailedError) {
+          if (
+            error instanceof ActivationFailedError ||
+            error instanceof CredentialSourceRevisionError
+          ) {
             await this.finalizeRevision(
               claim,
               { outcome: "permanent", code: error.code },
@@ -3057,6 +3061,7 @@ export class ControllerWorker {
       if (
         error instanceof RepositoryCredentialAuthorityError ||
         error instanceof SandboxRevisionUnsupportedError ||
+        error instanceof CredentialSourceRevisionError ||
         error instanceof ActivationFailedError
       ) {
         result = { outcome: "permanent", code: error.code };
@@ -3156,8 +3161,21 @@ export class ControllerWorker {
     ) {
       return { outcome: "permanent", code: "INVALID_HARNESS_AUTH" };
     }
-    // Both the deploying actor and the Agent principal must still operate every source.
+    // Both the deploying actor and the Agent principal must still operate every source the
+    // revision can attach. A withdrawn source, pending or revoked, never attaches again
+    // (`resolveRevisionSecretContext`), so a grant removed from it must not fail maintenance
+    // before maintenance re-queues the withdrawal itself.
+    const withdrawnSourceIds = new Set(
+      (
+        await this.state.read((view) =>
+          view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id),
+        )
+      ).map(({ credentialSourceId }) => credentialSourceId),
+    );
     for (const sourceId of revisionCredentialSourceIds(revision)) {
+      if (withdrawnSourceIds.has(sourceId)) {
+        continue;
+      }
       for (const principalId of [claim.actorId, revision.servicePrincipalId]) {
         const sourceAuthorization: AuthorizationRequest = {
           principalId,

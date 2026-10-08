@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds } from "./cleanup.mjs";
+import { withStateLock } from "./state-lock.mjs";
 import { captureK3dDiagnostics, k3dHostMetrics } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
@@ -1643,8 +1644,11 @@ async function streamImageIntoK3dNodes(cluster, saveArgs) {
       // The first node failure is the cause; later ones may follow from it.
       firstImportError ??= error;
       // A failed node stops reading. Stop a still-running export so it cannot
-      // block on a full pipe until its timeout.
-      if (save.exitCode === null && save.signalCode === null) {
+      // block on a full pipe until its timeout. Once the export's output has
+      // ended, no node can have stopped it, so the export's own exit decides
+      // whether it failed, even if that exit is not seen yet: a node that reads
+      // a truncated stream to its end can report its failure first.
+      if (!save.stdout.readableEnded && save.exitCode === null && save.signalCode === null) {
         stoppedExport = true;
         save.kill("SIGTERM");
       }
@@ -2521,6 +2525,14 @@ async function prepareFile({ lane, file, statePath, template }) {
   await validateLaneInputsBeforeSideEffects(name);
   const relativeFile = toRepositoryRelative(filePath(file));
   const resolvedStatePath = normalizeStatePath(statePath);
+  // A test may prepare databases from its own process while the runner prepares and
+  // cleans other files. The lock keeps either side from writing back a stale state.
+  return withStateLock(resolvedStatePath, () =>
+    prepareFileWithState({ name, relativeFile, resolvedStatePath, template }),
+  );
+}
+
+async function prepareFileWithState({ name, relativeFile, resolvedStatePath, template }) {
   const state = await readState(resolvedStatePath);
   const prepare = lanePrepare(name);
   if (!state && prepare.requiresPreparedStateForFile) {

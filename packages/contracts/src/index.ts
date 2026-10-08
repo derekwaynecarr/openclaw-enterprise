@@ -1056,6 +1056,20 @@ export interface SandboxHarnessContext extends SandboxNamespaceContext {
   readonly requirements: HarnessWorkloadRequirements;
 }
 
+export interface SandboxHarnessStatusContext extends SandboxHarnessContext {
+  /** The Agent transport token the Agent Gateway presents to the Harness. */
+  readonly transportToken: string;
+}
+
+/**
+ * What the provider-owned Harness answers at its endpoint. `failed` carries the Harness's own
+ * held startup failure, unvalidated; Compute validates it like a Compute-owned status port.
+ */
+export type SandboxHarnessStatus =
+  | { readonly state: "starting" }
+  | { readonly state: "serving" }
+  | { readonly state: "failed"; readonly runtimeFailure: unknown };
+
 export interface ComputeLifecycleHooks {
   afterNamespacePrepared?(namespace: Readonly<Namespace>, signal: AbortSignal): Promise<void>;
   beforeWorkloadStart?(
@@ -1329,6 +1343,12 @@ export interface SandboxDriver extends Driver {
    * Service. Implementations must fail closed until the endpoint is observable and exact.
    */
   harnessEndpoint?(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint>;
+  /**
+   * Observes the provider-owned Harness through the endpoint `harnessEndpoint` returns, with the
+   * Agent transport token. Compute treats only `serving` as ready and fails the revision with a
+   * valid held `runtimeFailure`. `serving` requires an authenticated transport handshake.
+   */
+  harnessStatus?(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus>;
   /**
    * The exact Sandbox `provisionHarness` creates for this revision, derived without effects.
    * Required to revoke credentials from a running revision.

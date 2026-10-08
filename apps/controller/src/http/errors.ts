@@ -2,6 +2,7 @@ import type { FastifyError, FastifyReply } from "fastify";
 import { PresetValidationError } from "@openclaw-enterprise/contracts";
 import { UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
 import {
+  AgentCredentialSourceBindingError,
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
@@ -10,6 +11,7 @@ import {
   ChannelCredentialError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceDriverError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
   IAMAccessBindingRoleError,
@@ -31,7 +33,9 @@ import {
   RuntimeLogsError,
   ScopeViolationError,
   SecretBindingValidationError,
+  SecretDriverOwnershipError,
   SecretValueError,
+  ServiceAccountDriverNotConfiguredError,
   type RuntimeLogsErrorCode,
 } from "@openclaw-enterprise/occ";
 import {
@@ -646,10 +650,19 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
   }
+  if (error instanceof ServiceAccountDriverNotConfiguredError) {
+    // A fixed message naming the fix; raised only after the account's grant and lookup.
+    return failure(409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", error.message);
+  }
   if (error instanceof SecretValueError) {
     return failure(400, "INVALID_REQUEST", error.message, [{ path: "/value", code: error.code }]);
   }
   if (error instanceof ConfigurationHarnessError) {
+    return failure(400, "INVALID_REQUEST", error.message);
+  }
+  if (error instanceof AgentCredentialSourceBindingError) {
+    // Either field can break the rule (an update may drop the source from the list), so
+    // the message names it and no detail points at one field.
     return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof SecretBindingValidationError) {
@@ -712,6 +725,14 @@ export function requestFailure(error: unknown): RequestFailure {
       "DEPENDENCY_UNAVAILABLE",
       "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
     );
+  }
+  if (error instanceof SecretDriverOwnershipError) {
+    // A fixed message naming the path's fix; raised only after the Secret's grant and lookup.
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+  }
+  if (error instanceof CredentialSourceDriverError) {
+    // A fixed message naming the fix; raised only after the source's grant and lookup.
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
   }
   if (isDependencyUnavailable(error)) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");

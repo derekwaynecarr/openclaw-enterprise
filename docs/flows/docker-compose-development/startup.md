@@ -1,21 +1,19 @@
 ---
 created: 2026-09-09
-updated: 2026-10-06
-last_updated_session: authoring-run/e789ef10-ca82-4ee2-b31d-8d11100d9744
+updated: 2026-10-08
+last_updated_session: authoring-run/0da79016-d6a4-4217-a420-1e8b0b314e14
 ---
 
 # Compose development startup
 
-Trace host preflight, database initialization, and API/worker startup for the [Compose development flow](../docker-compose-development.md).
+Trace startup for the [Compose development flow](../docker-compose-development.md).
 
 ## Overview
 
-`scripts/dev-up` selects Docker or Kubernetes Compute and starts the requested
-development topology. Docker Compute and Compose-backed
-Kubernetes profiles run PostgreSQL, migration, bootstrap, API, and worker in
-Compose. The explicitly selected Kubernetes-only profile runs them in the owned
-k3d cluster. This flow ends after authenticated Installation and bootstrap
-Namespace readiness; OpenShell also requires Workspace readiness.
+`scripts/dev-up` starts Docker or Kubernetes Compute. Compose-backed profiles run
+PostgreSQL, migration, bootstrap, API, and worker in Compose; the Kubernetes-only
+profile runs them in the owned k3d cluster. Startup requires authenticated
+Installation and bootstrap Namespace readiness, plus Workspace readiness for OpenShell.
 
 ## Entry Points
 
@@ -56,16 +54,15 @@ graph TD
 `internal/occdev/compose.go:AnalyzeCompose`,
 `deploy/runtime/Dockerfile`
 
-The helper requires `bin/occ` (`pnpm cli:build`), accepts `--key-output`, and
-forwards arguments after `--` to Compose. This section traces Docker Compute;
-[step 12](#12-select-kubernetes-development-and-preserve-cleanup-ownership)
-selects Kubernetes Compute, which OpenShell requires. Without a Sandbox Driver,
-Compose Kubernetes startup requires Node before creating resources.
+The helper requires `bin/occ` (`pnpm cli:build`) and forwards arguments after `--`
+to Compose. For Kubernetes Compute, required by OpenShell, see
+[step 12](#12-select-kubernetes-development-and-preserve-cleanup-ownership).
+Without a Sandbox Driver, Compose Kubernetes startup requires Node before creating resources.
 
 Docker Compute probes Engine and Compose JSON support. Failure selects `podman`;
-a `docker` compatibility alias is neither required nor sufficient. Podman needs
-pinned `yq` v4 and standalone `podman-compose` so status and stopped one-shot
-containers stay consistent.
+a `docker` compatibility alias is neither required nor sufficient. For Podman, the helper requires
+`yq` major v4 and pins the selected standalone `podman-compose` provider path
+so status and stopped one-shot containers stay consistent.
 
 Docker Compose supplies resolved JSON; `dev-up` converts Podman Compose YAML to
 JSON in a private temporary directory. `./bin/occ dev analyze-compose` enforces
@@ -78,29 +75,25 @@ covers migration, bootstrap, API, and worker, so `dev-up` builds it once through
 migration and starts with `--no-build`; Docker uses `up --build`. Expanded
 configuration and credentials are never printed.
 
-With neither a shared runtime image nor separate gateway/Agent images, the helper
-selects `openclaw-enterprise-runtime:quickstart` for this invocation and builds
-it from `deploy/runtime/Dockerfile` with the repository-root context only when
-missing. Custom image references must already exist; an incomplete selection
-fails before success is reported. Existing tags are reused after recipe changes;
+Without shared runtime or separate gateway/Agent images, the helper selects
+`openclaw-enterprise-runtime:quickstart`, building it from `deploy/runtime/Dockerfile`
+with repository-root context only if missing. Custom images must exist;
+incomplete selection fails. Existing tags survive recipe changes;
 [rebuild and verify the image](../../../deploy/runtime/README.md#rebuild-an-existing-image)
-to pick up package changes. The runtime recipe owns packaged channel plugins and
-gateway/Codex compatibility checks; `dev-up` does not install missing plugins or
-verify a model turn.
+for package changes. The runtime recipe owns channel plugins and gateway/Codex
+compatibility; `dev-up` neither installs missing plugins nor verifies model turns.
 
 ### 2. compose.yaml:services.postgres and services.migrate
 
 `compose.yaml:services.postgres`, `compose.yaml:services.migrate`
 
-Compose starts PostgreSQL first and keeps its data in the local
-`occ_postgres_data` volume. PostgreSQL uses local-only administrator credentials
-to initialize the database and checked-in local SQL to create the
+Compose starts PostgreSQL with the local `occ_postgres_data` volume. Local-only
+administrator credentials initialize the database; checked-in SQL creates the
 less-privileged `occ_migrator` and `occ_app` roles.
 
-The migration service waits for PostgreSQL, connects with
-`OCC_MIGRATION_DATABASE_URL`, and applies Drizzle migrations. The API and
-worker never use the migrator or PostgreSQL administrator URL. `dev-up` invokes
-migration through Compose, not directly.
+Through Compose, `dev-up` runs migration after PostgreSQL, using
+`OCC_MIGRATION_DATABASE_URL` and Drizzle. API and worker never use the migrator
+or PostgreSQL administrator URL.
 
 ### 3. Initialize before starting the API or worker
 
@@ -160,12 +153,16 @@ PostgreSQL remains the OCC metadata system of record.
 
 ### 5. The worker selects Docker compute and claims durable work
 
-`apps/controller/src/worker.mjs:configuration`
+`apps/controller/src/worker.mjs:configuration`,
+`apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.preflight`,
+`apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.request`
 
 After the controller is healthy, the worker starts with the same
 application-role `OCC_DATABASE_URL`. Without `OCC_CONFIG_PATH`, development
 selects `compute-docker-development` with implementation `docker-local`;
 otherwise it uses the trusted Driver set in that file.
+
+Before its database pool, preflight runs engine ping, version, and image checks. Response-stream errors reject interrupted requests under the existing 10-second deadline and claim-owned cancellation, with no automatic retry; complete responses keep status and JSON validation.
 
 The worker loads the singleton Installation, validates persisted IAM policy,
 and polls the PostgreSQL work queue. Readiness means it can claim durable work, not that an Agent, AgentRevision, or TUI exists. Each claimed operation
@@ -221,7 +218,7 @@ the tenant ingress policy must still admit only the Gateway's exact proxy peer.
 
 The loopback development proxy also terminates browser HTTPS with a private
 per-installation CA whose leaf covers only that installation's console and Agent
-hosts. The API and browser NodePorts publish only to host loopback. The CA private
+hosts. API and browser NodePorts publish only on host loopback. The CA private
 key stays in the private state directory; browser CA trust is an explicit
 operator action.
 
@@ -266,9 +263,8 @@ operation. The
 [local repository procedure](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs)
 owns the required inputs.
 
-The default `OCC_DEVELOPMENT_CONTROL_PLANE=compose` continues through the
-Compose snapshot and startup sequence. An unsupported control-plane value fails
-before resource creation. The
+The default `OCC_DEVELOPMENT_CONTROL_PLANE=compose` uses the Compose snapshot.
+Unsupported values fail before resource creation. The
 [OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
 owns both OpenShell control-plane sequences.
 
@@ -295,9 +291,9 @@ container configuration are readable by non-root containers behind the private
 host directory and mounted read-only into the API and Kubernetes worker. Neither receives the engine socket.
 
 The lifecycle imports runtime and OpenShell images under engine-recorded names,
-including Podman `localhost/` tags and Docker Hub familiar names. An omitted tag
-makes `internal/occdev/kubernetes.go:engineImageReference` match `:latest` and
-reject missing or ambiguous matches, then resolve the in-cluster digest. Before `writeInstallation`, `internal/occdev/up.go:Up` and
+including Podman `localhost/` tags and Docker Hub familiar names. `internal/occdev/kubernetes.go:engineImageReference` treats an omitted tag as
+`:latest` and rejects missing or ambiguous matches. `importDevelopmentImage` owns
+the subsequent import and in-cluster digest resolution. Before `writeInstallation`, `internal/occdev/up.go:Up` and
 `internal/occdev/openshell_k3d.go:upK3d` call
 `internal/occdev/status_proxy_k3d.go:developmentStatusProxySource`. Node inventory keeps caller context outside polling.
 
@@ -326,10 +322,9 @@ owns OpenShell Gateway placement and per-Namespace workspace resources.
 `internal/occdev/down.go:Down`, `internal/occdev/down.go:cleanup`,
 `internal/occdev/state.go:readState`.
 
-Startup launches the API and Kubernetes worker, waits for API health and worker
-readiness, copies bootstrap output to a private temporary file, and reads the
-Installation with `occclient`. Its ID must match the bootstrap response before
-the final key file is written exclusively. With OpenShell, startup waits for the
+After API health and worker readiness, startup copies bootstrap output to a
+private temporary file and reads the Installation with `occclient`. Its ID must
+match the bootstrap response before the final key file is written exclusively. With OpenShell, startup waits for the
 bootstrap Kubernetes Namespace and for OCC to report it ready, proving the
 Sandbox Driver created or adopted its operator-mode Workspace.
 Namespace readiness and repository discovery bind each OCC request to the
@@ -343,7 +338,7 @@ instead of waiting indefinitely.
 `internal/occdev/state.go:exclusiveWrite` removes a newly created output when
 permission setting, writing, or closing fails, including a partial external key
 before startup records a successful copy. Existing targets stay untouched; a
-removal failure is returned with the original write error.
+removal failure is returned with the original file-operation error.
 
 On failure, startup attempts cleanup. Explicit Kubernetes shutdown validates the
 marker, state, and Compose snapshot, then uses the recorded engine endpoint.
@@ -377,7 +372,10 @@ newly written external key if a later OpenShell readiness step fails.
 
 ## Changelog
 
+- 2026-10-08 15:23: Reconciled current Docker preflight behavior with failed exclusive-output cleanup and clarified tool and image ownership. (authoring-run/0da79016-d6a4-4217-a420-1e8b0b314e14 - 3cffa93e76aedec4b2f35d14f9824b4531640449)
+
 - 2026-10-06 17:46: Remove newly created exclusive outputs after file-write failures. (authoring-run/e789ef10-ca82-4ee2-b31d-8d11100d9744 - 6508695f267e1441bf5a797b9710965f9b10990a)
+- 2026-10-05 16:01: Rejected interrupted Docker response streams in the request owner. (authoring-run/91705365-6496-4de8-943f-15c1ba105410 - 9b5a60467022d815d1259ff30d3ed64657657247)
 
 - 2026-10-05 08:52: Documented bridge-route cancellation and node-inventory context. (authoring-run/cfd0ce95-b6e3-4088-a97b-d6d4c9ff400c - fa8c90b5b6eb3464fcf3af42a7297b5de7d65454)
 
