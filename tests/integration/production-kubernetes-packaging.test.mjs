@@ -3598,5 +3598,68 @@ test("Helm rejects Kubernetes quantities the API cannot parse", tooling, async (
     assert.match(padded.stdout, /memory: ["'] 64Mi ["']/);
     assert.match(padded.stdout, /sizeLimit: " 128Mi "/);
     assert.match(padded.stdout, /sizeLimit: " 32Mi "/);
+
+    // ParseQuantity treats a missing numerator as zero. Bare Pi has an empty numeric token.
+    const zeros = await render(collector, {
+      ...options,
+      strings: {
+        "resources.requests.cpu": "m",
+        "resources.limits.cpu": "+",
+        "resources.requests.memory": ".",
+        "logging.collector.state.sizeLimit": "m",
+      },
+    });
+    assert.match(zeros.stdout, /cpu: m$/m);
+    assert.match(zeros.stdout, /cpu: \+$/m);
+    assert.match(zeros.stdout, /memory: \.$/m);
+    assert.match(zeros.stdout, /sizeLimit: "m"/);
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": "Pi" } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    const withDigit = await render(
+      {},
+      { ...options, strings: { "resources.requests.memory": "1Pi" } },
+    );
+    assert.match(withDigit.stdout, /memory: 1Pi/);
+
+    // Exponent digits are strconv.ParseInt(..., 10, 64). The signed 64-bit edges still render.
+    await assert.rejects(
+      render({}, { ...options, strings: { "resources.requests.memory": "1e9223372036854775808" } }),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render(collector, {
+        ...options,
+        strings: { "logging.collector.resources.requests.memory": "1e9223372036854775808" },
+      }),
+      /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render(collector, {
+        ...options,
+        strings: { "logging.collector.state.sizeLimit": "1e9223372036854775808" },
+      }),
+      /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render(
+        {},
+        { ...options, strings: { "resources.requests.memory": "1e-9223372036854775809" } },
+      ),
+      /resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+    const bounded = await render(
+      {},
+      {
+        ...options,
+        strings: {
+          "resources.requests.memory": "1e9223372036854775807",
+          "resources.limits.memory": "1e-9223372036854775808",
+        },
+      },
+    );
+    assert.match(bounded.stdout, /memory: 1e9223372036854775807/);
+    assert.match(bounded.stdout, /memory: "1e-9223372036854775808"/);
   }
 });
