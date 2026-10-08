@@ -2305,6 +2305,10 @@ export class OpenClawController {
       return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_FAILED" });
     }
     try {
+      // Inspect an external write that an earlier attempt left unsettled before this attempt's
+      // first fence, so a permanent refusal fails the work instead of retrying it as an unknown
+      // outcome (finding 815). reconcileProvisioningEffect says why that order is safe.
+      record = await this.reconcileProvisioningEffect(record, runEffect);
       record = await this.checkpointAgentProvisioning(claim, {
         completedPhase: record.completedPhase,
         status: "running",
@@ -7821,6 +7825,92 @@ export class OpenClawController {
     });
   }
 
+  /** The Configuration that provisioning writes through the Configuration Driver. */
+  private provisioningConfiguration(
+    record: Readonly<AgentProvisioningRecord>,
+    configurationId: string,
+  ): Configuration {
+    const plan = this.provisioningPlan(record);
+    return {
+      id: configurationId,
+      namespaceId: record.namespaceId,
+      kind: "agent",
+      generation: 1,
+      values: plan.configuration.values,
+      ...(plan.configuration.secretBindings === undefined
+        ? {}
+        : { secretBindings: plan.configuration.secretBindings }),
+      createdAt: record.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * Settles the external write that an earlier attempt dispatched but did not record, by
+   * inspecting its exact target, before this attempt's first fence. A fence that then refuses
+   * the work for good (plugin policy, native worker support, Secret Driver ownership, a
+   * lifecycle or authority change) fails it as rejected with its own message, instead of
+   * retrying it as PROVISIONING_OUTCOME_UNKNOWN until attempts run out. A settled effect also
+   * stops holding the Namespace, which waits for unsettled ones before it can be deleted.
+   *
+   * Inspecting before the fence is safe: the earlier attempt dispatched the write only after its
+   * own fence passed; this reads only the target it recorded, through the Driver the accepted
+   * plan names (another selected Driver is left to the fence, which then retries the work); and
+   * settling records what it observed, as Agent deletion does for cancelled work. Nothing is
+   * written outside OCC before the fence, and a write it cannot observe stays pending and
+   * retries, as before. Other work, and work whose effect is already settled, is unchanged.
+   */
+  private async reconcileProvisioningEffect(
+    record: Readonly<AgentProvisioningRecord>,
+    runEffect: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>,
+  ): Promise<Readonly<AgentProvisioningRecord>> {
+    const pending = provisioningPendingEffect(record);
+    if (
+      pending === undefined ||
+      !this.provisioningPendingEffectMatches(record, pending) ||
+      this.provisioningEffectReceipt(record, pending) !== undefined
+    ) {
+      return record;
+    }
+    const drivers = asRecord(record.plan.drivers);
+    if (pending.kind === "configuration") {
+      const driver = this.configurationDriver();
+      if (drivers?.configuration !== driver.id) {
+        return record;
+      }
+      return this.inspectProvisioningConfigurationEffect(
+        record.workId,
+        record,
+        { kind: "configuration", targetId: pending.targetId },
+        this.provisioningConfiguration(record, pending.targetId),
+        driver,
+        runEffect,
+      );
+    }
+    const driver = this.runtimeCredentialComputeDriver("provision");
+    const { namespace, agent } = await this.read(async (state) => {
+      const namespace = await state.namespaces.findNamespace(record.namespaceId);
+      return {
+        namespace,
+        agent:
+          namespace === undefined
+            ? undefined
+            : await state.agents.findAgent(namespace.id, pending.targetId),
+      };
+    });
+    if (drivers?.compute !== driver.id || namespace === undefined || agent === undefined) {
+      return record;
+    }
+    return this.inspectProvisioningTransportEffect(
+      record.workId,
+      record,
+      { kind: "transport", targetId: pending.targetId },
+      namespace,
+      agent,
+      driver,
+      runEffect,
+    );
+  }
+
   private async processAgentProvisioningConfiguration(
     claim: ClaimedWork,
     record: Readonly<AgentProvisioningRecord>,
@@ -7834,17 +7924,7 @@ export class OpenClawController {
       (receipt?.kind === "configuration" ? receipt.targetId : undefined) ??
       (pending?.kind === "configuration" ? pending.targetId : undefined) ??
       this.nextIdentifier("configuration");
-    const configuration: Configuration = {
-      id: configurationId,
-      namespaceId: record.namespaceId,
-      kind: "agent",
-      generation: 1,
-      values: plan.configuration.values,
-      ...(plan.configuration.secretBindings === undefined
-        ? {}
-        : { secretBindings: plan.configuration.secretBindings }),
-      createdAt: record.createdAt.toISOString(),
-    };
+    const configuration = this.provisioningConfiguration(record, configurationId);
     const driver = this.configurationDriver();
     if (driver.createExact === undefined || driver.inspectExact === undefined) {
       throw new DependencyUnavailableError(
