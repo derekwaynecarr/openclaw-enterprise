@@ -85,22 +85,97 @@ function expectedBound(keyword: string, parameters: Record<string, unknown>): st
     : `${relation} ${limit} ${unit}${limit === 1 ? "" : "s"}`;
 }
 
-// Ajv reports a failed union's members with schema paths under the union's own path and
-// instance paths at or below its value.
+// The branches of a union that are bare references, by branch index. Ajv reports a `$ref`
+// target's failures under the reference ("PluginApprovers/uniqueItems"), not under the union's
+// branch, so its schema path names no branch. A reference that another branch also makes
+// somewhere inside it could belong to either branch, so it attributes nothing. Ajv (verbose)
+// attaches the union's branches to its failure.
+const referencedBranchesOf = new WeakMap<ValidationEntry, ReadonlyMap<string, string>>();
+function referencedBranches(union: ValidationEntry): ReadonlyMap<string, string> {
+  const known = referencedBranchesOf.get(union);
+  if (known !== undefined) {
+    return known;
+  }
+  const branches = (union as { schema?: unknown }).schema;
+  const references = new Map<string, string>();
+  referencedBranchesOf.set(union, references);
+  if (!Array.isArray(branches)) {
+    return references;
+  }
+  branches.forEach((branch: unknown, index) => {
+    const reference: unknown =
+      branch !== null && typeof branch === "object"
+        ? (branch as { $ref?: unknown }).$ref
+        : undefined;
+    if (
+      typeof reference === "string" &&
+      reference.length > 0 &&
+      !branches.some(
+        (other: unknown, otherIndex) =>
+          otherIndex !== index &&
+          JSON.stringify(other ?? null).includes(`"$ref":${JSON.stringify(reference)}`),
+      )
+    ) {
+      references.set(String(index), reference);
+    }
+  });
+  return references;
+}
+
+// Where a member failure sits in a union: its branch index followed by its schema path inside
+// that branch, or undefined for a failure outside the union. Ajv reports a failed union's
+// members with instance paths at or below its value and schema paths under the union's own
+// path, or under a branch's reference.
+function unionBranchPath(
+  union: ValidationEntry,
+  member: ValidationEntry,
+): readonly string[] | undefined {
+  if (
+    member.instancePath !== union.instancePath &&
+    !member.instancePath.startsWith(`${union.instancePath}/`)
+  ) {
+    return undefined;
+  }
+  if (member.schemaPath.startsWith(`${union.schemaPath}/`)) {
+    return member.schemaPath.slice(union.schemaPath.length + 1).split("/");
+  }
+  for (const [branch, reference] of referencedBranches(union)) {
+    if (member.schemaPath.startsWith(`${reference}/`)) {
+      return [branch, ...member.schemaPath.slice(reference.length + 1).split("/")];
+    }
+  }
+  return undefined;
+}
+
 function unionMembersOf(
   union: ValidationEntry,
   entries: readonly ValidationEntry[],
 ): readonly ValidationEntry[] {
-  return entries.filter(
-    (entry) =>
-      entry.schemaPath.startsWith(`${union.schemaPath}/`) &&
-      (entry.instancePath === union.instancePath ||
-        entry.instancePath.startsWith(`${union.instancePath}/`)),
-  );
+  return entries.filter((entry) => unionBranchPath(union, entry) !== undefined);
 }
 
 function unionBranch(union: ValidationEntry, member: ValidationEntry): string {
-  return member.schemaPath.slice(union.schemaPath.length + 1).split("/")[0] ?? "";
+  return unionBranchPath(union, member)?.[0] ?? "";
+}
+
+// Inner unions first: a union that is another union's member comes before it. A union inside
+// a referenced schema can have a shorter schema path than the union that refers to it, so
+// path length only breaks ties.
+function innerUnionsFirst(
+  unions: readonly ValidationEntry[],
+  entries: readonly ValidationEntry[],
+): readonly ValidationEntry[] {
+  const depth = new Map(
+    unions.map((union) => [
+      union,
+      unions.filter((other) => other !== union && unionMembersOf(other, entries).includes(union))
+        .length,
+    ]),
+  );
+  return [...unions].sort(
+    (left, right) =>
+      depth.get(right)! - depth.get(left)! || right.schemaPath.length - left.schemaPath.length,
+  );
 }
 
 // A member failure that says the value has another shape than this branch: the wrong type or
@@ -115,7 +190,7 @@ function rejectsBranchShape(union: ValidationEntry, member: ValidationEntry): bo
       member.keyword,
     );
   }
-  const [, keyword, field] = member.schemaPath.slice(union.schemaPath.length + 1).split("/");
+  const [, keyword, field] = unionBranchPath(union, member) ?? [];
   return (
     keyword === "properties" &&
     member.instancePath === `${union.instancePath}/${field}` &&
@@ -187,9 +262,10 @@ function mismatchedUnionShapes(entries: readonly ValidationEntry[]): {
   const selected = new Set<ValidationEntry>();
   // Inner unions first: a nested union that found its shape no longer counts against the
   // outer union's branch that contains it.
-  const unions = entries
-    .filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string")
-    .sort((left, right) => right.schemaPath.length - left.schemaPath.length);
+  const unions = innerUnionsFirst(
+    entries.filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string"),
+    entries,
+  );
   for (const union of unions) {
     // A recursive union reports every level with one schema path, so its members cannot be
     // told apart by level.
@@ -261,9 +337,10 @@ export function collapseScalarUnions(
     { readonly values: readonly (string | undefined)[]; readonly literals: boolean }
   >();
   // Inner unions first, so an outer union sees which of its members collapsed.
-  const unions = entries
-    .filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string")
-    .sort((left, right) => right.schemaPath.length - left.schemaPath.length);
+  const unions = innerUnionsFirst(
+    entries.filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string"),
+    entries,
+  );
   for (const union of unions) {
     const allMembers = unionMembersOf(union, entries);
     // A collapsed inner union stands for its own members. Every member, collapsed or not, must
