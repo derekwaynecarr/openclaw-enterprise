@@ -9,6 +9,7 @@ import {
   NativeWorkerSupportError,
   PostgresPlatformState,
   ProvisioningSecretDriverError,
+  ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -2592,6 +2593,20 @@ test(
       return rows[0]?.status === "failed" ? true : undefined;
     });
     await fixture.stopWorker();
+    // This Installation has no ChatGPT Backend, so the failure names it instead of the
+    // generic text.
+    const job = await fixture.pool.query(
+      "SELECT progress->'error' AS error FROM occ.agent_provisioning_work WHERE work_id = $1",
+      [workId],
+    );
+    assert.deepEqual(job.rows, [
+      {
+        error: {
+          code: "PROVISIONING_REJECTED",
+          message: new ServiceAccountDriverNotConfiguredError("deploy").message,
+        },
+      },
+    ]);
     const workState = async () =>
       (
         await fixture.pool.query(

@@ -46,6 +46,7 @@ import {
   SecretBindingValidationError,
   SecretStorageDriverError,
   SecretValueError,
+  ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
@@ -163,6 +164,26 @@ const cases = [
       status: 409,
       code: "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
       message: new CredentialGatewayNotConfiguredError().message,
+    },
+  ],
+  [
+    "service-account issuance on an Installation without a ChatGPT Backend names the fix",
+    new ServiceAccountDriverNotConfiguredError("issue"),
+    {
+      status: 409,
+      code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      message:
+        "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    },
+  ],
+  [
+    "a ChatGPT Harness deploy on an Installation without a ChatGPT Backend names the fix",
+    new ServiceAccountDriverNotConfiguredError("deploy"),
+    {
+      status: 409,
+      code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      message:
+        "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
     },
   ],
   [

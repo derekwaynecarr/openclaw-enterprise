@@ -11,10 +11,12 @@ import { ChatGPTClient } from "../../apps/controller/src/backends/chatgpt.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AuthorizationDeniedError,
+  DependencyUnavailableError,
   DriverSelectionError,
   OpenClawController,
   ResourceConflictError,
   ScopeViolationError,
+  ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -40,7 +42,7 @@ const backend = Object.freeze({
   drivers: Object.freeze({ service_account: "service-account-driver-conformance" }),
 });
 
-async function fixture() {
+async function fixture({ selectServiceAccountDriver = true, createCredential } = {}) {
   const administrators = {
     namespace: ["create", "read"],
     service_account: ["create", "read", "update", "delete"],
@@ -81,7 +83,9 @@ async function fixture() {
     },
     { id: "service-account-driver-iam" },
   );
-  const controller = new OpenClawController(installation, { backends: [backend] });
+  const controller = new OpenClawController(installation, {
+    backends: selectServiceAccountDriver ? [backend] : [],
+  });
   const compute = createDevelopmentComputeDriver();
   const configuration = createTestConfigurationDriver();
   const externalAccounts = new Set();
@@ -98,6 +102,9 @@ async function fixture() {
       });
     },
     async createCredential(account) {
+      if (createCredential !== undefined) {
+        return createCredential(account);
+      }
       externalCredentials.add(account.id);
       controller.registerRollback(async () => {
         externalCredentials.delete(account.id);
@@ -112,7 +119,12 @@ async function fixture() {
       externalAccounts.delete(account.id);
     },
   };
-  for (const selected of [iam, compute, configuration, driver]) {
+  for (const selected of [
+    iam,
+    compute,
+    configuration,
+    ...(selectServiceAccountDriver ? [driver] : []),
+  ]) {
     controller.registerDriver(selected);
     controller.selectDriver(selected.capability, selected.id);
   }
@@ -180,6 +192,67 @@ test("a selected ServiceAccount Driver owns authorized account and credential li
   await assert.rejects(
     controller.getServiceAccount(administrator, namespace.id, account.id),
     ScopeViolationError,
+  );
+});
+
+test("issuance without a ChatGPT Backend names the fix after the grant and the account lookup", async () => {
+  const { controller, namespace } = await fixture({ selectServiceAccountDriver: false });
+  // Account creation needs no Driver.
+  const account = await controller.createServiceAccount(administrator, {
+    namespaceId: namespace.id,
+    name: "no-backend-account",
+  });
+  const missing = "sa_00000000-0000-4000-8000-000000000000";
+
+  // Grant first: a caller without update gets the same denial whether or not the account exists.
+  for (const id of [account.id, missing]) {
+    await assert.rejects(
+      controller.createServiceAccountCredential(reader, namespace.id, id),
+      // DependencyUnavailableError is an AuthorizationDeniedError, so rule out the old 503 too.
+      (error) =>
+        error instanceof AuthorizationDeniedError &&
+        !(error instanceof DependencyUnavailableError) &&
+        !(error instanceof ServiceAccountDriverNotConfiguredError),
+    );
+  }
+  // Then the lookup: an unknown account is still not found.
+  await assert.rejects(
+    controller.createServiceAccountCredential(administrator, namespace.id, missing),
+    (error) =>
+      error instanceof ScopeViolationError &&
+      !(error instanceof ServiceAccountDriverNotConfiguredError),
+  );
+  // Only then the Installation property, as a conflict naming the fix, not an outage.
+  await assert.rejects(
+    controller.createServiceAccountCredential(administrator, namespace.id, account.id),
+    (error) => {
+      assert.ok(error instanceof ServiceAccountDriverNotConfiguredError, error.name);
+      assert.ok(!(error instanceof DependencyUnavailableError));
+      assert.match(error.message, /no ChatGPT Backend.*guides\/integrations\/chatgpt\//);
+      return true;
+    },
+  );
+  assert.equal(
+    (await controller.getServiceAccount(administrator, namespace.id, account.id)).credential,
+    undefined,
+  );
+});
+
+test("a configured ServiceAccount Driver that fails keeps the generic dependency outage", async () => {
+  const { controller, namespace } = await fixture({
+    createCredential: async () => {
+      throw new Error("provider unreachable");
+    },
+  });
+  const account = await controller.createServiceAccount(administrator, {
+    namespaceId: namespace.id,
+    name: "unhealthy-backend-account",
+  });
+  await assert.rejects(
+    controller.createServiceAccountCredential(administrator, namespace.id, account.id),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      !(error instanceof ServiceAccountDriverNotConfiguredError),
   );
 });
 
