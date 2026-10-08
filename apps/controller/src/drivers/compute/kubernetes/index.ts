@@ -1939,7 +1939,20 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
 function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): void {
   const agents = asRecord(configuration.agents);
   const roster = asRecord(agents?.entries);
-  const rosterSize = Object.keys(roster ?? {}).length;
+  // OpenClaw's schema: entries is a record of objects keyed by ids it matches case-insensitively.
+  const ids = Object.keys(roster ?? {});
+  if (
+    (configuration.agents !== undefined && agents === undefined) ||
+    (agents?.entries !== undefined && roster === undefined) ||
+    Object.values(roster ?? {}).some((entry) => asRecord(entry) === undefined) ||
+    ids.some((id) => !/^[a-z0-9_][a-z0-9_-]{0,63}$/i.test(id)) ||
+    new Set(ids.map((id) => id.toLowerCase())).size !== ids.length
+  ) {
+    throw new ConfigurationHarnessError(
+      "The OpenClaw Gateway requires agents and agents.entries to be objects, and each entry to be an object keyed by a unique case-insensitive Agent ID of up to 64 letters, digits, _ or -, not starting with -.",
+    );
+  }
+  const rosterSize = ids.length;
   const explicit = agents?.ownership === "explicit";
   if (
     (agents?.list !== undefined &&

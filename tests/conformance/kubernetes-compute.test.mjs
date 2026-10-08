@@ -5182,14 +5182,9 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     },
   });
   for (const agents of [
-    { entries: null },
     { entries: { helper: { workspace: "/home/node/helper" } } },
-    // OpenClaw normalizes `main!` to main and may match it first.
-    {
-      ownership: "explicit",
-      entries: { "main!": { workspace: "/home/node/elsewhere" }, main: {} },
-    },
-    { entries: { " main": {} } },
+    // OpenClaw's schema admits a leading underscore, but it is not a canonical id.
+    { ownership: "explicit", entries: { main: {}, _main: {} } },
     {
       ownership: "explicit",
       entries: { main: {}, helper: {} },
@@ -5290,12 +5285,56 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
       JSON.stringify(agents),
     );
   }
+  // OpenClaw's schema also rejects these, and its Gateway exits 78 on them.
+  const malformedRosters = [
+    { entries: null },
+    { entries: [] },
+    { entries: "main" },
+    { entries: { main: null } },
+    { entries: { main: [] } },
+    { entries: { main: false } },
+    { ownership: "explicit", entries: { main: {}, helper: null } },
+    { entries: { "main!": {} } },
+    // OpenClaw normalizes `main!` to main and may match it first.
+    {
+      ownership: "explicit",
+      entries: { "main!": { workspace: "/home/node/elsewhere" }, main: {} },
+    },
+    { entries: { " main": {} } },
+    { entries: { "-main": {} } },
+    { entries: { "a.b": {} } },
+    { entries: { "": {} } },
+    { entries: { ["a".repeat(65)]: {} } },
+    { ownership: "explicit", entries: { main: {}, Main: {} } },
+    { ownership: "explicit", entries: { main: {}, helper: {}, HELPER: {} } },
+  ];
+  for (const [harness, configure] of topologies) {
+    for (const configuration of [
+      ...malformedRosters.map(configure),
+      { ...configure({}), agents: null },
+      { ...configure({}), agents: [] },
+    ]) {
+      assert.throws(
+        () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration),
+        (error) =>
+          error instanceof ConfigurationHarnessError &&
+          /^The OpenClaw Gateway requires agents and agents\.entries to be objects, and each entry to be an object keyed by a unique case-insensitive Agent ID/.test(
+            error.message,
+          ),
+        `${harness.mode} ${harness.id} ${JSON.stringify(configuration.agents)}`,
+      );
+    }
+  }
   // Only dedicated OpenClaw serves main; the other topologies keep any valid roster.
   for (const [harness, configure] of topologies.slice(1)) {
     for (const agents of [
       { entries: { helper: {} } },
       { list: [] },
       { ownership: "explicit", entries: { helper: {}, reviewer: {} } },
+      { entries: { _helper: {} } },
+      { entries: { "9lives": {} } },
+      { entries: { ["a".repeat(64)]: {} } },
+      { ownership: "explicit", entries: { Main: {}, helper_2: {}, "re-viewer": {} } },
     ]) {
       assert.doesNotThrow(
         () => driver.validateHarnessAuth(harness, apiKeyAuth, configure(agents)),
