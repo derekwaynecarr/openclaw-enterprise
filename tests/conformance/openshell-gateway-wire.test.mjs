@@ -10,6 +10,8 @@ import {
   OpenShellAdmissionLimitError,
   OpenShellRequestReplayRefusedError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { TransientDependencyError } from "../../packages/occ/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
@@ -1101,6 +1103,103 @@ test("OpenShell client serializes v0.1.3-pre.2 provider updates and detach recei
       ),
       /must be nonempty/,
     );
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell gateway rechecks a revoked source through the Sandbox's provider list", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const sourceId = "cs_recheck";
+  const provider = openShellProviderName(sourceId);
+  // The provider names each Sandbox lists; a missing entry is a Sandbox that does not exist.
+  const sandboxes = new Map([
+    ["os-listed", ["operator-static", provider]],
+    ["os-detached", ["operator-static"]],
+  ]);
+  const calls = [];
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    GetSandbox(call, callback) {
+      calls.push(["GetSandbox", call.request.name]);
+      const providers = sandboxes.get(call.request.name);
+      if (providers === undefined) {
+        callback(Object.assign(new Error("not found"), { code: grpc.status.NOT_FOUND }));
+        return;
+      }
+      callback(null, {
+        sandbox: { metadata: { name: call.request.name }, spec: { providers } },
+      });
+    },
+    DetachSandboxProvider(call, callback) {
+      calls.push(["DetachSandboxProvider", call.request.sandbox, call.request.provider]);
+      const providers = sandboxes.get(call.request.sandbox);
+      sandboxes.set(
+        call.request.sandbox,
+        providers.filter((name) => name !== call.request.provider),
+      );
+      callback(null, { detached: true, receipt: { receipt_id: "receipt-recheck" } });
+    },
+    GetSandboxProviderStatus(call, callback) {
+      calls.push(["GetSandboxProviderStatus", call.request.sandbox, call.request.receipt_id]);
+      callback(null, {
+        status: {
+          receipt: { receipt_id: call.request.receipt_id },
+          state: "PROVIDER_READINESS_STATE_PENDING",
+          reason: "PROVIDER_READINESS_REASON_WAITING_FOR_SUPERVISOR",
+        },
+      });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${port}`,
+    auth: { mode: "unauthenticated" },
+  });
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/usr/local/bin/codex"] },
+    {
+      backend: {
+        drivers: { credential_gateway: "credential-gateway-openshell" },
+        client: { clientForNamespace: () => client },
+      },
+    },
+  );
+  const recheck = (resourceName) =>
+    gateway.withdraw({
+      namespace: { id: "ns_recheck", name: "tenant-workspace" },
+      revision: { id: "rev_recheck" },
+      sandbox: { resourceName },
+      sourceId,
+      signal: AbortSignal.timeout(2_000),
+      recheck: true,
+    });
+  try {
+    // A Sandbox that lists the provider again, as after a late create, is detached once more;
+    // the fresh receipt is not yet confirmed.
+    assert.deepEqual(await recheck("os-listed"), {
+      sourceId,
+      state: "pending",
+      reason: "PROVIDER_READINESS_REASON_WAITING_FOR_SUPERVISOR",
+    });
+    assert.deepEqual(sandboxes.get("os-listed"), ["operator-static"]);
+    // Once the Sandbox no longer lists it, or no longer exists, a recheck mutates nothing.
+    assert.deepEqual(await recheck("os-listed"), { sourceId, state: "revoked" });
+    assert.deepEqual(await recheck("os-detached"), { sourceId, state: "revoked" });
+    assert.deepEqual(await recheck("os-missing"), { sourceId, state: "absent" });
+    assert.deepEqual(calls, [
+      ["GetSandbox", "os-listed"],
+      ["DetachSandboxProvider", "os-listed", provider],
+      ["GetSandboxProviderStatus", "os-listed", "receipt-recheck"],
+      ["GetSandbox", "os-listed"],
+      ["GetSandbox", "os-detached"],
+      ["GetSandbox", "os-missing"],
+    ]);
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));

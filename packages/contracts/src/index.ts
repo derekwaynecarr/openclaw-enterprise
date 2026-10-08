@@ -1283,6 +1283,11 @@ export interface CredentialWithdrawalContext extends CredentialGatewayContext {
   /** The Sandbox provisioning created for `revision`. */
   readonly sandbox: SandboxResourceRef;
   readonly sourceId: string;
+  /**
+   * Re-checks a withdrawal already recorded `revoked`: the gateway detaches again only when
+   * the Sandbox still lists the source, and otherwise reports `revoked` without a mutation.
+   */
+  readonly recheck?: boolean;
 }
 
 /** Opaque grant that only the paired SandboxDriver can consume. */
@@ -1865,11 +1870,13 @@ export interface ComputeDriver extends Driver {
    * Revokes `source` from the revision's paired Sandbox through the selected Credential
    * Gateway. Returns `revoked` only after the gateway confirms revocation, and `absent` when
    * the revision has no Sandbox or attachment left to revoke. Required for withdrawal.
+   * `options.recheck` is passed through to the gateway's withdrawal context.
    */
   withdrawCredentialSource?(
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
+    options?: { readonly recheck?: boolean },
   ): Promise<CredentialAttachmentStatus>;
   prepareRevision(
     revision: AgentRevision,

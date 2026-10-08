@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import {
   ActivationFailedError,
   ActivationPendingError,
@@ -3256,6 +3257,7 @@ revisionTest(
     const [first, second] = toolSources(owner).map(({ sourceId }) => sourceId);
     const dispatched = [];
     const withdrawn = [];
+    const rechecked = [];
     let interruptActivation = true;
     await fixture.start(
       {
@@ -3282,8 +3284,8 @@ revisionTest(
             throw new Error("activation interrupted");
           }
         },
-        async withdrawCredentialSource(revision, source) {
-          withdrawn.push([revision.id, source.id]);
+        async withdrawCredentialSource(revision, source, _signal, options = {}) {
+          (options.recheck === true ? rechecked : withdrawn).push([revision.id, source.id]);
           return { sourceId: source.id, state: "revoked" };
         },
       },
@@ -3309,6 +3311,11 @@ revisionTest(
     assert.deepEqual(dispatched, [[first, second], []]);
     // One withdrawal pass revoked every pending source, in admission order.
     assert.deepEqual(withdrawn, [
+      [active.id, first],
+      [active.id, second],
+    ]);
+    // The retry rechecks both revoked sources before it prepares the Sandbox again.
+    assert.deepEqual(rechecked, [
       [active.id, first],
       [active.id, second],
     ]);
@@ -4025,6 +4032,139 @@ revisionTest(
       0,
       "maintenance stops only after all withdrawals are revoked",
     );
+  },
+);
+
+test(
+  "a source withdrawn before a lost repair's accepted Sandbox create lands is detached by the next pass",
+  requiresPostgres,
+  async (context) => {
+    // A short lease, so the worker notices the expired claim on its next renewal.
+    const fixture = await setup(context, { leaseDurationMs: 3_000 });
+    const owner = await fixture.agent("withdraw-late-create", {
+      auth: "credential_source",
+      nonModelSources: 1,
+    });
+    const active = await fixture.revision(owner, 1);
+    const [toolSourceId] = toolSources(owner).map(({ sourceId }) => sourceId);
+    // The tool sources OpenShell lists on the revision's Sandbox; undefined while none exists.
+    let sandbox;
+    let holdCreate = false;
+    let accepted;
+    const attachedAtPrepare = [];
+    const withdrawals = [];
+    const events = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        maintenanceIntervalMs: 3_600_000,
+        async prepareRevision(revision, revisionContext) {
+          if (revision.id === active.id) {
+            const requested = (revisionContext?.credentialSources ?? []).map(({ id }) => id);
+            if (sandbox === undefined && holdCreate) {
+              // OpenShell accepts this create, but the worker loses its claim before the answer.
+              holdCreate = false;
+              accepted = requested;
+              const signal = currentComputeAbortSignal();
+              await new Promise((resolve) => {
+                signal.addEventListener("abort", resolve, { once: true });
+              });
+              throw signal.reason;
+            }
+            sandbox ??= new Set(requested);
+            attachedAtPrepare.push([...sandbox]);
+            // Like the OpenShell Sandbox Driver, adopt only a Sandbox with the requested providers.
+            if (sandbox.size !== requested.length || requested.some((id) => !sandbox.has(id))) {
+              throw new Error("Refusing a Sandbox without the revision's exact providers.");
+            }
+          }
+          return fixture.compute.prepareRevision(revision, revisionContext);
+        },
+        async withdrawCredentialSource(_revision, source, _signal, options = {}) {
+          withdrawals.push({ sourceId: source.id, recheck: options.recheck === true });
+          if (sandbox === undefined) {
+            // The withdrawal finds no Sandbox. The accepted create lands right after.
+            sandbox = new Set(accepted);
+            return { sourceId: source.id, state: "absent" };
+          }
+          const listed = sandbox.delete(source.id);
+          if (options.recheck === true) {
+            withdrawals.at(-1).listed = listed;
+            // OpenShell confirms a fresh detach only once the supervisor applies it.
+            return { sourceId: source.id, state: listed ? "pending" : "revoked" };
+          }
+          return { sourceId: source.id, state: "revoked" };
+        },
+      },
+      {
+        convergenceTimeoutMs: 50,
+        transformDrivers: withCredentialGateway,
+        emit: (event) => events.push(event),
+      },
+    );
+    await fixture.work(active, "succeeded");
+    assert.deepEqual([...sandbox], [toolSourceId]);
+    const prepared = attachedAtPrepare.length;
+
+    // The Sandbox is lost; the maintenance repair's create is accepted but its claim then lapses.
+    sandbox = undefined;
+    holdCreate = true;
+    const due = await fixture.advanceMaintenance(active);
+    assert.equal(due.rowCount, 1);
+    const repair = { id: active.id, idempotencyKey: due.rows[0].idempotency_key };
+    await waitFor("the repair's create to be accepted", async () => accepted);
+    assert.deepEqual(accepted, [toolSourceId]);
+    const claimed = await fixture.work(repair, "claimed");
+
+    // The withdrawal is queued while the repair still holds the Agent, so it runs first once
+    // the expired claim is recovered.
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      credentialSourceId: toolSourceId,
+    });
+    await fixture.expireClaim(repair, claimed.claim_token);
+    await waitFor("the repair to lose its claim", async () =>
+      events.find(({ event, code }) => event === "worker.error" && code === "CLAIM_LOST"),
+    );
+    const withdrawal = await waitFor("the withdrawal to record the source revoked", async () => {
+      const found = await fixture.state.read((view) =>
+        view.credentialSources.findCredentialWithdrawal(
+          fixture.namespace.id,
+          active.id,
+          toolSourceId,
+        ),
+      );
+      return found?.state === "revoked" ? found : undefined;
+    });
+    assert.equal(withdrawal.lastReason, "CREDENTIALS_WITHDRAWN");
+
+    // The late create brought the withdrawn source back. The recovered repair must detach it
+    // again before it prepares, or the withdrawn credential stays usable in the Sandbox.
+    await waitFor("the recovered repair to prepare", async () =>
+      attachedAtPrepare.length > prepared ? true : undefined,
+    );
+    assert.deepEqual(attachedAtPrepare.at(-1), [], "the withdrawn source is still attached");
+    assert.deepEqual(withdrawals, [
+      { sourceId: toolSourceId, recheck: false },
+      { sourceId: toolSourceId, recheck: true, listed: true },
+    ]);
+    await fixture.work(repair, "succeeded");
+    // The row stays revoked and no new withdrawal attempt is queued.
+    const recorded = await fixture.state.read((view) =>
+      view.credentialSources.findCredentialWithdrawal(
+        fixture.namespace.id,
+        active.id,
+        toolSourceId,
+      ),
+    );
+    assert.equal(recorded.state, "revoked");
+    const withdrawalWork = await fixture.observerPool.query(
+      `SELECT state FROM occ.controller_work
+       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
+      [active.id],
+    );
+    assert.deepEqual(withdrawalWork.rows, [{ state: "succeeded" }]);
   },
 );
 

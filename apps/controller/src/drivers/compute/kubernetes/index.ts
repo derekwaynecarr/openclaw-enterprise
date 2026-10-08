@@ -5585,6 +5585,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
+    options: { readonly recheck?: boolean } = {},
   ): Promise<CredentialAttachmentStatus> {
     if (
       revision.compute.id !== this.id ||
@@ -5619,6 +5620,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       sandbox,
       sourceId: source.id,
       signal,
+      ...(options.recheck === true ? { recheck: true } : {}),
     });
     if (status.sourceId !== source.id) {
       throw new OwnershipFailure("The Credential Gateway withdrew another credential source.");
