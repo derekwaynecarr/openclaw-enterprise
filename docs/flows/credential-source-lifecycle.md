@@ -228,8 +228,9 @@ value only to processes started after the update.
 `apps/controller/src/drivers/credential-gateway/openshell.ts:withdraw`
 
 The API authorizes `agent:operate` and requires the active revision to list the
-source in `credential_sources`. For that revision and each later one admitted
-with the source (so an in-flight deployment never attaches it), it inserts a `pending` `credential_withdrawals` row keyed by revision
+source in `credential_sources`. For that revision, each later one admitted
+with the source (so an in-flight deployment never attaches it), and each earlier
+one not yet retired, it inserts a `pending` `credential_withdrawals` row keyed by revision
 and source, or returns the existing one. For each pending row with no withdrawal
 work queued or claimed, it makes the caller `requested_by` and queues
 revision-scoped work with target `credentials_withdrawn`
@@ -242,10 +243,9 @@ The worker rechecks `agent:operate` for each pending withdrawal's own
 otherwise a denied requester fails it after the others are revoked. Each
 revocation is audited for its requester in the pass that confirms it; each
 denial, once when the claim ends. Compute derives the Sandbox with the Sandbox Driver's
-`harnessResource` and passes it to the gateway's `withdraw`; the OpenShell
+`harnessResource` for the gateway's `withdraw`; the OpenShell
 Driver calls `DetachSandboxProvider` and reads the receipt's status. Each
-attempt records its reason code and time (`last_reason`, `last_attempt_at`) in
-the transaction that ends the claim. `revoked` or `absent`
+attempt records `last_reason` and `last_attempt_at` when its claim ends. `revoked` or `absent`
 also marks the row `revoked` and appends
 `openclaw.agents.lifecycle.credentials_withdraw`. Any other state retries with
 backoff until attempts run out; the row then stays `pending`. `withdrawalInProgress`
@@ -286,8 +286,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
   and worker against PostgreSQL with a Compute double: retries, exhaustion,
   replays, maintenance, omitted withdrawn sources, per-requester
-  authorization, an admitted successor, a lost source grant, and a create that
-  lands after a lost claim.
+  authorization, admitted successors and unretired predecessors, a lost source
+  grant, and a create landing after a lost claim.
 - The real OpenShell test updates the source through the API and withdraws a
   `bearer-token` source (its substituted placeholder stops reaching an echo
   service while model turns continue), then the model source (the next model
@@ -319,6 +319,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 ## Changelog
 
+- 2026-10-08 17:30: Withdrawal covers unretired predecessors. (fix-816-819)
 - 2026-10-08 16:00: Preparation rechecks revoked withdrawals against a late Sandbox create. (fix-790)
 - 2026-10-08 14:00: An unoffered source type is a `409` naming the fix, not `404`; worker credential codes have their own status messages. (fix-821-824)
 - 2026-10-08 12:00: A withdrawal also covers later revisions admitted with the source. (fix-810)
