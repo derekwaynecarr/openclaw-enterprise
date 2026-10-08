@@ -1,6 +1,6 @@
 ---
 created: 2026-09-28
-updated: 2026-10-07
+updated: 2026-10-08
 last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
 ---
 
@@ -102,6 +102,10 @@ values therefore fail before `values.yaml` or `installation.yaml` is written.
 
 `scripts/render-installation-profile.mjs:buildRendered`
 
+An optional `controlPlane.databaseCa.key` must be a simple basename. The chart
+refuses `.`, `..`, and any other key that is not letters, digits, `.`, `_`, or
+`-`. Omit the key to use `ca.pem`.
+
 The Helm values select the control-plane image, Better Auth base URL,
 bootstrap administrator, database and cluster egress CIDRs, API client
 selectors, DNS peer, metrics, native admin, private gateway routing, optional
@@ -199,6 +203,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08: Refuse database CA keys the chart refuses.
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 
