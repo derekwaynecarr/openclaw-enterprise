@@ -839,6 +839,7 @@ export const ERROR_CODES = Object.freeze([
   "INTERNAL_ERROR",
   "DEPENDENCY_UNAVAILABLE",
   "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
+  "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
   "REPOSITORY_OPTIONS_UNAVAILABLE",
   "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
   "MODEL_DISCOVERY_RATE_LIMITED",
@@ -912,6 +913,10 @@ export const ErrorResponse = Type.Object(
           Type.Literal("CREDENTIAL_GATEWAY_NOT_CONFIGURED", {
             description:
               "The Installation selects no Credential Gateway, so credential sources cannot be registered.",
+          }),
+          Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
+            description:
+              "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued or used for Harness authentication.",
           }),
           Type.Literal("REPOSITORY_OPTIONS_UNAVAILABLE", {
             description:

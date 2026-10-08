@@ -35,6 +35,7 @@ import {
   SecretBindingValidationError,
   SecretDriverOwnershipError,
   SecretValueError,
+  ServiceAccountDriverNotConfiguredError,
   type RuntimeLogsErrorCode,
 } from "@openclaw-enterprise/occ";
 import {
@@ -648,6 +649,10 @@ export function requestFailure(error: unknown): RequestFailure {
   }
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
+  }
+  if (error instanceof ServiceAccountDriverNotConfiguredError) {
+    // A fixed message naming the fix; raised only after the account's grant and lookup.
+    return failure(409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", error.message);
   }
   if (error instanceof SecretValueError) {
     return failure(400, "INVALID_REQUEST", error.message, [{ path: "/value", code: error.code }]);

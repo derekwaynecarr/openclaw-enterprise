@@ -3222,27 +3222,31 @@ test("Agent create and update replace policy-only plugin maps and revisions free
     { channel: "slack", id: "team:T123:user:U456" },
   ]);
   assertPolicyOnlyPlugin(replacedPlugins.data.plugins[diffsPluginId]);
-  // The nullable approver list still names the uniqueItems rule for a repeated approver. Its
-  // null branch also reports a wrong type today: the list is a $ref'd schema, whose problems
-  // the union does not attribute to its branch.
-  const repeatedApprovers = await controller.request(
-    "PATCH",
-    `/namespaces/${namespace.id}/agents/${created.data.id}`,
-    {
-      body: {
-        configurationId: replacementConfiguration.id,
-        pluginApprovers: [
-          { channel: "slack", id: "team:T123:user:U456" },
-          { channel: "slack", id: "team:T123:user:U456" },
-        ],
-      },
-    },
-  );
-  assert.equal(repeatedApprovers.status, 400, JSON.stringify(repeatedApprovers.body));
-  assert.match(
-    repeatedApprovers.body.error.message,
-    /^The request does not match the operation contract: body \/pluginApprovers has an unsupported value \(expected no duplicate items\)[;.]/,
-  );
+  // The nullable approver list is a referenced schema ($id PluginApprovers). Its problems belong
+  // to the list's branch, so the null branch adds no wrong-type clause (finding 808).
+  const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
+  const approver = { channel: "slack", id: "team:T123:user:U456" };
+  for (const [pluginApprovers, problem] of [
+    [
+      [approver, approver],
+      "body /pluginApprovers has an unsupported value (expected no duplicate items)",
+    ],
+    [
+      Array.from({ length: 65 }, (_, index) => ({ channel: "slack", id: `user:${index}` })),
+      "body /pluginApprovers has an unsupported value (expected at most 64 items)",
+    ],
+    [[{ ...approver, role: "admin" }], "body /pluginApprovers/0/role is not an accepted field"],
+    ["slack", "body /pluginApprovers has the wrong type (expected one of array, null)"],
+  ]) {
+    const rejected = await controller.request("PATCH", agentPath, {
+      body: { configurationId: replacementConfiguration.id, pluginApprovers },
+    });
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.equal(
+      rejected.body.error.message,
+      `The request does not match the operation contract: ${problem}.`,
+    );
+  }
 
   const clearedPlugins = await controller.request(
     "PATCH",
@@ -3726,12 +3730,36 @@ test("native ServiceAccounts keep private credential references and cannot admit
     namespace.id,
     "ready",
   );
+  // This Installation has no ChatGPT Backend: issuance is a conflict naming the fix, not an
+  // outage, and only after the caller's grant and the account lookup.
+  const issuance = await controller.request("POST", `${accountPath}/credentials`, { body: {} });
+  assert.equal(issuance.status, 409, JSON.stringify(issuance.body));
+  assert.equal(issuance.body.error.code, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
+  assert.equal(
+    issuance.body.error.message,
+    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  );
+  const unknownIssuance = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/service-accounts/sa_00000000-0000-4000-8000-000000000000/credentials`,
+    { body: {} },
+  );
+  assert.equal(unknownIssuance.status, 404, JSON.stringify(unknownIssuance.body));
+  const issuer = await controller.fixture.createAuthPrincipal("service-account-no-backend-issuer");
+  controller.fixture.state.identities.push(issuer.principal);
+  const deniedIssuance = await controller.request("POST", `${accountPath}/credentials`, {
+    body: {},
+    session: issuer.session,
+  });
+  assert.equal(deniedIssuance.status, 403, JSON.stringify(deniedIssuance.body));
+
+  // Without a Backend no account can hold an access token, so deployment names the Backend too.
   const missingCredential = await controller.request("POST", deploymentPath);
   assert.equal(missingCredential.status, 409);
-  assert.equal(missingCredential.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(missingCredential.body.error.code, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
   assert.equal(
     missingCredential.body.error.message,
-    "ChatGPT Harness authentication requires an issued account access-token credential.",
+    "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
   );
 
   const initialCredential = {
@@ -3756,7 +3784,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
 
   const nativeDeployment = await controller.request("POST", deploymentPath);
   assert.equal(nativeDeployment.status, 409);
-  assert.equal(nativeDeployment.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(nativeDeployment.body.error.code, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
   // A PAT source admits only an access-token credential, never an API key in its place.
   assert.match(
     nativeDeployment.body.error.message,
@@ -3774,7 +3802,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   assert.equal(oauthUpdate.status, 200);
   const oauthDeployment = await controller.request("POST", deploymentPath);
   assert.equal(oauthDeployment.status, 409);
-  assert.equal(oauthDeployment.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(oauthDeployment.body.error.code, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
   assert.match(
     oauthDeployment.body.error.message,
     /requires an issued account access-token credential/,

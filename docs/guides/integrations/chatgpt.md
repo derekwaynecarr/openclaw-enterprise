@@ -122,8 +122,11 @@ issue a credential for a new account.
 - **`409 RESOURCE_CONFLICT` on deployment:** verify that the account has an
   issued credential from the selected Backend and Driver. Only dedicated Codex
   supports this binding.
-- **`503 DEPENDENCY_UNAVAILABLE` when issuing:** confirm that the Installation
-  selects the matching ServiceAccount Driver. Have the network operator check
+- **`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` when issuing or deploying:**
+  the Installation has no ChatGPT Backend (`GET /backends` lists none). Complete
+  step 1, then issue the credential again.
+- **`503 DEPENDENCY_UNAVAILABLE` when issuing:** the selected ServiceAccount
+  Driver failed or does not match its Backend. Have the network operator check
   API Pod DNS and the destination allowed by the NetworkPolicy; also check the
   mounted admin key's workspace and scope, and whether Kubernetes Compute can
   store the credential. Keep the OCC request ID; do not share the key or token.

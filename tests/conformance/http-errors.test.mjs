@@ -46,6 +46,7 @@ import {
   SecretBindingValidationError,
   SecretStorageDriverError,
   SecretValueError,
+  ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
@@ -163,6 +164,26 @@ const cases = [
       status: 409,
       code: "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
       message: new CredentialGatewayNotConfiguredError().message,
+    },
+  ],
+  [
+    "service-account issuance on an Installation without a ChatGPT Backend names the fix",
+    new ServiceAccountDriverNotConfiguredError("issue"),
+    {
+      status: 409,
+      code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      message:
+        "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    },
+  ],
+  [
+    "a ChatGPT Harness deploy on an Installation without a ChatGPT Backend names the fix",
+    new ServiceAccountDriverNotConfiguredError("deploy"),
+    {
+      status: 409,
+      code: "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      message:
+        "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
     },
   ],
   [
@@ -899,4 +920,91 @@ test("a submitted Secret binding destination names its rule and key, never the S
     assert.deepEqual(failure.details, details, destination);
     assert.doesNotMatch(JSON.stringify({ ...failure, message: failure.message }), /sec_private_id/);
   }
+});
+
+// Ajv reports a referenced schema's failures under the reference ("Scalar/anyOf/0/type"), not
+// under the union branch that refers to it, and an inner union there can have a shorter schema
+// path than the outer union (finding 808). Entries as Ajv (verbose) reports a boolean sent for
+// `{ anyOf: [{ $ref: "Scalar" }, { type: "null" }] }` where Scalar is a string-or-number union.
+test("a nullable union of a referenced schema attributes the reference's problems to its branch", () => {
+  const validation = [
+    {
+      keyword: "type",
+      instancePath: "/a",
+      schemaPath: "Scalar/anyOf/0/type",
+      params: { type: "string" },
+    },
+    {
+      keyword: "type",
+      instancePath: "/a",
+      schemaPath: "Scalar/anyOf/1/type",
+      params: { type: "number" },
+    },
+    {
+      keyword: "anyOf",
+      instancePath: "/a",
+      schemaPath: "Scalar/anyOf",
+      params: {},
+      schema: [{ type: "string" }, { type: "number" }],
+    },
+    {
+      keyword: "type",
+      instancePath: "/a",
+      schemaPath: "#/properties/a/anyOf/1/type",
+      params: { type: "null" },
+    },
+    {
+      keyword: "anyOf",
+      instancePath: "/a",
+      schemaPath: "#/properties/a/anyOf",
+      params: {},
+      schema: [{ $ref: "Scalar" }, { type: "null" }],
+    },
+  ];
+  const failure = requestFailure(
+    Object.assign(new Error("body/a is invalid"), {
+      statusCode: 400,
+      validationContext: "body",
+      validation,
+    }),
+  );
+  assert.equal(failure.status, 400);
+  assert.equal(
+    failure.message,
+    "The request does not match the operation contract: body /a has the wrong type (expected one of string, number, null).",
+  );
+});
+
+// A reference that two branches make could be either branch's, so it is attributed to neither
+// and each problem keeps naming what its field accepts. Entries as Ajv (verbose) reports
+// `{ a: { x: [1, 1] } }` for `{ anyOf: [{ $ref: "List" }, { type: "object", properties:
+// { x: { $ref: "List" } } }] }`, where List is a uniqueItems array.
+test("a reference that two union branches make is attributed to neither", () => {
+  const validation = [
+    { keyword: "type", instancePath: "/a", schemaPath: "List/type", params: { type: "array" } },
+    {
+      keyword: "uniqueItems",
+      instancePath: "/a/x",
+      schemaPath: "List/uniqueItems",
+      params: { i: 1, j: 0 },
+    },
+    {
+      keyword: "anyOf",
+      instancePath: "/a",
+      schemaPath: "#/properties/a/anyOf",
+      params: {},
+      schema: [{ $ref: "List" }, { type: "object", properties: { x: { $ref: "List" } } }],
+    },
+  ];
+  const failure = requestFailure(
+    Object.assign(new Error("body/a is invalid"), {
+      statusCode: 400,
+      validationContext: "body",
+      validation,
+    }),
+  );
+  assert.equal(
+    failure.message,
+    "The request does not match the operation contract: body /a has the wrong type (expected array); body /a/x has an unsupported value (expected no duplicate items); body /a has an unsupported value.",
+  );
 });

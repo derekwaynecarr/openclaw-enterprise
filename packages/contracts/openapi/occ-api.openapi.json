@@ -692,6 +692,11 @@
                     "type": "string"
                   },
                   {
+                    "const": "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+                    "description": "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued or used for Harness authentication.",
+                    "type": "string"
+                  },
+                  {
                     "const": "REPOSITORY_OPTIONS_UNAVAILABLE",
                     "description": "Only repository-option discovery is unavailable after Agent create authorization. An Agent without repository bindings may be submitted and is authorized again. Other dependency failures do not carry this meaning.",
                     "type": "string"
