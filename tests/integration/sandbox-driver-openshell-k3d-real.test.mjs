@@ -1919,6 +1919,12 @@ async function prepareProductionInstallation(
     // scripts/k3d builds this runtime from an OpenClaw source with native worker support.
     configuration.runtime = { nativeWorkerSupport: "custom-image" };
     configuration.drivers.compute.configuration.runtime.nativeOpenClawSessionCapacity = 2;
+    // The node and two retained session workers share one container; the single-Harness
+    // 2 GiB budget OOM-kills the second turn. Keep Compute and Sandbox budgets aligned.
+    configuration.drivers.compute.configuration.resources.agent.limits.memory = "6Gi";
+    configuration.drivers.sandbox.configuration.kubernetes.agentResources.limits.memory =
+      configuration.drivers.compute.configuration.resources.agent.limits.memory;
+    configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "16Gi";
     configuration.drivers.credential_gateway.configuration.binaries = ["/usr/local/bin/node"];
     // Automatic enrollment egress belongs to the Driver's Codex runtime provider. The native
     // verification bridge must admit only its Node executable and exact Gateway endpoint.
