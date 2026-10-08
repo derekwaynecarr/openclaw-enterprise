@@ -776,7 +776,7 @@ export const CredentialWithdrawalSchema = Type.Object(
     credentialSourceId: CredentialSourceId,
     state: Type.Union([Type.Literal("pending"), Type.Literal("revoked")], {
       description:
-        "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve.",
+        "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve. The response describes the active revision's withdrawal unless another revision that may still run with the source (an earlier one not yet retired, or a later admitted one) has a `pending` one, which `revisionId` then names: one with no attempt queued first, so `revoked` means every such revision confirmed it.",
     }),
     requestedBy: Type.String({
       minLength: 1,

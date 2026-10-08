@@ -16693,7 +16693,7 @@
                             { "const": "pending", "type": "string" },
                             { "const": "revoked", "type": "string" }
                           ],
-                          "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve."
+                          "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve. The response describes the active revision's withdrawal unless another revision that may still run with the source (an earlier one not yet retired, or a later admitted one) has a `pending` one, which `revisionId` then names: one with no attempt queued first, so `revoked` means every such revision confirmed it."
                         },
                         "withdrawalInProgress": {
                           "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it.",
@@ -16859,7 +16859,7 @@
                             { "const": "pending", "type": "string" },
                             { "const": "revoked", "type": "string" }
                           ],
-                          "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve."
+                          "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve. The response describes the active revision's withdrawal unless another revision that may still run with the source (an earlier one not yet retired, or a later admitted one) has a `pending` one, which `revisionId` then names: one with no attempt queued first, so `revoked` means every such revision confirmed it."
                         },
                         "withdrawalInProgress": {
                           "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it.",
@@ -16934,7 +16934,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Get the withdrawal state of a credential source for an Agent's active revision",
+        "summary": "Get the withdrawal state of a credential source for an Agent",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent", "scope": "requested" }
