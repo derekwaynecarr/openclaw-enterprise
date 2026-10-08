@@ -41,6 +41,79 @@ function logRequests(requests, revisionId) {
   return requests.filter(({ path }) => path.includes(`/deployments/${revisionId}/runtime/logs`));
 }
 
+test("a failed deployment's Logs link opens its version in view without reloading", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  computeDriver.state.lines = [line(1, "startup failed before activation")];
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  // Simulate a recorded startup failure; navigation and runtime-log reads use the real app.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${failed.id}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: failed.id,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: "failed",
+            error: { code: "DEPENDENCY_UNAVAILABLE", message: "Deployment reconciliation failed." },
+            warnings: [],
+            progress: null,
+          },
+          meta: { requestId: "req_test_logs_navigation" },
+        }),
+      }),
+  );
+
+  // Draft and current-version views must both open the failed version; its own
+  // Configuration view switches tabs without replacing the document either.
+  for (const [index, selected] of ["draft", revisionId, failed.id].entries()) {
+    const url = detailUrl(fixture, namespace.id, agent.id, selected, "configuration");
+    if (index === 0) {
+      await login(page, fixture, url);
+    } else {
+      await page.goto(url.href);
+    }
+    const link = page.locator(".deployment-status").getByRole("link", { name: "Open v2 Logs" });
+    await link.waitFor();
+    await page.evaluate(() => {
+      globalThis.document.logsNavigationMarker = true;
+    });
+    await link.click();
+    await page.waitForURL(
+      (url) =>
+        url.searchParams.get("revision") === failed.id && url.searchParams.get("tab") === "logs",
+    );
+    const pane = page.getByRole("log", { name: "Runtime log output" });
+    await pane.getByText("startup failed before activation").waitFor();
+    assert.equal(await page.evaluate(() => globalThis.document.logsNavigationMarker), true);
+    await page.waitForFunction(() => {
+      const tab = globalThis.document.querySelector('.agent-tabs button[aria-current="page"]');
+      const panel = globalThis.document.querySelector(".agent-logs");
+      if (!tab || !panel) {
+        return false;
+      }
+      const bounds = panel.getBoundingClientRect();
+      return (
+        tab.textContent === "Logs" &&
+        globalThis.document.activeElement === tab &&
+        bounds.top >= 0 &&
+        bounds.top < globalThis.innerHeight
+      );
+    });
+    assert.ok(
+      computeDriver.calls.some(
+        ({ operation, revisionId }) => operation === "read" && revisionId === failed.id,
+      ),
+    );
+  }
+});
+
 test("the Logs tab shows runtime status, sanitized output and follows with a cursor", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   const secret = `ghp_${randomUUID().replaceAll("-", "")}`;
