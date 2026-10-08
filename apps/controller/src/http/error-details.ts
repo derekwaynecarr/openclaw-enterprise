@@ -63,10 +63,15 @@ const LIMITS: Readonly<Record<string, readonly [bound: string, unit?: string]>> 
 });
 
 // Names the schema's bound or accepted values for keywords that reject a value by its size or
-// range, such as an empty required string.
+// range, such as an empty required string, or by repeating an array item.
 function expectedBound(keyword: string, parameters: Record<string, unknown>): string | undefined {
   if (keyword === "enum" && Array.isArray(parameters.allowedValues)) {
     return `one of ${parameters.allowedValues.map((value) => JSON.stringify(value)).join(", ")}`;
+  }
+  // Any array that the schema declares `uniqueItems`, whatever its item shape. Ajv's
+  // parameters name the repeated positions, which the request chose, so they stay out.
+  if (keyword === "uniqueItems") {
+    return "no duplicate items";
   }
   // Own keys only: an inherited name such as "constructor" is not a bound.
   const bound = Object.hasOwn(LIMITS, keyword) ? LIMITS[keyword] : undefined;
