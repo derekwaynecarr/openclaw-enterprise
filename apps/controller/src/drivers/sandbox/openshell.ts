@@ -247,7 +247,7 @@ function pinMainAgentWorkspace(
   const entries = optionalAgentConfiguration(value, "OpenShell Agent entries");
   return Object.fromEntries(
     Object.entries(entries).map(([id, entry]) =>
-      id.trim().toLowerCase() === "main"
+      id.toLowerCase() === "main"
         ? [
             id,
             {
