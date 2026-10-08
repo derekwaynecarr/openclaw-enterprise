@@ -161,7 +161,12 @@ credential. `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.
 writes that projection into the node's private `openclaw.json` alongside its
 worker capacity and isolation settings. Its default workspace consumes the
 Driver-provided `OPENCLAW_WORKSPACE_DIR`, including OpenShell's relocated mount,
-rather than an image-specific path. OpenClaw snapshots node-local models
+rather than an image-specific path. OpenShell's
+`apps/controller/src/drivers/sandbox/openshell.ts:configureAgent` sets the admitted
+default workspace to its approved data mount before revision freezing. For a
+native worker profile, the Gateway's file-transfer binding uses that admitted
+workspace unless a provider endpoint supplies an explicit remote root.
+OpenClaw snapshots node-local models
 and credentials, then projects each worker's exact managed workspace from its
 authorized launch descriptor. No separate inference file, workspace-grant
 catalog, or retired `nativeInferenceConfig` node setting is produced.
@@ -329,6 +334,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 02:42: Align the admitted native Agent workspace and Gateway file-transfer binding with OpenShell's approved data mount. (authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6 - a8d2969355bd3c0478337e16a01e267ad3607595)
 
 - 2026-10-08 02:38: Consume the Driver-owned native workspace path so OpenShell file operations reach the admitted mount. (authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6 - e23d7dc5bf63ca103d6c7dec76d36ced9e1fbf5f)
 

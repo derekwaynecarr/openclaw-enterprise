@@ -474,8 +474,9 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
       version: "1.0.0",
       mode: "dedicated",
     }),
-    configuration,
+    { agents: { defaults: { model: "openai/gpt-5", workspace: "/sandbox/enterprise" } } },
   );
+  assert.deepEqual(configuration, { agents: { defaults: { model: "openai/gpt-5" } } });
 
   const codex = driver.configureAgent(configuration, {
     id: "codex",
