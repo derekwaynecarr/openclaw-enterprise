@@ -2164,14 +2164,19 @@ test(
     assert.deepEqual(work.rows, [
       { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 2 },
     ]);
+    // One failure audit per attempt: the unknown outcome, then the authorization denial.
     const audit = await fixture.pool.query(
       `SELECT kind, outcome FROM occ.audit_events
        WHERE namespace_id = $1
          AND action = 'openclaw.agents.provision.failure'
-         AND details->>'workId' = $2`,
+         AND details->>'workId' = $2
+       ORDER BY kind`,
       [namespace.id, workId],
     );
-    assert.deepEqual(audit.rows.at(-1), { kind: "authorization_denial", outcome: "denied" });
+    assert.deepEqual(audit.rows, [
+      { kind: "authorization_denial", outcome: "denied" },
+      { kind: "mutation", outcome: "failure" },
+    ]);
     const revisions = await fixture.pool.query(
       "SELECT id FROM occ.agent_revisions WHERE namespace_id = $1",
       [namespace.id],
