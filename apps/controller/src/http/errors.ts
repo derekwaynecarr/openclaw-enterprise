@@ -31,8 +31,8 @@ import {
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
-  SecretBindingDriverError,
   SecretBindingValidationError,
+  SecretDriverOwnershipError,
   SecretValueError,
   type RuntimeLogsErrorCode,
 } from "@openclaw-enterprise/occ";
@@ -720,8 +720,8 @@ export function requestFailure(error: unknown): RequestFailure {
       "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
     );
   }
-  if (error instanceof SecretBindingDriverError) {
-    // A fixed message naming the fix; raised only after the Secret's grant and lookup.
+  if (error instanceof SecretDriverOwnershipError) {
+    // A fixed message naming the path's fix; raised only after the Secret's grant and lookup.
     return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
   }
   if (isDependencyUnavailable(error)) {

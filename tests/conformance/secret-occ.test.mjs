@@ -11,7 +11,11 @@ import {
   OpenClawController,
   ResourceConflictError,
   ScopeViolationError,
+  HarnessAuthSecretDriverError,
+  ProvisioningSecretDriverError,
   SecretBindingDriverError,
+  SecretDriverOwnershipError,
+  SecretStorageDriverError,
   SecretValueError,
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
@@ -90,7 +94,10 @@ async function fixture(options = {}) {
   );
   const state = new InMemoryPlatformState();
   const controller = new OpenClawController(installation, { state });
-  const compute = createDevelopmentComputeDriver({ id: "secret-occ-compute" });
+  const compute =
+    options.computeOverrides === undefined
+      ? createDevelopmentComputeDriver({ id: "secret-occ-compute" })
+      : Object.freeze({ ...createDevelopmentComputeDriver(), ...options.computeOverrides });
   const configurationDriver = createTestConfigurationDriver({ id: "secret-occ-configuration" });
   const secretDriver = options.secretDriver ?? createTestSecretDriver();
 
@@ -916,7 +923,7 @@ test("a Secret whose metadata does not commit leaves no backend copy behind", as
   assert.equal(secretDriver.valueFor(kept), "sk-test-kept");
 });
 
-test("a Secret update refuses a Secret that another Secret Driver owns", async () => {
+test("after a Secret Driver change a Secret still reads, but update and delete name the fix", async () => {
   const { controller, makeReady, namespace, secretDriver } = await fixture({ skipAgent: true });
   await makeReady();
   const secret = await controller.createSecret(administrator, {
@@ -924,20 +931,75 @@ test("a Secret update refuses a Secret that another Secret Driver owns", async (
     name: "model-key",
     value: "sk-test-original",
   });
+  const bound = await controller.createSecret(administrator, {
+    namespaceId: namespace.id,
+    name: "bound-key",
+    value: "sk-test-bound",
+  });
+  await controller.createConfiguration(administrator, {
+    namespaceId: namespace.id,
+    kind: "agent",
+    values: configurationValues(),
+    secretBindings: { GATEWAY_TOOL_TOKEN: { source: bound.ref } },
+  });
   // A reconfigured Installation selects a new driver; it must not write the old driver's Secret.
   const replacement = createTestSecretDriver({ id: "secret-replacement" });
   controller.registerDriver(replacement);
   controller.selectDriver("secret", replacement.id);
-  await assert.rejects(
-    controller.updateSecret(administrator, {
+  const update = (principalId, secretId = secret.id) =>
+    controller.updateSecret(principalId, {
       namespaceId: namespace.id,
-      secretId: secret.id,
+      secretId,
       value: "sk-test-rotated",
-    }),
-    DependencyUnavailableError,
+    });
+  const remove = (principalId, secretId = secret.id) =>
+    controller.deleteSecret(principalId, namespace.id, secretId);
+
+  // Reads return OCC metadata and never call a driver.
+  assert.equal((await controller.readSecret(administrator, namespace.id, secret.id)).id, secret.id);
+
+  const storageFix = (operation, remedy) => (error) => {
+    assert.ok(error instanceof SecretStorageDriverError, `${error.name}: ${error.message}`);
+    assert.ok(error instanceof DependencyUnavailableError);
+    assert.equal(error.operation, operation);
+    assert.match(error.message, remedy);
+    return true;
+  };
+  await assert.rejects(update(administrator), storageFix("update", /Create a new Secret/));
+  await assert.rejects(
+    remove(administrator),
+    storageFix("delete", /after the Installation selects the Secret Driver that stored it/),
   );
+
+  // Grants, the lookup and the reference check still answer first, unchanged.
+  for (const attempt of [update, remove]) {
+    await assert.rejects(attempt(metadataReader), (error) => {
+      assert.ok(error instanceof AuthorizationDeniedError);
+      assert.ok(!(error instanceof DependencyUnavailableError));
+      return true;
+    });
+    await assert.rejects(
+      attempt(administrator, "sec_00000000-0000-4000-8000-00000000ffff"),
+      (error) =>
+        error instanceof ScopeViolationError && !(error instanceof DependencyUnavailableError),
+    );
+  }
+  await assert.rejects(remove(administrator, bound.id), (error) => {
+    assert.ok(error instanceof ResourceConflictError);
+    assert.equal(error.name, "SecretReferencedError");
+    return true;
+  });
+
   assert.deepEqual(replacement.calls, []);
   assert.equal(secretDriver.valueFor(secret), "sk-test-original");
+  assert.equal(secretDriver.has(secret), true);
+
+  // With its driver selected again, the Secret updates and deletes as usual.
+  controller.selectDriver("secret", secretDriver.id);
+  await update(administrator);
+  assert.equal(secretDriver.valueFor(secret), "sk-test-rotated");
+  await remove(administrator);
+  assert.equal(secretDriver.has(secret), false);
 });
 
 test("after a Secret Driver change an Agent update can replace the old Harness Secret but not keep it", async () => {
@@ -960,18 +1022,31 @@ test("after a Secret Driver change an Agent update can replace the old Harness S
   controller.registerDriver(replacement);
   controller.selectDriver("secret", replacement.id);
 
-  // Keeping the old Secret is still refused: deploy could not deliver it.
-  await assert.rejects(
-    update(administrator, { harnessAuth: oldHarnessAuth }),
-    DependencyUnavailableError,
-  );
+  // Keeping the old Secret is still refused, as is creating an Agent with it: deploy could not
+  // deliver it. The message names the fix.
+  const harnessFix = (error) => {
+    assert.ok(error instanceof HarnessAuthSecretDriverError, `${error.name}: ${error.message}`);
+    assert.ok(error instanceof DependencyUnavailableError);
+    assert.match(error.message, /set harnessAuth to another Secret/);
+    return true;
+  };
+  await assert.rejects(update(administrator, { harnessAuth: oldHarnessAuth }), harnessFix);
   await assert.rejects(
     controller.deployAgent(
       administrator,
       { namespaceId: namespace.id, agentId: agent.id },
       resolveApprovedDevelopmentHarness,
     ),
-    DependencyUnavailableError,
+    harnessFix,
+  );
+  await assert.rejects(
+    controller.createAgent(administrator, {
+      namespaceId: namespace.id,
+      name: "Second old-key agent",
+      configurationId: agent.configurationId,
+      harnessAuth: oldHarnessAuth,
+    }),
+    harnessFix,
   );
   assert.deepEqual(await stored(), oldHarnessAuth);
 
@@ -1001,6 +1076,12 @@ test("after a Secret Driver change an Agent update can replace the old Harness S
     });
   }
   iamState.restrictions.length = 0;
+  // A requested Secret the Namespace does not hold stays a scope miss, not this 503.
+  await assert.rejects(
+    update(administrator, { harnessAuth: missing }),
+    (error) =>
+      error instanceof ScopeViolationError && !(error instanceof DependencyUnavailableError),
+  );
   assert.deepEqual(await stored(), oldHarnessAuth);
 
   // An update that binds nothing new succeeds, and so does one that clears the old Secret.
@@ -1141,6 +1222,192 @@ test("after a Secret Driver change an Agent update and deploy wait for its Confi
   });
   assert.equal((await update(administrator)).configurationId, configuration.id);
   assert.equal((await deploy()).secretDriverId, replacement.id);
+});
+
+/** A Channel Driver that reads one bound Secret through OCC when `binding` is set. */
+function createTestChannelDriver() {
+  const driver = {
+    id: "channel-test",
+    capability: "channel",
+    implementation: "test-channel",
+    binding: undefined,
+    async validateCredentials(_values, withSecret) {
+      if (driver.binding !== undefined) {
+        await withSecret(driver.binding, "/channels/test/token", async () => {});
+      }
+    },
+    async lookupDirectory() {
+      return { entries: [] };
+    },
+  };
+  return driver;
+}
+
+test("after a Secret Driver change Agent provisioning names the fix for its old-driver Secrets", async () => {
+  const { configurationDriver, controller, iamState, makeReady, namespace } = await fixture({
+    skipAgent: true,
+    computeOverrides: {
+      agentProvisioning: { executionModes: ["dedicated"] },
+      validateAgentProvisioning() {},
+      async provisionAgentRuntimeCredentials() {
+        assert.fail("Provisioning admission must not provision runtime credentials.");
+      },
+      async getAgentRuntimeCredentialStatus() {
+        return { transportConfigured: false };
+      },
+    },
+  });
+  await makeReady();
+  grantRole(iamState, administrator, {
+    id: "secret-occ-installation-administrator-role",
+    permissions: { installation: ["administer"] },
+  });
+  Object.assign(configurationDriver, {
+    async createExact() {
+      assert.fail("Provisioning admission must not create a Configuration.");
+    },
+    async inspectExact() {
+      assert.fail("Provisioning admission must not inspect a Configuration.");
+    },
+  });
+  const channel = createTestChannelDriver();
+  controller.registerDriver(channel);
+  controller.selectDriver("channel", channel.id);
+  const create = (name) =>
+    controller.createSecret(administrator, {
+      namespaceId: namespace.id,
+      name,
+      value: `synthetic-${name}`,
+    });
+  const oldToken = await create("old-gateway-token");
+  const oldKey = await create("old-model-key");
+
+  const replacement = createTestSecretDriver({ id: "secret-replacement" });
+  controller.registerDriver(replacement);
+  controller.selectDriver("secret", replacement.id);
+  const currentToken = await create("current-gateway-token");
+  const currentKey = await create("current-model-key");
+
+  let request = 0;
+  const provision = (token, key) =>
+    controller.provisionAgent(administrator, {
+      namespaceId: namespace.id,
+      requestId: `req_secret_occ_${(request += 1)}`,
+      name: "Provisioned agent",
+      executionMode: "dedicated",
+      configuration: {
+        kind: "agent",
+        values: configurationValues(),
+        secretBindings: { GATEWAY_TOOL_TOKEN: { source: token.ref } },
+      },
+      harnessAuth: { method: "api_key", source: key.ref },
+    });
+  const provisioningFix = (error) => {
+    assert.ok(error instanceof ProvisioningSecretDriverError, `${error.name}: ${error.message}`);
+    assert.ok(error instanceof DependencyUnavailableError);
+    assert.match(error.message, /submit a new provisioning request/);
+    return true;
+  };
+  const missing = {
+    ref: {
+      kind: "secret",
+      namespaceId: namespace.id,
+      id: "sec_00000000-0000-4000-8000-00000000ffff",
+    },
+  };
+
+  // A bound Secret or the Harness key stored through the old driver names the fix, whether the
+  // Channel Driver reads it during admission or only the Secret check does.
+  for (const binding of [undefined, "GATEWAY_TOOL_TOKEN"]) {
+    channel.binding = binding;
+    await assert.rejects(provision(oldToken, currentKey), provisioningFix);
+    await assert.rejects(provision(currentToken, oldKey), provisioningFix);
+
+    // Grants and the lookup still answer first.
+    iamState.restrictions.push({
+      id: "deny-operate-old-gateway-token",
+      namespaceId: namespace.id,
+      action: "operate",
+      resourceKind: "secret",
+      resourceId: oldToken.id,
+      effect: "deny",
+    });
+    await assert.rejects(provision(oldToken, currentKey), (error) => {
+      assert.ok(!(error instanceof DependencyUnavailableError));
+      assert.deepEqual(error.authorization, { action: "operate", resource: oldToken.ref });
+      return true;
+    });
+    iamState.restrictions.length = 0;
+    await assert.rejects(
+      provision(missing, currentKey),
+      (error) =>
+        error instanceof ScopeViolationError && !(error instanceof DependencyUnavailableError),
+    );
+
+    // Secrets stored through the selected driver pass, reaching the PostgreSQL-only work store.
+    await assert.rejects(provision(currentToken, currentKey), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError);
+      assert.ok(!(error instanceof SecretDriverOwnershipError), error.message);
+      assert.match(error.message, /requires durable PostgreSQL state/);
+      return true;
+    });
+  }
+});
+
+test("after a Secret Driver change a Channel Driver's deploy check names the Configuration fix", async () => {
+  const { agent, controller, grantAgentSecretOperate, makeReady, namespace } = await fixture();
+  await makeReady();
+  const old = await controller.createSecret(administrator, {
+    namespaceId: namespace.id,
+    name: "old-channel-token",
+    value: "synthetic-old-channel-token",
+  });
+  grantAgentSecretOperate(agent, old);
+  const configuration = await controller.createConfiguration(administrator, {
+    namespaceId: namespace.id,
+    kind: "agent",
+    values: configurationValues(),
+    secretBindings: { GATEWAY_TOOL_TOKEN: { source: old.ref } },
+  });
+  await controller.updateAgent(administrator, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    configurationId: configuration.id,
+    harnessAuth: { method: "runtime" },
+  });
+  const channel = createTestChannelDriver();
+  channel.binding = "GATEWAY_TOOL_TOKEN";
+  controller.registerDriver(channel);
+  controller.selectDriver("channel", channel.id);
+  const replacement = createTestSecretDriver({ id: "secret-replacement" });
+  controller.registerDriver(replacement);
+  controller.selectDriver("secret", replacement.id);
+
+  // The Channel Driver reads the binding before admission does; both name the same fix.
+  await assert.rejects(
+    controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    ),
+    (error) => {
+      assert.ok(error instanceof SecretBindingDriverError, `${error.name}: ${error.message}`);
+      return true;
+    },
+  );
+  // The deploy grant still answers first.
+  await assert.rejects(
+    controller.deployAgent(
+      metadataReader,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    ),
+    (error) => {
+      assert.ok(error instanceof AuthorizationDeniedError);
+      assert.ok(!(error instanceof DependencyUnavailableError));
+      return true;
+    },
+  );
 });
 
 test("an Agent update needs read on its current ServiceAccount, before any lookup", async () => {
