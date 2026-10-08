@@ -11332,6 +11332,101 @@ test("activating an embedded revision deletes a dedicated predecessor's Gateway 
   assert.equal(runtime.spec.podSelector.matchLabels["openclaw.dev/workload-role"], "gateway");
 });
 
+// Two clusters: a dedicated Gateway lives in the control-plane Gateway namespace,
+// an embedded one in the execution namespace. Activation trims only the namespace
+// its own Gateway lives in.
+test("activation trims unwritten Agent policies only in its Gateway namespace", async () => {
+  const driver = new KubernetesComputeDriver(twoClusterOptions());
+  const dedicated = routedRevision(driver);
+  const embedded = {
+    ...dedicated,
+    id: "revision-embedded-trim",
+    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    configuration: {
+      ...dedicated.configuration,
+      agents: { defaults: { model: "openai/gpt-5" } },
+    },
+  };
+  const execution = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
+  const control = { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" };
+  const suffix = digest(dedicated.agentId);
+  const names = [
+    "allow-gateway-agent",
+    "allow-gateway-workspace-node",
+    "allow-workspace-node-gateway",
+    "allow-agent-runtime",
+    "allow-plugin-status-proxy",
+    "allow-plugin-status-agent",
+    "allow-plugin-status-gateway",
+  ].map((name) => `${name}-${suffix}`);
+  const fixture = (target, objects, deleted) => ({
+    networking: {
+      async readNamespacedNetworkPolicy({ name, namespace }) {
+        assert.equal(namespace, target.name);
+        const value = objects.get(name);
+        if (value === undefined) {
+          throw Object.assign(new Error("not found"), { statusCode: 404 });
+        }
+        return structuredClone(value);
+      },
+      async deleteNamespacedNetworkPolicy({ name, namespace, body }) {
+        assert.equal(namespace, target.name);
+        assert.equal(body.preconditions.uid, objects.get(name).metadata.uid);
+        deleted.push(`${target.plane}/${name}`);
+        objects.delete(name);
+      },
+    },
+  });
+  for (const [revision, trimmed] of [
+    [dedicated, control],
+    [embedded, execution],
+  ]) {
+    const deleted = [];
+    const stored = new Map();
+    for (const target of [execution, control]) {
+      const objects = new Map(
+        names.map((name) => [
+          name,
+          {
+            ...driver.manifest(
+              "networking.k8s.io/v1",
+              "NetworkPolicy",
+              name,
+              { namespaceId: tenant.id, agentId: dedicated.agentId },
+              target,
+            ),
+            spec: {},
+          },
+        ]),
+      );
+      for (const object of objects.values()) {
+        object.metadata.uid = `${target.plane}-${object.metadata.name}`;
+      }
+      stored.set(target.plane, objects);
+    }
+    driver.apiClients = Promise.resolve(fixture(control, stored.get("control"), deleted));
+    driver.executionApiClients = Promise.resolve(
+      fixture(execution, stored.get("execution"), deleted),
+    );
+    const written = driver.agentNetworkPolicies(revision, execution);
+    await driver.deleteUnwrittenAgentPolicies(revision, execution, written);
+    const kept = new Set(
+      written
+        .filter(({ namespace }) => namespace.plane === trimmed.plane)
+        .map(({ resource }) => resource.metadata.name),
+    );
+    assert.ok(kept.size > 0);
+    assert.deepEqual(
+      deleted.sort(),
+      names
+        .filter((name) => !kept.has(name))
+        .map((name) => `${trimmed.plane}/${name}`)
+        .sort(),
+      `${revision.harness.mode} trims only its Gateway namespace`,
+    );
+  }
+});
+
 test("retirement preserves active storage and node routing and deletes exact owned UIDs", async () => {
   const driver = createKubernetesComputeDriver(
     routedOptions({

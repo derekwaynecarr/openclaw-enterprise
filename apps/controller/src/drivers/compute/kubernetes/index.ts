@@ -6117,7 +6117,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
   // after the revision's own set is applied, so the new Gateway never lacks a
   // grant it needs. Preparation never calls it: there, the serving predecessor
   // still needs its own names. A later revision, repair or rollback included,
-  // applies and trims its own set the same way.
+  // applies and trims its own set the same way. A maintenance re-activation of the
+  // serving revision also drops names a prepared successor wrote; that successor's
+  // next preparation pass writes them again before its readiness probe.
   private async deleteUnwrittenAgentPolicies(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
