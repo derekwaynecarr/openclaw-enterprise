@@ -4410,8 +4410,8 @@ revisionTest(
     };
 
     // A gateway outage during the recheck ends only this pass, as REVISION_FINALIZATION_INCOMPLETE
-    // (DependencyUnavailableError names no dependency); the chain queues the next pass instead of
-    // stopping with a revoked source maybe still attached.
+    // (DependencyUnavailableError carries no dependency code); the chain queues the next pass
+    // instead of stopping with a revoked source maybe still attached.
     recheckFailure = new DependencyUnavailableError("The Credential Gateway did not answer.");
     rechecked.length = 0;
     const failed = await maintenancePass();
