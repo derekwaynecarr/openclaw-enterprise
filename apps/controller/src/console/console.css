@@ -1332,6 +1332,7 @@ summary:focus-visible {
   font-size: 0.8em;
 }
 .plugin-dialog {
+  overflow: hidden;
   width: min(72rem, calc(100vw - 2rem));
   height: min(52rem, calc(100dvh - 2rem));
   max-height: calc(100dvh - 2rem);
@@ -1359,6 +1360,31 @@ summary:focus-visible {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
+.plugin-access-help {
+  flex-shrink: 0;
+}
+.plugin-access-help > .hint {
+  margin: 0;
+  font-size: 12px;
+}
+.plugin-access-details {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.plugin-access-details > summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 500;
+}
+.plugin-access-instructions {
+  max-height: min(12rem, 25dvh);
+  margin-top: 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.plugin-access-instructions > .hint {
+  margin-top: 0;
+}
 .plugin-dialog::backdrop {
   background: rgba(15, 23, 42, 0.4);
 }
@@ -1381,13 +1407,15 @@ summary:focus-visible {
 .plugin-workspace {
   display: grid;
   grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr);
-  flex: 1 0 24rem;
-  min-height: 24rem;
+  grid-template-rows: minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
   gap: 24px;
 }
 .plugin-browser,
 .plugin-detail {
   min-width: 0;
+  min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -1395,9 +1423,11 @@ summary:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow: hidden;
   padding: 4px 16px 4px 4px;
   border-right: 1px solid var(--line);
+}
+.plugin-browser > :not(.plugin-list) {
+  flex-shrink: 0;
 }
 .plugin-browser .form-field,
 .plugin-browser-status .hint {
