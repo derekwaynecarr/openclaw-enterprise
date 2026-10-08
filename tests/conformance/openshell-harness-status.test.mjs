@@ -269,8 +269,11 @@ test("a provider-owned Codex Harness with a working model starts the app-server 
   );
 });
 
-async function listen(server) {
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+async function listen(server, host = "127.0.0.1") {
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, host, resolve);
+  });
   return server.address().port;
 }
 
@@ -607,7 +610,7 @@ test("the OpenShell client verifies an IP-literal TLS gateway listener against t
   const cases = [
     // TLS forbids an IP in SNI: the certificate must carry the endpoint IP itself.
     { name: "ipv4", san: "IP:127.0.0.1", bind: "127.0.0.1", host: "127.0.0.1", verified: true },
-    { name: "ipv6", san: "IP:::1", bind: "::1", host: "[::1]", verified: true, ipv6: true },
+    { name: "ipv6", san: "IP:::1", bind: "::1", host: "[::1]", verified: true, needsIpv6: true },
     // A hex IPv6 literal (IPv4-mapped, so it reaches the IPv4 loopback listener).
     {
       name: "ipv6-hex",
@@ -615,7 +618,7 @@ test("the OpenShell client verifies an IP-literal TLS gateway listener against t
       bind: "127.0.0.1",
       host: "[::ffff:7f00:1]",
       verified: true,
-      ipv6: true,
+      needsIpv6: true,
     },
     {
       name: "wrong-ip",
@@ -633,7 +636,7 @@ test("the OpenShell client verifies an IP-literal TLS gateway listener against t
       verified: false,
     },
   ];
-  for (const { name, san, bind, host, verified, ipv6: needsIpv6 } of cases) {
+  for (const { name, san, bind, host, verified, needsIpv6 } of cases) {
     await t.test(
       name,
       { skip: needsIpv6 && !ipv6 && "IPv6 loopback ::1 is unavailable" },
@@ -641,9 +644,9 @@ test("the OpenShell client verifies an IP-literal TLS gateway listener against t
         const { keyPath, certPath } = selfSignedCertificate(directory, name, san);
         const seen = [];
         const gateway = tlsGateway(keyPath, certPath, seen);
-        await new Promise((resolve) => gateway.listen(0, bind, resolve));
+        const port = await listen(gateway, bind);
         t.after(() => close(gateway));
-        const endpoint = `https://${host}:${gateway.address().port}`;
+        const endpoint = `https://${host}:${port}`;
         const client = new GrpcOpenShellGatewayClient({ endpoint, rootCertificatePath: certPath });
         const signal = AbortSignal.timeout(5_000);
         const observations = [
