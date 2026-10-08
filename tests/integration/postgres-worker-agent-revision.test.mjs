@@ -3616,6 +3616,25 @@ revisionTest(
       [fixture.namespace.id],
     );
     assert.deepEqual(revocations.rows, [{ actor_id: fixture.actor.id }]);
+
+    // A revoked withdrawal is final: a replay, by another operator too, returns it unchanged
+    // and queues nothing.
+    await fixture.stop();
+    const operator = `withdraw-operator-${randomUUID()}`;
+    await fixture.copyActorGrants(operator);
+    for (const principalId of [operator, fixture.actor.id]) {
+      const final = await fixture.controller.withdrawAgentCredentialSource(principalId, request);
+      assert.equal(final.state, "revoked");
+      assert.equal(final.requestedBy, fixture.actor.id);
+      assert.equal(final.withdrawalInProgress, false);
+    }
+    const attempts = await fixture.observerPool.query(
+      `SELECT count(*)::int AS count FROM occ.controller_work
+       WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn'`,
+      [active.id],
+    );
+    // Only the denied attempt and the replay that completed it.
+    assert.equal(attempts.rows[0].count, 2);
   },
 );
 
@@ -4154,6 +4173,129 @@ revisionTest(
     assert.equal(failed.rows[0].reason_code, "AUTHORIZATION_DENIED");
     // Compute never prepared the revision, so the gateway never attached the source.
     assert.deepEqual(prepared, []);
+  },
+);
+
+revisionTest(
+  "maintenance still rechecks the grants on every source that is not withdrawn",
+  async (fixture) => {
+    const owner = await fixture.agent("withdrawn-other-grant", {
+      auth: "credential_source",
+      nonModelSources: 1,
+    });
+    const active = await fixture.revision(owner, 1);
+    const toolSourceId = toolSources(owner)[0].sourceId;
+    const modelSourceId = owner.harnessAuth.sourceId;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        maintenanceIntervalMs: 3_600_000,
+        async withdrawCredentialSource(_revision, source) {
+          return { sourceId: source.id, state: "revoked" };
+        },
+      },
+      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
+    );
+    await fixture.work(active, "succeeded");
+
+    // The tool source has a pending withdrawal. The Agent principal then loses its grant on the
+    // model source, which is not withdrawn and still attaches, so maintenance must refuse.
+    await fixture.state.transact((unit) =>
+      unit.credentialSources.requestCredentialWithdrawal({
+        namespaceId: fixture.namespace.id,
+        agentId: owner.id,
+        revisionId: active.id,
+        credentialSourceId: toolSourceId,
+        state: "pending",
+        requestedBy: fixture.actor.id,
+        requestedAt: new Date().toISOString(),
+      }),
+    );
+    const removed = await fixture.observerPool.query(
+      `DELETE FROM occ.iam_access_bindings
+       WHERE identity_subject_id = $1 AND resource_kind = 'credential_source'
+         AND resource_id = $2`,
+      [owner.servicePrincipalId, modelSourceId],
+    );
+    assert.equal(removed.rowCount, 1);
+    const due = await fixture.advanceMaintenance(active);
+    assert.equal(due.rowCount, 1);
+    const settled = await waitFor("the maintenance pass to settle", async () => {
+      const rows = await fixture.observerPool.query(
+        `SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1`,
+        [due.rows[0].idempotency_key],
+      );
+      return ["succeeded", "failed_permanent"].includes(rows.rows[0]?.state)
+        ? rows.rows[0]
+        : undefined;
+    });
+    assert.deepEqual(settled, { state: "failed_permanent", reason_code: "AUTHORIZATION_DENIED" });
+  },
+);
+
+revisionTest(
+  "a withdrawal finds a Harness source on a revision admitted before credential source lists",
+  async (fixture) => {
+    // Revisions admitted before migration 0050 hold their Harness credential source only as
+    // harnessAuth: their admitted spec has no credential_sources key, and 0050 backfilled only
+    // Agents. Withdrawal must still find the source there.
+    const owner = await fixture.agent("withdraw-legacy", { auth: "credential_source" });
+    const sourceId = owner.harnessAuth.sourceId;
+    const listed = await fixture.revision(owner, 1);
+    const legacyRevision = async (number) => {
+      const id = `rev_${randomUUID()}`;
+      await fixture.observerPool.query(
+        `INSERT INTO occ.agent_revisions
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+         SELECT $2, namespace_id, agent_id, $3, backend_id, admitted_spec - 'credential_sources',
+                clock_timestamp()
+         FROM occ.agent_revisions WHERE id = $1`,
+        [listed.id, id, number],
+      );
+      const revision = await fixture.state.read((view) =>
+        view.revisions.findRevision(fixture.namespace.id, owner.id, id),
+      );
+      assert.equal(revision.harnessAuth.sourceId, sourceId);
+      assert.equal(revision.credentialSources, undefined);
+      return revision;
+    };
+    const legacy = await legacyRevision(2);
+    const successor = await legacyRevision(3);
+    assert.ok(
+      await fixture.state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(
+          fixture.namespace.id,
+          owner.id,
+          undefined,
+          legacy.id,
+        ),
+      ),
+      "the fixture Agent must have no active revision yet",
+    );
+
+    const requested = await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      credentialSourceId: sourceId,
+    });
+    assert.equal(requested.revisionId, legacy.id);
+    assert.equal(requested.state, "pending");
+    // The admitted legacy successor gets its own withdrawal too; the older revision does not.
+    const recorded = await fixture.state.read((view) =>
+      Promise.all(
+        [listed, legacy, successor].map((revision) =>
+          view.credentialSources.findCredentialWithdrawal(
+            fixture.namespace.id,
+            revision.id,
+            sourceId,
+          ),
+        ),
+      ),
+    );
+    assert.deepEqual(
+      recorded.map((withdrawal) => withdrawal?.state),
+      [undefined, "pending", "pending"],
+    );
   },
 );
 
