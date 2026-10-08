@@ -213,7 +213,6 @@ import {
   type PlatformUnitOfWork,
 } from "./state/platform-state.ts";
 import {
-  controllerWorkActivatedRevision,
   controllerWorkDeploymentStatus,
   deploymentErrorForWork,
   deploymentProgressForWork,
@@ -6157,7 +6156,9 @@ export class OpenClawController {
    * before it retires the earlier ones, and completes the deployment only after that, so
    * until the active revision's deployment has activated it, its predecessor keeps serving
    * with the sources it was admitted with. The walk stops at the newest revision whose
-   * deployment activated: everything before it was retired then.
+   * deployment succeeded, which means it activated: the worker completes that work only after
+   * retiring everything before it. The in-memory store reports all work as queued, so there
+   * the walk always reaches the first revision.
    */
   private async unretiredPredecessorRevisions(
     state: PlatformUnitOfWork,
@@ -6173,7 +6174,12 @@ export class OpenClawController {
         predecessors.push(candidate);
       }
       const work = await state.operations.findWork(`agent_revision:${candidate.id}:reconcile`);
-      if (work !== undefined && controllerWorkActivatedRevision(work)) {
+      if (
+        work !== undefined &&
+        work.namespaceId === candidate.namespaceId &&
+        work.revisionId === candidate.id &&
+        controllerWorkDeploymentStatus(work, this.clock()) === "succeeded"
+      ) {
         break;
       }
     }

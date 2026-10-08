@@ -286,8 +286,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
   and worker against PostgreSQL with a Compute double: retries, exhaustion,
   replays, maintenance, omitted withdrawn sources, per-requester
-  authorization, an admitted successor, a lost source grant, and a create that
-  lands after a lost claim.
+  authorization, admitted successors and unretired predecessors, a lost source
+  grant, and a create landing after a lost claim.
 - The real OpenShell test updates the source through the API and withdraws a
   `bearer-token` source (its substituted placeholder stops reaching an echo
   service while model turns continue), then the model source (the next model
