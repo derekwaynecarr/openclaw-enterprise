@@ -36,6 +36,7 @@ import type {
   CredentialSourceMetadata,
   CredentialSourceSnapshot,
   CredentialSourceStatus,
+  CredentialWithdrawal,
   CredentialWithdrawalStatus,
   CredentialSourceType,
   AuditEvent,
@@ -785,6 +786,18 @@ const SECRET_CONSUMER_FIELDS: Readonly<
   credential_source: "credentialSources",
   provisioning_request: "provisioningRequests",
 });
+
+/** The revision was admitted with the source, as its Harness authentication or in its list. */
+function revisionHoldsCredentialSource(
+  revision: Readonly<AgentRevision>,
+  credentialSourceId: string,
+): boolean {
+  return (
+    (revision.harnessAuth.method === "credential_source" &&
+      revision.harnessAuth.sourceId === credentialSourceId) ||
+    (revision.credentialSources ?? []).some(({ sourceId }) => sourceId === credentialSourceId)
+  );
+}
 
 /** Rejects unknown and missing catalog fields before any Credential Gateway effect. */
 function credentialSourceFieldsMatch(
@@ -6061,9 +6074,11 @@ export class OpenClawController {
 
   /**
    * Records a withdrawal of `credentialSourceId` from the Agent's active revision and queues
-   * worker work to revoke it. A replay of a pending withdrawal queues another attempt only when
-   * no earlier attempt is still queued or running, and that attempt runs on the replaying
-   * operator's authority; a revoked withdrawal is returned unchanged.
+   * worker work to revoke it. Every admitted successor revision that holds the source gets its
+   * own withdrawal too, so a deployment still in flight cannot attach it again. A replay of a
+   * pending withdrawal queues another attempt only when no earlier attempt is still queued or
+   * running, and that attempt runs on the replaying operator's authority; a revoked withdrawal
+   * is returned unchanged. The response describes the active revision's withdrawal.
    */
   async withdrawAgentCredentialSource(
     principalId: string,
@@ -6087,56 +6102,91 @@ export class OpenClawController {
         );
       }
       const revision = await this.activeCredentialSourceRevision(state, agent, input);
-      let withdrawal = await state.credentialSources.requestCredentialWithdrawal(
-        Object.freeze({
-          namespaceId: agent.namespaceId,
-          agentId: agent.id,
-          revisionId: revision.id,
-          credentialSourceId: input.credentialSourceId,
-          state: "pending",
-          requestedBy: principalId,
-          requestedAt: this.timestamp(),
-        }),
+      const withdrawal = await this.requestRevisionCredentialWithdrawal(
+        state,
+        principalId,
+        revision,
+        input.credentialSourceId,
       );
-      if (
-        withdrawal.state === "pending" &&
-        !(await state.operations.hasOutstandingCredentialWithdrawalWork(
-          agent.namespaceId,
-          revision.id,
-        ))
-      ) {
-        // The worker rechecks `agent:operate` for the recorded requester. An earlier requester
-        // may have lost it since, so the attempt this replay queues runs on the authority just
-        // checked above; otherwise nobody could ever complete the withdrawal.
-        if (withdrawal.requestedBy !== principalId) {
-          const reassigned = await state.credentialSources.reassignCredentialWithdrawal(
-            withdrawal.namespaceId,
-            withdrawal.revisionId,
-            withdrawal.credentialSourceId,
-            principalId,
-          );
-          if (reassigned === undefined) {
-            throw new ResourceStateConflictError(
-              "The credential withdrawal changed during the request.",
-            );
-          }
-          withdrawal = reassigned;
-        }
-        await this.record(state, {
-          kind: "agent_revision",
-          action: "reconcile",
-          target: "credentials_withdrawn",
-          namespaceId: agent.namespaceId,
-          resourceId: revision.id,
-          actorId: principalId,
-          operationId: crypto.randomUUID(),
-        });
+      // A deployment admitted before this request may activate after it. Its revision was
+      // admitted with the source, and the worker reads withdrawals by each revision's own id.
+      const successors = (await state.revisions.listRevisions(agent.namespaceId, agent.id)).filter(
+        (candidate) =>
+          candidate.revision > revision.revision &&
+          revisionHoldsCredentialSource(candidate, input.credentialSourceId),
+      );
+      for (const successor of successors) {
+        await this.requestRevisionCredentialWithdrawal(
+          state,
+          principalId,
+          successor,
+          input.credentialSourceId,
+        );
       }
       // A pending withdrawal now has an attempt queued or running, either earlier or just now.
       // Like the read, this reflects the queue at commit: a claim that expired on its last
       // attempt counts until recoverStale fails it.
       return Object.freeze({ ...withdrawal, withdrawalInProgress: withdrawal.state === "pending" });
     });
+  }
+
+  /**
+   * Inserts or returns the revision's withdrawal of the source. A pending one without
+   * outstanding work makes the caller its requester and queues an attempt.
+   */
+  private async requestRevisionCredentialWithdrawal(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    revision: Readonly<AgentRevision>,
+    credentialSourceId: string,
+  ): Promise<Readonly<CredentialWithdrawal>> {
+    let withdrawal = await state.credentialSources.requestCredentialWithdrawal(
+      Object.freeze({
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        credentialSourceId,
+        state: "pending",
+        requestedBy: principalId,
+        requestedAt: this.timestamp(),
+      }),
+    );
+    if (
+      withdrawal.state !== "pending" ||
+      (await state.operations.hasOutstandingCredentialWithdrawalWork(
+        revision.namespaceId,
+        revision.id,
+      ))
+    ) {
+      return withdrawal;
+    }
+    // The worker rechecks `agent:operate` for the recorded requester. An earlier requester
+    // may have lost it since, so the attempt this replay queues runs on the authority just
+    // checked by the caller; otherwise nobody could ever complete the withdrawal.
+    if (withdrawal.requestedBy !== principalId) {
+      const reassigned = await state.credentialSources.reassignCredentialWithdrawal(
+        withdrawal.namespaceId,
+        withdrawal.revisionId,
+        withdrawal.credentialSourceId,
+        principalId,
+      );
+      if (reassigned === undefined) {
+        throw new ResourceStateConflictError(
+          "The credential withdrawal changed during the request.",
+        );
+      }
+      withdrawal = reassigned;
+    }
+    await this.record(state, {
+      kind: "agent_revision",
+      action: "reconcile",
+      target: "credentials_withdrawn",
+      namespaceId: revision.namespaceId,
+      resourceId: revision.id,
+      actorId: principalId,
+      operationId: crypto.randomUUID(),
+    });
+    return withdrawal;
   }
 
   /**
@@ -6196,13 +6246,10 @@ export class OpenClawController {
       agent.id,
       agent.activeRevisionId,
     );
-    const harnessSource =
-      revision?.harnessAuth.method === "credential_source" &&
-      revision.harnessAuth.sourceId === input.credentialSourceId;
-    const nonModelSource = (revision?.credentialSources ?? []).some(
-      ({ sourceId }) => sourceId === input.credentialSourceId,
-    );
-    if (revision === undefined || (!harnessSource && !nonModelSource)) {
+    if (
+      revision === undefined ||
+      !revisionHoldsCredentialSource(revision, input.credentialSourceId)
+    ) {
       throw new ScopeViolationError(
         "The Agent's active revision does not use this credential source.",
       );
