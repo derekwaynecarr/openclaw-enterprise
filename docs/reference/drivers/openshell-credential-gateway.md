@@ -50,7 +50,9 @@ drivers:
 `binaries` is required and closed: a nonempty list of absolute executable paths
 inside the Harness image. OpenShell releases a credential only to requests made
 by those binaries. Use the exact native Codex executable, not a wrapper script.
-A stale path fails closed at the Codex startup model probe.
+A stale path fails the Codex startup model probe: the deployment fails with
+`RUNTIME_MODEL_PROBE_FAILED`, or `RUNTIME_AUTHENTICATION_FAILED` when the provider
+rejects the missing credential, and the active revision keeps serving.
 
 `toolBinaries` is optional: a nonempty list of absolute paths inside the Sandbox
 image that may carry [tool sources](../credential-sources.md#bind-a-source-to-an-agent)
@@ -245,7 +247,7 @@ Driver startup integration covers Backend membership and selection rules.
 | Registration returns `503`                                                                        | Check that the API reaches the gateway, the token file is mounted, and the Workspace exists.                     |
 | Registration returns `404` for a name conflict                                                    | A provider named for this source exists without OCC's labels. Remove it in OpenShell, then retry.                |
 | The revision stays inactive with a `failed` or `withheld` attachment                              | Check the provider in OpenShell and the Sandbox's `GetSandboxProviderStatus` reason.                             |
-| Codex startup fails its model probe                                                               | Confirm `binaries` names the exact Codex executable and that Codex trusts the Sandbox CA.                        |
+| Deployment fails with `RUNTIME_MODEL_PROBE_FAILED` or `RUNTIME_AUTHENTICATION_FAILED`             | Confirm `binaries` names the exact Codex executable, Codex trusts the Sandbox CA, and the key is valid.          |
 
 ## Related
 
