@@ -108,6 +108,12 @@ redacts environment values and secret shapes in lines and event messages, and
 adds the record to the same report under `containerLogs`. The platform recovery
 test follows its fixture gateway, which logs its drain, across Agent stop.
 
+The job log and results keep 600 characters of a failure message. In every lane,
+the runner adds each failed file's whole messages and stacks (16 KiB each, 20
+cases) and its last 400 stdout, stderr and diagnostic lines to the same report
+under `failures`, for the first 8 failed files. They get the failure-message
+redaction, and lines naming a credential are dropped whole.
+
 The `k3d-model`, `gateway-routing`, `slack`, `openshell`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable Node 24 `NODE_BASE_IMAGE`; gateway-routing, Slack and OpenShell CI use the repository variable `CONTAINER_NODE_BASE_IMAGE`. Preparation supplies the imported controller digest and private routing CA paths; Slack still requires approved runtime images and credentials.
 
 Routing, OpenShell, and logging have CI preparation contracts. Routing installs
