@@ -208,8 +208,10 @@ test("issuance without a ChatGPT Backend names the fix after the grant and the a
   for (const id of [account.id, missing]) {
     await assert.rejects(
       controller.createServiceAccountCredential(reader, namespace.id, id),
+      // DependencyUnavailableError is an AuthorizationDeniedError, so rule out the old 503 too.
       (error) =>
         error instanceof AuthorizationDeniedError &&
+        !(error instanceof DependencyUnavailableError) &&
         !(error instanceof ServiceAccountDriverNotConfiguredError),
     );
   }

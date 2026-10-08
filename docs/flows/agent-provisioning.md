@@ -109,7 +109,7 @@ Safe failed steps can retry under a fresh claim and authorization check. Complet
 
 While initialization owns an Agent, conflicting edits and manual deployment are guarded. Stop/Delete invalidate provisioning, and stale workers cannot hand off a deployment afterward. Ordinary deletion retains its lifecycle and in-flight credential safety. Because a cancelled provisioning never runs again, Agent deletion resolves an effect it left unsettled: it waits one worker lease after the cancellation, removes runtime credentials, and records the effect receipt in the same transaction as the finalizer. The wait is deferred and does not use deletion attempts. Namespace deletion waits for queued or running work and for any effect without a matching receipt; a settled effect on failed or cancelled work does not keep the Namespace occupied. Namespace Secrets and completed Configurations remain available through their existing resource APIs.
 
-No API deletes a provisioning request. Agent deletion removes the Agent's requests; a request that failed before it created an Agent stays. If such a request holds a legacy `chatgpt_service_account` plan, migration `0049` refuses to run until a database operator with the migration role deletes its `occ.controller_work` row (`idempotency_key` is the work ID), which removes the request row with it.
+No API deletes a provisioning request. Agent deletion removes the Agent's requests; a request that never created an Agent stays. To clear one that blocks migration `0049`, see [legacy bindings](../reference/settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
 ## Debugging and Verification
 
@@ -133,7 +133,7 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 
 ## Changelog
 
-- 2026-10-08 13:00: Say that no API deletes a provisioning request, and how to clear a failed request with a legacy plan that blocks migration `0049`. A plan bound to an account without an access token on an Installation with no ChatGPT Backend fails with a message naming the Backend. (fix-780-781/d540-d541)
+- 2026-10-08 13:00: Say that no API deletes a provisioning request, and link how to clear one with a legacy plan that blocks migration `0049`. A plan bound to an account without an access token on an Installation with no ChatGPT Backend fails with a message naming the Backend. (fix-780-781/d540-d541)
 - 2026-10-08 12:30: The provisioning worker inspects an unsettled external write before its authority check, so a permanent refusal fails the work with `PROVISIONING_REJECTED` instead of retrying it as `PROVISIONING_OUTCOME_UNKNOWN` until attempts run out. (fix-808-815)
 - 2026-10-08 11:30: The provisioning worker fails accepted work whose Secrets the selected Secret Driver does not own with `PROVISIONING_REJECTED` and the fixed message, instead of retrying it as an unavailable dependency. (fix-809)
 - 2026-10-08 11:00: A Secret stored through a previously selected Secret Driver answers a `503` that names the fix (replacement Secrets, a new request) instead of the generic dependency text. (fix-802)

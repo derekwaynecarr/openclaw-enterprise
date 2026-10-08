@@ -154,14 +154,12 @@ an account does not issue its credential or change the model, Harness, or Backen
 
 **Development upgrade limitation:** migration `0049` rejects retained
 `chatgpt_service_account` bindings in Agent drafts, any historical AgentRevision,
-or provisioning plans, and rolls back without converting them. Its error says to
-recreate Agents, revisions, and provisioning requests, but no API deletes a
-revision or request on its own: delete each affected Agent, which also deletes
-its revisions and provisioning requests, and create it again after the upgrade.
+or provisioning plans, and rolls back without converting them. No API deletes a
+revision or provisioning request on its own: delete each affected Agent, which
+also deletes its revisions and requests, and create it again after the upgrade.
 Changing the binding does not clear historical revisions. For a request that
-failed before it created an Agent, see
-[provisioning failures](../flows/agent-provisioning.md#5-failures-preserve-useful-outputs).
-In-place conversion is unsupported.
+never created an Agent, see
+[clear legacy bindings](settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
 For dedicated Codex with a Credential Gateway, use
 `{ "method": "credential_source", "sourceId": "cs_…" }`; see
