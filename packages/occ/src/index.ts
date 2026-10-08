@@ -8418,16 +8418,17 @@ export class OpenClawController {
    * The selected Secret Driver when it owns a Secret the caller has already been granted and
    * looked up; otherwise the path's own SecretDriverOwnershipError, whose fixed message names
    * that path's fix. Call it only after the grant and the lookup, so it is no existence oracle.
+   * No usable selected driver is an outage, not an ownership problem: it keeps the generic 503.
    */
   private ownedSecretDriver(
     driverId: string,
     failure: () => SecretDriverOwnershipError,
   ): SecretDriver {
-    try {
-      return this.secretDriver(driverId);
-    } catch {
+    const driver = this.secretDriver();
+    if (driver.id !== driverId) {
       throw failure();
     }
+    return driver;
   }
 
   private secretDriver(expectedId?: string): SecretDriver {

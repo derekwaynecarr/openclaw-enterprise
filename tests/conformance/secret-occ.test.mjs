@@ -968,7 +968,7 @@ test("after a Secret Driver change a Secret still reads, but update and delete n
   await assert.rejects(update(administrator), storageFix("update", /Create a new Secret/));
   await assert.rejects(
     remove(administrator),
-    storageFix("delete", /after the Installation selects the Secret Driver that stored it/),
+    storageFix("delete", /once the Installation again selects the Secret Driver that stored it/),
   );
 
   // Grants, the lookup and the reference check still answer first, unchanged.
@@ -989,6 +989,22 @@ test("after a Secret Driver change a Secret still reads, but update and delete n
     assert.equal(error.name, "SecretReferencedError");
     return true;
   });
+
+  // No usable selected driver is an outage, not an ownership problem: the generic text stays.
+  const implementation = replacement.implementation;
+  replacement.implementation = "test-changed-after-selection";
+  for (const attempt of [update, remove]) {
+    await assert.rejects(attempt(administrator), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError);
+      assert.ok(!(error instanceof SecretDriverOwnershipError), error.name);
+      assert.equal(
+        error.message,
+        "The selected Secret Driver is unavailable or does not own this Secret.",
+      );
+      return true;
+    });
+  }
+  replacement.implementation = implementation;
 
   assert.deepEqual(replacement.calls, []);
   assert.equal(secretDriver.valueFor(secret), "sk-test-original");

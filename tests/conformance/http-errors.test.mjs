@@ -707,7 +707,7 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "The selected Secret Driver is unavailable or does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+        "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
     },
   ],
   [
@@ -717,7 +717,7 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "The selected Secret Driver is unavailable or does not own the Harness authentication Secret. Bind a Secret stored through the selected driver: set harnessAuth to another Secret, or create a new Secret with the key and bind that.",
+        "The selected Secret Driver does not own the Harness authentication Secret. Bind a Secret stored through the selected driver: set harnessAuth to another Secret, or create a new Secret with the key and bind that.",
     },
   ],
   [
@@ -727,7 +727,7 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "The selected Secret Driver is unavailable or does not own a Secret this Agent provisioning uses. Use only Secrets stored through the selected driver: save replacement Secrets and submit a new provisioning request with them.",
+        "The selected Secret Driver does not own a Secret this Agent provisioning uses. Use only Secrets stored through the selected driver: save replacement Secrets and submit a new provisioning request with them.",
     },
   ],
   [
@@ -737,7 +737,7 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "The selected Secret Driver is unavailable or does not own this Secret, so its value cannot be updated. Create a new Secret with the value through the selected driver and bind it in place of this one.",
+        "The selected Secret Driver does not own this Secret, so its value cannot be updated. Create a new Secret with the value through the selected driver and bind it in place of this one.",
     },
   ],
   [
@@ -747,7 +747,7 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "The selected Secret Driver is unavailable or does not own this Secret, so its stored value cannot be deleted. Delete it after the Installation selects the Secret Driver that stored it again.",
+        "The selected Secret Driver does not own this Secret, so its stored value cannot be deleted. Delete it once the Installation again selects the Secret Driver that stored it.",
     },
   ],
   [
