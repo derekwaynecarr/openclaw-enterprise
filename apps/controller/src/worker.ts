@@ -2469,6 +2469,15 @@ export class ControllerWorker {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
+      const terminalFailure =
+        result.outcome === "permanent" ||
+        (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
+      // A terminal failure's queue transition locks the Namespace and Agent for cleanup. Take
+      // them first, in admission order, before updating withdrawal rows: a concurrent
+      // withdrawal request locks the Namespace, then the Agent, then the same rows.
+      if (terminalFailure) {
+        await this.lockClaimScope(unit, claim);
+      }
       // Each row explains a withdrawal that is still pending, including after the last attempt.
       const at = new Date().toISOString();
       for (const attempt of result.attempts ?? []) {
@@ -2487,9 +2496,6 @@ export class ControllerWorker {
           );
         }
       }
-      const terminalFailure =
-        result.outcome === "permanent" ||
-        (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
       const attempts = result.attempts ?? [];
       // Each confirmed revocation is audited as its requester's mutation in the pass that
       // confirmed it, so a later retry cannot lose it.
@@ -4190,6 +4196,15 @@ export class ControllerWorker {
   ): Promise<Readonly<Agent> | undefined> {
     await unit.namespaces.lockNamespace(claim.namespaceId, { includeDeleted: true });
     return unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
+  }
+
+  // lockClaimAgent for work that may carry no Agent (a malformed withdrawal target).
+  private async lockClaimScope(unit: PlatformUnitOfWork, claim: ClaimedWork): Promise<void> {
+    if (claim.agentId === undefined) {
+      await unit.namespaces.lockNamespace(claim.namespaceId, { includeDeleted: true });
+    } else {
+      await this.lockClaimAgent(unit, claim);
+    }
   }
 
   private async enqueueMaintenance(

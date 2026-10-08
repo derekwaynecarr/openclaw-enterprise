@@ -1042,6 +1042,88 @@ test(
 );
 
 test(
+  "a provisioning failure takes the Namespace lock before its claimed work row",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context);
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const { workId, url } = admitted.data.provisioning;
+    const claim = await claimProvisioningWork(fixture.pool, workId);
+    const failure = {
+      code: "PROVISIONING_REJECTED",
+      message: "Agent provisioning could not complete.",
+    };
+
+    // Stopping or deleting a provisioned Agent locks the Namespace, then the Agent, then this
+    // claimed work row (cancelByAgent). Hold the Namespace until the worker's permanent failure
+    // waits on it; the waiting failure must not hold the work row yet, or the two deadlock.
+    const admission = await fixture.pool.connect();
+    let committed;
+    let released = false;
+    let failed = false;
+    try {
+      await admission.query("BEGIN");
+      const admissionBackend = await admission.query("SELECT pg_backend_pid() AS pid");
+      await admission.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
+        namespace.id,
+      ]);
+      committed = fixture.state.transact(async (unit) => {
+        const current = await unit.provisioning.findByWorkId(workId);
+        await unit.provisioning.recordFailure(
+          claim,
+          {
+            completedPhase: current.completedPhase,
+            progress: { ...current.progress, error: failure },
+          },
+          { disposition: "permanent", ...failure },
+        );
+      });
+      // Surface an early failure through the await below instead of an unhandled rejection.
+      committed.catch(() => {});
+      await waitFor("the failure's real wait on the Namespace lock", async () => {
+        const waiting = await fixture.pool.query(
+          `SELECT pid FROM pg_stat_activity
+           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))
+             AND query LIKE '%occ.namespaces%'`,
+          [admissionBackend.rows[0].pid],
+        );
+        return waiting.rowCount > 0 ? true : undefined;
+      });
+      await assert.doesNotReject(
+        admission.query(
+          "SELECT state FROM occ.controller_work WHERE idempotency_key = $1 FOR UPDATE NOWAIT",
+          [workId],
+        ),
+        "a failure waiting for the Namespace must not already hold its work row",
+      );
+      await admission.query("ROLLBACK");
+      released = true;
+      await committed;
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      if (!released) {
+        await admission.query("ROLLBACK").catch(() => {});
+      }
+      // Discard the connection after a failure instead of returning it to the pool.
+      admission.release(failed);
+      await committed?.catch(() => {});
+    }
+
+    const after = await fixture.request("GET", url);
+    assert.equal(after.status, 200, JSON.stringify(after.body));
+    assert.equal(after.data.status, "failed");
+    assert.deepEqual(after.data.error, failure);
+  },
+);
+
+test(
   "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
