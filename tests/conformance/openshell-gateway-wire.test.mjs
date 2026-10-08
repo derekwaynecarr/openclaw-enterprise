@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { getEventListeners } from "node:events";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import { connect } from "node:net";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { createSecureServer } from "node:http2";
 import test from "node:test";
 import {
   GrpcOpenShellGatewayClient,
@@ -39,6 +45,115 @@ function bindWireServer(server) {
     ),
   );
 }
+
+test("OpenShell HTTP origins keep port 80 in native gRPC connections", async (t) => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, enums: String },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const server = new grpc.Server();
+  let healthCalls = 0;
+  server.addService(OpenShell.service, {
+    Health(_call, callback) {
+      healthCalls += 1;
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
+  });
+  const port = await bindWireServer(server);
+  const targets = [];
+  const sockets = new Set();
+  const proxy = createServer();
+  const track = (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => {});
+    return socket;
+  };
+  // A real CONNECT tunnel avoids privileged listening ports. It accepts only
+  // the configured authorities and forwards their actual gRPC bytes to the peer.
+  proxy.on("connect", (request, socket, head) => {
+    targets.push(request.url);
+    track(socket);
+    if (!["gateway.example.test:80", "gateway.example.test:7777"].includes(request.url)) {
+      socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
+    const upstream = track(
+      connect(port, "127.0.0.1", () => {
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        if (head.length > 0) {
+          upstream.write(head);
+        }
+        socket.pipe(upstream);
+        upstream.pipe(socket);
+      }),
+    );
+    upstream.on("error", () => socket.destroy());
+    socket.on("close", () => upstream.destroy());
+  });
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await new Promise((resolve) => proxy.close(resolve));
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const program = `
+    import { OpenShellGateway } from ${JSON.stringify(new URL("../../apps/controller/src/backends/openshell.ts", import.meta.url).href)};
+    const gateway = new OpenShellGateway(JSON.parse(process.argv[1]));
+    try {
+      await gateway.clientForNamespace("tenant-workspace").health(AbortSignal.timeout(2000));
+      process.stdout.write("healthy\\n");
+    } finally { gateway.close(); }
+  `;
+  for (const [configuration, target] of [
+    [{ endpoint: "gateway.example.test:80" }, "gateway.example.test:80"],
+    [{ endpoint: "http://gateway.example.test:80" }, "gateway.example.test:80"],
+    [{ endpoint: "http://gateway.example.test" }, "gateway.example.test:80"],
+    [{ serviceName: "gateway.example.test", scheme: "http", port: 80 }, "gateway.example.test:80"],
+    [{ endpoint: "http://gateway.example.test:7777" }, "gateway.example.test:7777"],
+  ]) {
+    const before = targets.length;
+    const child = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        program,
+        JSON.stringify({ ...configuration, requestTimeoutMs: 1000 }),
+      ],
+      {
+        env: { PATH: process.env.PATH, grpc_proxy: `http://127.0.0.1:${proxy.address().port}` },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const closed = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code) => resolve(code));
+    });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10000);
+    try {
+      assert.equal(await closed, 0, stderr);
+      assert.equal(stdout, "healthy\n");
+      assert.deepEqual(targets.slice(before), [target]);
+    } finally {
+      clearTimeout(timer);
+      child.kill("SIGKILL");
+      await closed;
+    }
+  }
+  assert.equal(healthCalls, 5);
+});
 
 test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", async () => {
   const proto = await loader.load(
@@ -741,6 +856,127 @@ test("OpenShell client retries setup after a failed first connection", async (t)
     });
   } finally {
     client.close();
+  }
+});
+
+function selfSignedCertificate(directory, name, subjectAltName) {
+  const keyPath = join(directory, `${name}.key`);
+  const certPath = join(directory, `${name}.crt`);
+  const generated = spawnSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-days",
+      "1",
+      "-keyout",
+      keyPath,
+      "-out",
+      certPath,
+      "-subj",
+      "/CN=openshell-gateway",
+      "-addext",
+      `subjectAltName=${subjectAltName}`,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
+  return { keyPath, certPath };
+}
+
+// A TLS gRPC listener that answers Health and records the SNI of every connection
+// and the path of every request it receives.
+async function tlsHealthGateway(keyPath, certPath, bind, seen) {
+  const gateway = createSecureServer({
+    key: readFileSync(keyPath),
+    cert: readFileSync(certPath),
+  });
+  gateway.on("secureConnection", (socket) => seen.push(["sni", socket.servername]));
+  gateway.on("stream", (stream, headers) => {
+    seen.push(["request", headers[":path"]]);
+    stream.respond(
+      { ":status": 200, "content-type": "application/grpc" },
+      { waitForTrailers: true },
+    );
+    stream.on("wantTrailers", () => stream.sendTrailers({ "grpc-status": "0" }));
+    // HealthResponse { status: SERVICE_STATUS_HEALTHY } in one uncompressed gRPC frame.
+    stream.end(Buffer.from([0, 0, 0, 0, 2, 0x08, 0x01]));
+  });
+  await new Promise((resolve, reject) => {
+    gateway.once("error", reject);
+    gateway.listen(0, bind, resolve);
+  });
+  return gateway;
+}
+
+test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP and sends no SNI", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openshell-grpc-tls-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // IPv6 loopback is optional on CI hosts; without it the IPv6 cases are skipped.
+  // The probe only binds, so it needs no certificate.
+  const probe = createSecureServer();
+  const ipv6 = await new Promise((resolve) => {
+    probe.once("error", () => resolve(false));
+    probe.listen(0, "::1", () => probe.close(() => resolve(true)));
+  });
+  const health = ["request", "/openshell.v1.OpenShell/Health"];
+  const cases = [
+    // A DNS endpoint is sent as SNI and verified by name, as before.
+    { name: "dns", san: "DNS:localhost", bind: "localhost", host: "localhost", sni: "localhost" },
+    // TLS forbids an IP in SNI: the certificate must carry the endpoint IP itself.
+    { name: "ipv4", san: "IP:127.0.0.1", bind: "127.0.0.1", host: "127.0.0.1", sni: false },
+    { name: "ipv6", san: "IP:::1", bind: "::1", host: "[::1]", sni: false, needsIpv6: true },
+    // A hex IPv6 literal (IPv4-mapped, so it reaches the IPv4 loopback listener).
+    {
+      name: "ipv6-hex",
+      san: "IP:::ffff:7f00:1",
+      bind: "127.0.0.1",
+      host: "[::ffff:7f00:1]",
+      sni: false,
+      needsIpv6: true,
+    },
+    { name: "wrong-ip", san: "IP:127.0.0.2", bind: "127.0.0.1", host: "127.0.0.1" },
+    // A name certificate does not vouch for an IP endpoint, even one that resolves there.
+    { name: "name-for-ip", san: "DNS:localhost", bind: "127.0.0.1", host: "127.0.0.1" },
+  ];
+  for (const { name, san, bind, host, sni, needsIpv6 } of cases) {
+    await t.test(
+      name,
+      { skip: needsIpv6 && !ipv6 && "IPv6 loopback ::1 is unavailable" },
+      async (t) => {
+        const { keyPath, certPath } = selfSignedCertificate(directory, name, san);
+        const seen = [];
+        const gateway = await tlsHealthGateway(keyPath, certPath, bind, seen);
+        t.after(() => new Promise((resolve) => gateway.close(resolve)));
+        const client = new GrpcOpenShellGatewayClient({
+          endpoint: `https://${host}:${gateway.address().port}`,
+          rootCertificatePath: certPath,
+          requestTimeoutMs: 5_000,
+        });
+        t.after(() => client.close());
+        const signal = AbortSignal.timeout(10_000);
+        if (sni !== undefined) {
+          await client.health(signal);
+          assert.deepEqual(seen, [["sni", sni], health]);
+          return;
+        }
+        await assert.rejects(client.health(signal), (error) => {
+          assert.ok(error instanceof DependencyUnavailableError, String(error));
+          assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
+          return true;
+        });
+        assert.deepEqual(
+          seen.filter(([kind]) => kind === "request"),
+          [],
+          "an unverified listener never receives a request",
+        );
+      },
+    );
   }
 });
 
