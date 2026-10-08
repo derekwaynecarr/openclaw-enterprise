@@ -103,7 +103,9 @@ test(
                   return true;
                 });
                 async function runScenario(parent, name, work) {
-                  await parent.test(name, { timeout: 1_800_000 }, async (scenarioContext) => {
+                  // Keep the preset's overall deadline; a shorter worker deadline
+                  // could interrupt cleanup after individually valid stage durations.
+                  await parent.test(name, async (scenarioContext) => {
                     const step = (title, action) =>
                       stage(scenarioContext, cell, title, action, name);
                     const suffix = `-${name}`;
