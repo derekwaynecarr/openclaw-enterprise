@@ -258,6 +258,15 @@ admitted revision** shows the frozen snapshot.
 **New version in progress** shows v7 deployment work while v6 stays current;
 **Current version during deployment** opens v6 details while activity follows
 v7. Compare queued, failed, activated, and unavailable activity stories.
+In **First version**, resize the preview: each preparation step keeps its own
+row and continuation lines align under the text.
+
+Use **New version failed** and **Failed deployment logs from draft** to open
+v7 Logs from v6 or the draft. Check the focused tab, visible output or denial,
+and Back. In **Runtime status and logs for v7**, exercise source and instance
+controls, debug, expanded fields, Follow, and filters. At 390px, check usable
+controls and readable rows. These fixtures prove presentation, not live reads.
+
 Version metadata stays visible when saved settings are unreadable. Follow the
 [walkthrough](../../scripts/console-storybook/unreadable-configuration-workflow.md)
 in **Unreadable Agent draft** and **Unreadable revision snapshot** to check
