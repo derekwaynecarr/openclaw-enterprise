@@ -3146,9 +3146,12 @@ test(
   },
 );
 
-revisionTest(
+test(
   "maintenance of a withdrawn revision retries the withdrawal and stops once it is revoked",
-  async (fixture) => {
+  requiresPostgres,
+  async (context) => {
+    // Two attempts, so the withdrawal runs out after one retry backoff of at most 1 s.
+    const fixture = await setup(context, { maxAttempts: 2 });
     const { owner, candidate: active } = await fixture.admitInitialRevision(
       "withdraw-maintenance",
       { agent: { auth: "credential_source" } },
@@ -3188,8 +3191,7 @@ revisionTest(
     const withdrawal = await withdrawalAttempts(fixture, active);
     assert.equal(withdrawal.length, 1);
     assert.equal(withdrawal[0].actorId, fixture.actor.id);
-    // Five pending attempts back off 1+2+4+8 s times jitter, which can exceed the default wait.
-    await fixture.work(withdrawal[0], "failed_permanent", 30_000);
+    await fixture.work(withdrawal[0], "failed_permanent");
     const [next] = await queuedWork(`agent_revision:${active.id}:maintenance:%`);
     assert.notEqual(next.idempotency_key, first.idempotencyKey);
     assert.equal(prepared.length, deployments);
