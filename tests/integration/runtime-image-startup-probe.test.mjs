@@ -226,7 +226,7 @@ async function containerCpu(containerName) {
         containerName,
         "sh",
         "-c",
-        "cd /sys/fs/cgroup && for f in cpu.max cpu.stat cpu.pressure; do [ -r $f ] && printf "%s: " $f && cat $f; done; true",
+        "cd /sys/fs/cgroup && for f in cpu.max cpu.stat cpu.pressure; do [ -r $f ] && printf '%s: ' $f && cat $f; done; true",
       ],
       { timeout: 10_000 * imageSmokeTimeoutMultiplier },
     );
