@@ -329,9 +329,9 @@ model turn.
   permissions, CPU and memory limits, namespace quotas, required Secrets, and
   workload readiness, including the
   [network profile](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
-  label. Dedicated Codex Harness containers clear the plugin readiness marker at
-  process start, so a marker from a previous container attempt cannot make a
-  restarted runtime ready. Access-token login retries only native process
+  label. Private HTTP readiness returns `503` until native, plugin,
+  authentication, or identity gates pass. Dedicated Codex clears its plugin
+  marker at process start to reject stale readiness. Access-token login retries only native process
   timeouts, up to three 30-second attempts. Exhausted startup remains unready
   until an explicit restart; see the
   [authentication probe contract](../harness-execution.md#harness-authentication)

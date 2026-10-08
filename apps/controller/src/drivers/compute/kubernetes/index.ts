@@ -150,15 +150,13 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../plugin-runtime.ts";
 import {
-  AGENT_READINESS_ENTRYPOINT,
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
   CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
-  GATEWAY_READINESS_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
   NATIVE_WORKER_ENTRYPOINT,
-  NATIVE_WORKER_READINESS_ENTRYPOINT,
+  RUNTIME_READINESS_PATH,
   RUNTIME_WRAPPER_COMMAND,
   SETUP_WRAPPER_COMMAND,
 } from "./runtime-entrypoints.ts";
@@ -13268,17 +13266,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                 readinessProbe: {
                   ...(runtime !== undefined
                     ? {
-                        exec: {
-                          command: [
-                            "node",
-                            "-e",
-                            role === "gateway"
-                              ? GATEWAY_READINESS_ENTRYPOINT
-                              : nativeRuntime === undefined
-                                ? AGENT_READINESS_ENTRYPOINT
-                                : NATIVE_WORKER_READINESS_ENTRYPOINT,
-                          ],
-                        },
+                        httpGet: { path: RUNTIME_READINESS_PATH, port: "plugin-status" },
                       }
                     : { httpGet: { path: "/readyz", port } }),
                   periodSeconds: 2,

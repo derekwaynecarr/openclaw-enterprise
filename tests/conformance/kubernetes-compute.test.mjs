@@ -6285,6 +6285,15 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   const worker = workerDeployment.spec.template.spec.containers[0];
   assert.ok(gateway);
   assert.ok(worker);
+  assert.deepEqual(gateway.readinessProbe, {
+    httpGet: { path: "/readyz", port: "plugin-status" },
+    periodSeconds: 2,
+  });
+  assert.deepEqual(worker.readinessProbe, {
+    httpGet: { path: "/readyz", port: "plugin-status" },
+    periodSeconds: 2,
+    timeoutSeconds: 3,
+  });
   const workerProgram = containerProgram(worker);
   assert.equal(
     gateway.env.some(({ name }) => name === "OPENAI_API_KEY"),
@@ -13280,6 +13289,7 @@ for (const dualCluster of [false, true]) {
       seedPod.containers[0].readinessProbe.exec.command[2],
       /"\/auth\/\.oce-oauth\.json"/,
     );
+    assert.equal(seedPod.containers[0].readinessProbe.httpGet, undefined);
     // Only a credential-free init step sees the claim root, to create codex-home as uid 1000
     // (a kubelet-created subPath is root-owned and world-writable).
     assert.deepEqual(
