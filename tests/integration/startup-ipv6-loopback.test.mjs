@@ -46,6 +46,16 @@ test("development startup accepts bracketed IPv6 loopback auth base URLs", () =>
   }
 });
 
+test("development controller accepts reserved localhost subdomains for its browser origin", () => {
+  const result = run("apps/controller/src/server.mjs", {
+    OCC_AUTH_BASE_URL: "https://console.occ-dev-example.oce.localhost:8443",
+    OCC_AUTH_SECRET: "short",
+  });
+  assert.equal(result.status, 1);
+  assert.equal(diagnostic(result, "apps/controller/src/server.mjs").code, "AUTH_SECRET_INVALID");
+  assert.doesNotMatch(result.stderr, /loopback host|AUTH_BASE_URL_INVALID/);
+});
+
 test("development startup still rejects nonloopback auth base URLs", () => {
   for (const path of ["apps/controller/src/server.mjs", "scripts/bootstrap-installation.mjs"]) {
     const result = run(path, {

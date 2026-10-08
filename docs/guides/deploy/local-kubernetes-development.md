@@ -137,8 +137,10 @@ To keep PostgreSQL, the OCC API, and the Kubernetes worker in Compose, set
 profile also installs the pinned private Envoy route in k3d. It mounts the
 route's service key and public CA only into the Compose controller and
 `worker-kubernetes`, then records the k3d node hostname and Envoy NodePort in
-the Installation. Do not run the separate manual hybrid-routing procedure for
-this OpenShell profile.
+the Installation. It publishes loopback HTTPS for the console and Agent native
+admin hosts, enables OCC proxying, and prints the browser CA path.
+`OCC_DEVELOPMENT_BROWSER_PORT` selects a port distinct from the Compose and k3d
+API ports. Do not run the separate manual hybrid-routing procedure.
 
 The first start requires network access. To use reviewed local assets instead,
 set

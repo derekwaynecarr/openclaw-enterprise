@@ -74,7 +74,13 @@ function runFirstAgent(env, ...args) {
     maxBuffer: 16_384,
   });
   assert.equal(result.status, 1, result.error?.message);
-  return `${result.stdout}${result.stderr}`;
+  const output = `${result.stdout}${result.stderr}`;
+  assert.notEqual(
+    output,
+    "",
+    `first-Agent exited without diagnostics (signal ${result.signal ?? "none"})`,
+  );
+  return output;
 }
 
 test("first-Agent accepts current Compose-backed Kubernetes development state", async (t) => {
@@ -97,6 +103,32 @@ test("first-Agent admits dedicated Codex with OpenShell development state", asyn
   const { engineLog, env } = await fixture(t, "openshell");
 
   assert.match(runFirstAgent(env, "--harness", "codex"), /docker did not complete successfully/);
+  assert.match(await readFile(engineLog, "utf8"), /compose .* port controller 3000/);
+});
+
+test("first-Agent control UI requires the launcher-owned native admin endpoint", async (t) => {
+  const { directory, engineLog, env } = await fixture(t, "openshell");
+
+  assert.match(
+    runFirstAgent(env, "--harness", "codex", "--control-ui"),
+    /did not enable its durable native admin endpoint/,
+  );
+  await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+
+  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+  await writeFile(
+    join(directory, "state.json"),
+    `${JSON.stringify({
+      ...state,
+      browserOrigin: "https://console.occ-dev-first-agent-test.oce.localhost:8443",
+      nativeAdminDomain: "agents.occ-dev-first-agent-test.oce.localhost",
+    })}\n`,
+    { mode: 0o600 },
+  );
+  assert.match(
+    runFirstAgent(env, "--harness", "codex", "--control-ui"),
+    /docker did not complete successfully/,
+  );
   assert.match(await readFile(engineLog, "utf8"), /compose .* port controller 3000/);
 });
 

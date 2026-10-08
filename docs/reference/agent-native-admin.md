@@ -22,6 +22,13 @@ Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup re
 - The Agent must be running, have an active revision, and expose a `ComputeDriver.getGatewayEndpoint` value that can be mapped from private `wss:` to private `https:`.
 - The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy admin device auto-approval. The support check rejects token auth, disabled device auth, and host-header origin fallback.
 
+The local Compose-control-plane profile enables this capability only when both
+Kubernetes Compute and OpenShell are selected. Its development proxy terminates
+HTTPS on host loopback for the installation's console and wildcard Agent hosts;
+the private Envoy route in k3d still carries OCC-to-gateway traffic. The
+first-Agent helper's `--control-ui` option supplies the exact per-Agent native
+configuration. Other Compose profiles do not expose this browser endpoint.
+
 ## Authorization and availability
 
 `GET /namespaces/:namespaceId/agents/:agentId/native-admin` is the console-facing availability check. It is a protected OCC API route with a human session, exact Agent `administer` authorization, and exact Agent existence. OCC verifies that authorization boundary before returning any feature status, including `disabled`; Agent `read`, Agent `operate`, native device credentials, native tokens, service keys for unrelated principals, and possession of a derived Agent host do not grant this API route.
@@ -102,6 +109,8 @@ device state, plugins, or other persistent gateway data.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 12:00: Documented the Compose/OpenShell development endpoint and first-Agent Control UI option.
 
 - 2026-09-21 21:20: Documented status-only stopped results before deployment and after stop reconciliation. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-20 08:21: Linked Kubernetes configuration-copy details to the implementation reference after the Driver documentation refactor. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - f4e22e48)

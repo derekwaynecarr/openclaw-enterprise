@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-05
-last_updated_session: authoring-run/91705365-6496-4de8-943f-15c1ba105410
+updated: 2026-10-06
+last_updated_session: authoring-run/cd977e92-eec5-445d-b9ab-bfd6bbfa4c18
 ---
 
 # Compose development startup
@@ -38,11 +38,15 @@ graph TD
   D -- "Kubernetes" --> E["<b>Owned k3d stack</b><br/>PostgreSQL and OCE"]
   D -- "Compose" --> F["<b>Hybrid stack</b><br/>Compose OCC and k3d Compute"]
   C --> G["<b>Prove Installation</b><br/>Authenticated service key"]
-  F --> R["<b>Resolve Pod proxy source</b><br/>Bound bridge-route queries"]
+  F --> F2{"<b>OpenShell selected?</b>"}
+  F2 -- "No" --> R["<b>Resolve Pod proxy source</b><br/>Bound bridge-route queries"]
+  F2 -- "Yes" --> J["<b>Expose browser endpoint</b><br/>Loopback HTTPS console and Agent hosts"]
+  J --> K["<b>Admit exact browser origin</b><br/>Trusted bridge peer only"]
+  K --> R
+  J --> H["<b>Own Workspace</b><br/>OpenShell operator mode"]
   E --> R
   R -- "Validated cni0 source" --> G
   R -- "Deadline or query failure" --> X["<b>Fail startup</b><br/>Skip Installation writing"]
-  F -- "OpenShell" --> H["<b>Own Workspace</b><br/>OpenShell operator mode"]
   E -- "OpenShell" --> H
   G --> I["<b>Record cleanup</b><br/>Exact engine and resources"]
   H --> I
@@ -184,38 +188,30 @@ Compose service with Docker-compatible engine access.
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers`,
 `internal/occdev/repository_k3d.go:enableDevelopmentRepository`.
 
-Before tool discovery or state creation, `upK3d` requires the control-plane Kubernetes
-namespace name to match a DNS label of at most 63 characters. Cleanup accepts historical,
-longer Namespace names in recorded state and deletes only the validated recorded
-cluster through its recorded engine endpoint; other state and ownership checks
-still apply.
+Before tool discovery or state creation, `upK3d` requires a control-plane
+Namespace DNS label of at most 63 characters. Cleanup tolerates historical
+longer names but deletes only the recorded cluster through its recorded engine;
+other ownership checks still apply.
 
 Both k3d profiles use legacy iptables and honor an explicit IPv4 node resolver
-without changing host DNS.
-Linux Docker's automatic host resolver selection ignores trailing nameserver
-fields, matching glibc parsing.
+without changing host DNS. Linux Docker selects the first glibc nameserver.
 `internal/occdev/node_dns_k3d.go:checkDevelopmentNodeDNS` fails startup on
-refused node DNS. Kubernetes-only startup imports matching OCE images into the
-cluster.
+refused node DNS. Kubernetes-only startup imports matching OCE images.
 
-Without OpenShell, it verifies the pinned cert-manager and Envoy Gateway
-manifests, waits for the k3s-owned Gateway API CRDs, then installs Envoy,
-printing k3s add-on status before rollback on failure.
+Without OpenShell, startup verifies pinned cert-manager and Envoy manifests,
+waits for the k3s Gateway API CRDs, then installs Envoy before rollback on
+failure.
 `internal/occdev/gateway_k3d.go:waitDevelopmentCRDEstablished` polls each CRD
-each second until `Established`, stopping on a `kubectl` error or startup
-timeout. Before gateway proxy trust,
+until `Established`, a `kubectl` error, or timeout. Before gateway proxy trust,
 `internal/occdev/network_k3d.go:verifyDevelopmentNetworkPolicy` checks allowed
-and denied Pod traffic with credential-free Pods and a temporary policy, then
-rechecks Driver policies after bootstrap creates the initial gateway Namespace.
-Probe Pods use short grace periods and UID-preconditioned deletes. Cleanup waits
-for selector-matching Pods before removing their egress policy; probe or cleanup failure
-fails startup. Checks are point-in-time and single-node.
+and denied traffic with credential-free Pods, then rechecks Driver policies
+after bootstrap. UID-preconditioned cleanup failure fails startup. These are
+point-in-time, single-node checks.
 
 Before writing the Installation, `scripts/prepare-development-codex-seccomp.mjs`
-probes the imported runtime in a credential-free Pod on the owned node. If
-`RuntimeDefault` blocks the sandbox, the shared reviewed generator derives a
-content-addressed Localhost profile from the node's policy and verifies it for
-dedicated Codex containers; failure rolls back the owned cluster. The
+probes the runtime in a credential-free Pod. If `RuntimeDefault` blocks it, the
+reviewed generator derives and verifies a content-addressed Localhost profile
+for dedicated Codex; failure rolls back the cluster. The
 [local Kubernetes guide](../../guides/deploy/local-kubernetes-development.md#start-the-profile)
 owns the verified boundaries and provenance.
 
@@ -238,35 +234,27 @@ operator action.
 
 Without a Sandbox Driver, Kubernetes startup selects Docker or Podman and
 resolves its host socket from Docker's active context or `podman machine inspect`.
-Private state records the socket, Compose project, and `occ-dev-*` cluster.
-Cleanup validates and reuses those records, regardless of later context changes.
+Private state records the socket, Compose project, and `occ-dev-*` cluster for
+validated cleanup despite later context changes.
 
-Startup refuses existing cluster or project resources, validates resolved Compose
-publications with `internal/occdev/compose.go:AnalyzeCompose`, and rejects
-external or unscoped networks and volumes with
-`internal/occdev/up.go:validateResourceOwnership`. It claims the state directory
-by exclusive `0700` creation and privately writes the rendered Compose snapshot
-before creating resources. Before saving, `setKubernetesBridgeGateway` keeps an
-explicit development-network gateway or derives the first usable address from
-the rendered subnet, the bridge gateway k3d requires when the operator overrides
-the subnet. Startup and cleanup both use that snapshot, so later `.env` edits
-cannot change it.
+Startup refuses existing cluster or project resources, validates Compose
+publications, and rejects external or unscoped networks and volumes. It creates
+private state exclusively and records the rendered Compose snapshot before
+resources. `setKubernetesBridgeGateway` preserves an explicit network gateway
+or derives the subnet's first usable address for k3d. Startup and cleanup reuse
+the snapshot, so later `.env` edits cannot change it.
 
-With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Kubernetes Compute branches
-into `internal/occdev/openshell_k3d.go:upK3d` before Compose rendering, uses the
-engine only for k3d and image operations, and adds OpenShell only when selected.
-Without OpenShell, the Installation selects the bundled Presets and curated
-Codex Plugin Driver, and startup copies the generated administrator password and
-service key into the private state directory.
+With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Compute enters
+`internal/occdev/openshell_k3d.go:upK3d` before Compose rendering and uses the
+engine only for k3d and images. Without OpenShell, the Installation selects the
+bundled Presets and Codex Plugin Driver and copies bootstrap credentials into
+private state.
 
-When repository inputs are selected, `internal/occdev/repository_k3d.go` first
-validates them. After authenticated bootstrap and Namespace readiness, it
-substitutes the server-assigned Namespace ID into the immutable registry,
-generates a CA and exact-host broker certificate, creates separate Kubernetes
-inputs, and upgrades Helm with the selected Repo Driver and worker sidecar.
-Startup fails unless authenticated repository discovery matches the approved
-references and profiles; it proves no model turn, native sandbox, or Git
-operation. The
+`internal/occdev/repository_k3d.go` validates selected repository inputs. After
+bootstrap and Namespace readiness, it adds the assigned Namespace ID, creates
+the CA, broker certificate, and Kubernetes inputs, then upgrades Helm with the
+Repo Driver and sidecar. Authenticated discovery must match the approved
+references and profiles; this proves no model turn, sandbox, or Git operation. The
 [local repository procedure](../../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs)
 owns the required inputs.
 
@@ -284,9 +272,8 @@ owns both OpenShell control-plane sequences.
 `internal/occdev/kubernetes.go:writeInstallation`,
 `internal/occdev/openshell.go:prepareOpenShell`.
 
-Compose starts PostgreSQL, migration, and bootstrap. Once both one-shot
-services succeed, startup creates the dedicated k3d cluster on the
-Compose network.
+Compose starts PostgreSQL, migration, and bootstrap. After both one-shot
+services succeed, startup creates k3d on the Compose network.
 With the default Sandbox profile, `OCC_DEVELOPMENT_K3S_IMAGE` selects the node
 image; its default `+v1.35` resolves the latest K3s 1.35 patch. An explicit
 image skips lookup. OpenShell uses its pinned image in both control-plane modes.
@@ -294,22 +281,19 @@ The cluster API binds host loopback; creation leaves the default kubeconfig and
 current context unchanged.
 
 The host kubeconfig remains owner-readable. The container kubeconfig uses the
-cluster's internal load-balancer hostname with TLS verification. It and the
-container configuration are readable by non-root containers behind the private
-host directory and mounted read-only into the API and Kubernetes worker. Neither receives the engine socket.
+internal load balancer with TLS verification. Non-root API and worker containers
+receive it and their configuration read-only, but not the engine socket.
 
-The lifecycle imports runtime and OpenShell images under engine-recorded names,
-including Podman `localhost/` tags and Docker Hub familiar names. An omitted tag
-makes `internal/occdev/kubernetes.go:engineImageReference` match `:latest` and
-reject missing or ambiguous matches, then resolve the in-cluster digest. Before `writeInstallation`, `internal/occdev/up.go:Up` and
+The lifecycle imports runtime and OpenShell images under engine-recorded names.
+For an omitted tag, `engineImageReference` matches `:latest`, rejects missing or
+ambiguous images, and resolves the in-cluster digest. Before `writeInstallation`, `internal/occdev/up.go:Up` and
 `internal/occdev/openshell_k3d.go:upK3d` call
 `internal/occdev/status_proxy_k3d.go:developmentStatusProxySource`. Node inventory keeps caller context outside polling.
 
-`internal/occdev/up.go:poll` bounds route queries to two minutes via `internal/occdev/command.go:command`
-(`exec.CommandContext`), so deadline or cancellation stops blocked queries; default
-routes keep polling. `developmentStatusProxyCidr` requires one IPv4 `cni0` source
-in the node Pod CIDR, not its network address, and returns `/32`. On error, both
-callers stop before Installation writing and follow existing cleanup.
+`internal/occdev/up.go:poll` bounds route queries to two minutes through
+`exec.CommandContext`; deadline or cancellation stops blocked queries.
+`developmentStatusProxyCidr` requires one non-network IPv4 `cni0` source in the
+Pod CIDR and returns `/32`. Errors stop Installation writing and trigger cleanup.
 
 `internal/occdev/kubernetes.go:writeInstallation` then selects Kubernetes Compute,
 Configuration, and Secret Drivers with native IAM; without OpenShell,
@@ -318,11 +302,22 @@ sandbox check. Its runtime section sets the transport Secret prefix, gateway
 storage class, and memory limits
 of 3 GiB per gateway and 6 GiB per Harness.
 
-When Compose mode also selects OpenShell, startup installs the pinned Agent
-Sandbox controller and OpenShell Gateway in k3d before starting the API and
-worker, and configures the Sandbox Driver for operator workspace mode. The
+With Compose and OpenShell, startup installs the pinned Agent Sandbox controller
+and OpenShell Gateway in k3d and selects operator workspace mode. The
 [OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
-owns OpenShell Gateway placement and per-Namespace workspace resources.
+owns their placement and resources.
+
+The hybrid snapshot adds `compose.native-admin.yaml` with cluster-scoped browser
+and routing settings. A private CA signs only the console and wildcard Agent
+hosts. `browser-proxy` terminates HTTPS on loopback; Agent `ClusterIP` Services
+remain behind Envoy.
+
+`apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
+passes `OCC_AUTH_BASE_URL` into development admission.
+`apps/controller/src/index.ts:createFastifyApp` accepts that exact Host and
+optional exact Origin only from loopback or trusted development CIDRs. Sibling
+hosts, another Origin, forwarded headers, and untrusted peers fail before
+identity resolution.
 
 ### 14. Prove readiness and clean up the owned Kubernetes profile
 
@@ -336,6 +331,8 @@ Installation with `occclient`. Its ID must match the bootstrap response before
 the final key file is written exclusively. With OpenShell, startup waits for the
 bootstrap Kubernetes Namespace and for OCC to report it ready, proving the
 Sandbox Driver created or adopted its operator-mode Workspace.
+Hybrid OpenShell startup also requires the generated CA and exact console name
+to reach the controller session route through the HTTPS browser proxy.
 Namespace readiness and repository discovery bind each OCC request to the
 polling deadline and caller cancellation via `occclient.Client.WithContext`.
 The original client remains available for later startup operations.
@@ -361,6 +358,9 @@ newly written external key if a later OpenShell readiness step fails.
   selects the Kubernetes-only real-cluster proof.
 - `OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 node --test tests/integration/dev-up-openshell-k3d-real.test.mjs`
   selects the Compose-backed real-cluster proof.
+- `OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_UI=1 node --test tests/integration/local-first-agent-real.test.mjs`
+  checks its exact HTTPS console and Control UI origins and the deployed
+  Configuration's allowed origin and trusted-proxy policy.
 - A successful startup does not prove Agent creation, model credentials, or a
   model turn. Follow the owning runtime integration procedure for those claims.
 
@@ -375,6 +375,10 @@ newly written external key if a later OpenShell readiness step fails.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 16:19: Traced exact local browser Host and Origin admission through the trusted Compose bridge before console Namespace reads. (authoring-run/cd977e92-eec5-445d-b9ab-bfd6bbfa4c18 - 99641a7ab00ad8fdd987e27e9ee838814e5f535a)
+
+- 2026-10-06 12:00: Added the Compose/OpenShell loopback HTTPS endpoint, native-admin routing enablement, certificate ownership, and readiness proof. (authoring-run/0e6b1c8a-1723-4b20-ae51-08fa9457204a - 99641a7ab)
 
 - 2026-10-05 16:01: Rejected interrupted Docker response streams in the request owner. (authoring-run/91705365-6496-4de8-943f-15c1ba105410 - 9b5a60467022d815d1259ff30d3ed64657657247)
 
