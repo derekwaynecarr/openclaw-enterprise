@@ -7818,7 +7818,6 @@ function providerReadinessFixture({
   harnessEndpoint,
   lifecycleDrivers = [],
   nodeEnrollment,
-  credentialGatewayDriver,
 } = {}) {
   const driver = new KubernetesComputeDriver(
     routedOptions({
@@ -7862,7 +7861,6 @@ function providerReadinessFixture({
         },
         ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
       },
-      ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
     },
   );
   const revision = routedRevision(driver, {
@@ -8219,22 +8217,9 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   const provisions = [];
   const endpoints = [];
   const setupRequests = [];
-  const attachmentChecks = [];
   const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
   const providerWorkspaceRoot = "/sandbox/enterprise";
   const fixture = providerReadinessFixture({
-    // Used only by revisions that bind credential sources.
-    credentialGatewayDriver: {
-      id: "credential-gateway",
-      capability: "credential_gateway",
-      async attachForRevision(context) {
-        return context.sources.map(({ id }) => ({ sourceId: id, ref: `ref-${id}` }));
-      },
-      async attachmentStatus(context) {
-        attachmentChecks.push(context.sources.map(({ id }) => id));
-        return context.sources.map(({ id }) => ({ sourceId: id, state: "ready" }));
-      },
-    },
     async provisionHarness(context) {
       // The provider fences Harness egress; a Compute auth grant would be unioned with it.
       assert.equal(
@@ -8744,6 +8729,19 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
 
   // Ready credential attachments do not stand in for a serving Harness: a revision whose
   // Sandbox carries gateway-held credentials waits for the Harness too.
+  const attachmentChecks = [];
+  // The Credential Gateway Compute holds; only revisions that bind sources reach it.
+  driver.credentialGatewayDriver = {
+    id: "credential-gateway",
+    capability: "credential_gateway",
+    async attachForRevision(context) {
+      return context.sources.map(({ id }) => ({ sourceId: id, ref: `ref-${id}` }));
+    },
+    async attachmentStatus(context) {
+      attachmentChecks.push(context.sources.map(({ id }) => id));
+      return context.sources.map(({ id }) => ({ sourceId: id, state: "ready" }));
+    },
+  };
   const toolSource = {
     id: "cs_00000000-0000-4000-8000-000000000546",
     namespaceId: tenant.id,
