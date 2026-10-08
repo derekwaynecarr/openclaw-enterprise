@@ -4840,21 +4840,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
           // readiness probe, require the Harness transport to answer, and fail on
           // the Harness's held startup failure (a failed model probe) instead of
           // activating a revision whose Codex never started.
-          const transportToken = (
-            await this.prepareRevisionStage("sandbox_provision", () =>
-              this.sandboxTransportToken(revision),
-            )
-          ).toString("utf8");
-          const harness = await this.prepareRevisionStage("sandbox_provision", () =>
+          const harness = await this.prepareRevisionStage("sandbox_provision", async () =>
             sandboxDriver.harnessStatus!({
               ...sandboxContext,
               revision,
               requirements,
-              transportToken,
+              transportToken: await this.prepareRevisionStage("harness_auth", () =>
+                this.sandboxTransportTokenText(revision),
+              ),
             }),
           );
           if (harness.state === "failed") {
             const runtimeFailure = this.runtimeFailureEvidence(harness.runtimeFailure);
+            // `failed` without evidence is as invalid as malformed evidence.
             if (runtimeFailure === undefined) {
               throw new DependencyUnavailableError("Runtime failure status returned invalid data.");
             }
@@ -5356,6 +5354,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
           revision,
           requirements,
         });
+        // Preparation saw the Harness serving; activate only while it still is.
+        if (
+          sandboxDriver.harnessStatus !== undefined &&
+          (
+            await sandboxDriver.harnessStatus({
+              ...sandboxContext,
+              revision,
+              requirements,
+              transportToken: await this.sandboxTransportTokenText(revision),
+            })
+          ).state !== "serving"
+        ) {
+          throw new Error("The exact AgentRevision workload is not ready.");
+        }
       }
     }
     const gatewaySecretEnvironment = await this.deliverGatewaySecrets(
@@ -11938,6 +11950,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   /** The Agent transport token the Agent Gateway presents to its provider-owned Harness. */
+  private async sandboxTransportTokenText(revision: AgentRevision): Promise<string> {
+    return (await this.sandboxTransportToken(revision)).toString("utf8");
+  }
+
   private async sandboxTransportToken(revision: AgentRevision): Promise<Buffer> {
     const runtime = this.options.runtime;
     if (runtime === undefined) {

@@ -16,12 +16,12 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   getServiceDocument,
   serviceWebSocketHandshake,
   type OpenShellServiceDocument,
 } from "./openshell-service-transport.ts";
-import { fileURLToPath } from "node:url";
 import type { Client, ClientUnaryCall, Metadata, ServiceClientConstructor } from "@grpc/grpc-js";
 import type { PackageDefinition } from "@grpc/proto-loader";
 
@@ -782,15 +782,21 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     return serviceWebSocketHandshake(this.serviceTransportOptions(), serviceUrl, bearer, signal);
   }
 
+  private serviceRootCertificate: Buffer | undefined;
+
   private serviceTransportOptions() {
-    // Validates the endpoint exactly as the gRPC channel does.
+    // Validates the endpoint exactly as the gRPC channel does, and like it reads the
+    // root certificate once.
     normalizeEndpoint(this.options.endpoint);
+    if (this.options.rootCertificatePath !== undefined) {
+      this.serviceRootCertificate ??= readFileSync(this.options.rootCertificatePath);
+    }
     return {
       endpoint: this.options.endpoint,
       requestTimeoutMs: this.requestTimeoutMs,
-      ...(this.options.rootCertificatePath === undefined
+      ...(this.serviceRootCertificate === undefined
         ? {}
-        : { rootCertificatePath: this.options.rootCertificatePath }),
+        : { rootCertificate: this.serviceRootCertificate }),
     };
   }
 

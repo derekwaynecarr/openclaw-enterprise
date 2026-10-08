@@ -1,6 +1,5 @@
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { Socket } from "node:net";
@@ -15,7 +14,7 @@ export interface OpenShellServiceDocument {
 
 interface ServiceTransportOptions {
   readonly endpoint: string;
-  readonly rootCertificatePath?: string;
+  readonly rootCertificate?: Buffer;
   readonly requestTimeoutMs: number;
 }
 
@@ -108,9 +107,7 @@ function send(
       ...(target.secure
         ? {
             servername: /^[\d.:]+$/.test(target.hostname) ? undefined : target.hostname,
-            ...(options.rootCertificatePath === undefined
-              ? {}
-              : { ca: readFileSync(options.rootCertificatePath) }),
+            ...(options.rootCertificate === undefined ? {} : { ca: options.rootCertificate }),
           }
         : {}),
     });

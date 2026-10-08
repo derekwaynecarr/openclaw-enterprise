@@ -342,6 +342,10 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     response.end(body);
   });
+  // Keep holding the failure even if it cannot be served; Compute then times out.
+  server.on("error", (error) => {
+    console.error("Held runtime failure server failed: " + (error?.code ?? "unknown"));
+  });
   server.listen(port, "0.0.0.0");
 }
 

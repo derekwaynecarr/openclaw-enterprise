@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-08
-last_updated_session: authoring-run/e7514e5d-462e-47a5-ba73-2da7206577bf
+updated: 2026-10-05
+last_updated_session: authoring-run/4f3e6ccd-a967-48c8-9d5d-f29a6d338d7d
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -325,24 +325,16 @@ For bound sources
 Compute calls `attachmentStatus`, which reads
 `GetSandboxProviderStatus`. `pending` or a missing status retries; `failed`,
 `withheld`, `revoked`, or `absent` fails the revision; only `ready` for every
-attachment completes preparation.
-
-A Ready supervisor Pod does not prove Codex started, so Compute finally requires
-`harnessStatus`: an authenticated WebSocket handshake through the exposure. A
-Codex wrapper holding a startup failure, such as a failed model probe, instead
-serves it on the app-server port to the transport-token holder. The worker fails
-the deployment with that code, such as `RUNTIME_MODEL_PROBE_FAILED`; the
-predecessor keeps serving.
-
-On revision
+attachment completes preparation. On revision
 shutdown, `shutdownRevisionRuntime` calls `cleanup` with the revision. The
 Gateway client sends `DeleteSandbox` with the same `workspace_scope`; a missing
 Sandbox is an idempotent success. Codex cleanup then verifies and deletes the
 revision provider. Namespace cleanup removes the shared profile after its
 runtime providers are gone.
 
-Namespace deletion runs `cleanup` without a revision after revision resources
-are gone. OpenShell verifies exact Workspace
+The current unified `cleanup` contract receives the immutable revision during
+revision shutdown and no revision during Namespace deletion. Namespace deletion
+runs it after revision resources are gone. OpenShell verifies exact Workspace
 ownership, deletes remaining owned runtime providers and the shared profile,
 sends idempotent `DeleteWorkspace`, and then removes configured workspace-chart
 resources and NetworkPolicies in reverse order. A terminating Workspace remains
@@ -373,6 +365,10 @@ networking. Native OpenClaw remains a separate verification-only path.
 
 ## Changelog
 
-- 2026-10-08 13:48: Gated provider-owned Codex readiness on a Harness handshake and its held startup failure. (authoring-run/e7514e5d-462e-47a5-ba73-2da7206577bf - 1c22e0c5153c4f89cc7349a1965c41361f75ef31)
+- 2026-10-05 16:17: Documented version-fenced workspace-node setup renewal through the revision provider and supervisor refresh. (authoring-run/4f3e6ccd-a967-48c8-9d5d-f29a6d338d7d - fd9a082e2587432bde6282748a82e3025a64fd1a)
+
+- 2026-10-05 12:50: Removed repeated setup and wire-contract detail while preserving the current OpenShell provisioning sequence and moved older entries to the history page. (authoring-run/fd7f6cdb-1d1d-40d5-8d4a-d6d80cd946e7 - 4b5afe0cb653f7dd99fccdb2e3432cbf60e6a03e)
+
+- 2026-10-02 16:26: Passed OpenShell's provider-local workspace root to the dedicated Gateway while preserving the canonical Kubernetes Harness root. (authoring-run/3bf937d5-c422-419e-af2d-754abe024ca4 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

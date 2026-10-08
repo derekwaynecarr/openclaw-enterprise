@@ -51,7 +51,8 @@ drivers:
 inside the Harness image. OpenShell releases a credential only to requests made
 by those binaries. Use the exact native Codex executable, not a wrapper script.
 A stale path fails the Codex startup model probe: the deployment fails with
-`RUNTIME_MODEL_PROBE_FAILED` and the active revision keeps serving.
+`RUNTIME_MODEL_PROBE_FAILED`, or `RUNTIME_AUTHENTICATION_FAILED` when the provider
+rejects the missing credential, and the active revision keeps serving.
 
 `toolBinaries` is optional: a nonempty list of absolute paths inside the Sandbox
 image that may carry [tool sources](../credential-sources.md#bind-a-source-to-an-agent)

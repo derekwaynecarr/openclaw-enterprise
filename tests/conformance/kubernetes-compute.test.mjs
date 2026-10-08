@@ -7815,7 +7815,6 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
 function providerReadinessFixture({
   provisionHarness,
   harnessEndpoint,
-  harnessStatus,
   lifecycleDrivers = [],
   nodeEnrollment,
 } = {}) {
@@ -7860,7 +7859,6 @@ function providerReadinessFixture({
           assert.fail("activation must only observe the previously provisioned Harness");
         },
         ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
-        ...(harnessStatus === undefined ? {} : { harnessStatus }),
       },
     },
   );
@@ -7982,6 +7980,8 @@ function providerReadinessFixture({
     labels,
     requests,
     core,
+    // The Sandbox Driver Compute holds, so a test can add an optional method later.
+    sandbox: driver.sandboxDriver,
     pod(name, ready = "True") {
       return {
         apiVersion: "v1",
@@ -8218,13 +8218,7 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   const setupRequests = [];
   const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
   const providerWorkspaceRoot = "/sandbox/enterprise";
-  const harnessObservations = [];
-  let harnessAnswer = { state: "serving" };
   const fixture = providerReadinessFixture({
-    async harnessStatus(context) {
-      harnessObservations.push(context);
-      return harnessAnswer;
-    },
     async provisionHarness(context) {
       // The provider fences Harness egress; a Compute auth grant would be unioned with it.
       assert.equal(
@@ -8649,16 +8643,22 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   // D546: a Ready provider Pod proves only its supervisor. The Harness transport must
   // answer, and a held startup failure (a failed Codex model probe) fails the revision
   // with the evidence the worker turns into RUNTIME_MODEL_PROBE_FAILED.
-  assert.ok(harnessObservations.length > 0);
-  const observation = harnessObservations.at(-1);
-  assert.equal(observation.transportToken, "test-transport");
-  assert.equal(observation.revision, revision);
-  assert.deepEqual(observation.requirements.labels, fixture.labels);
+  const harnessObservations = [];
+  let harnessAnswer = { state: "serving" };
+  fixture.sandbox.harnessStatus = async (context) => {
+    harnessObservations.push(context);
+    return harnessAnswer;
+  };
   fixture.setObservation({ items: [fixture.pod("ready")] });
   assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
     ...expected,
     ready: true,
   });
+  assert.equal(harnessObservations.length, 1);
+  const observation = harnessObservations[0];
+  assert.equal(observation.transportToken, "test-transport");
+  assert.equal(observation.revision, revision);
+  assert.deepEqual(observation.requirements.labels, fixture.labels);
   harnessAnswer = { state: "starting" };
   assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
     ...expected,
@@ -8711,6 +8711,20 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     ready: false,
   });
   assert.equal(harnessObservations.length, observedBefore);
+  // Activation re-observes the Harness: one that stopped serving is not activated.
+  fixture.setObservation({ items: [fixture.pod("ready")] });
+  for (const answer of [{ state: "starting" }, { state: "failed", runtimeFailure: heldFailure }]) {
+    harnessAnswer = answer;
+    await assert.rejects(
+      driver.activateRevision(revision, authContext(revision)),
+      /The exact AgentRevision workload is not ready/,
+    );
+  }
+  harnessAnswer = { state: "serving" };
+  const observedBeforeActivation = harnessObservations.length;
+  await driver.activateRevision(revision, authContext(revision));
+  assert.equal(harnessObservations.length, observedBeforeActivation + 1);
+  assert.equal(harnessObservations.at(-1).transportToken, "test-transport");
 });
 
 test("provider Harness readiness preserves API errors and owner cancellation", async () => {

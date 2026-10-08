@@ -1707,6 +1707,18 @@ function createIntegrationSandboxDriverFactory(
                 context,
               ).harnessEndpoint(context);
             },
+            // Compute activates only a Harness that completes the authenticated handshake.
+            async harnessStatus(context) {
+              const endpoint = await endpointForNamespace(context, {
+                sandboxServiceAccountName: agentSandboxServiceAccount(context),
+              });
+              return await delegate(
+                context.requirements,
+                context.namespace.name,
+                endpoint,
+                context,
+              ).harnessStatus(context);
+            },
           }),
       async cleanup(context) {
         if (context.revision === undefined) {

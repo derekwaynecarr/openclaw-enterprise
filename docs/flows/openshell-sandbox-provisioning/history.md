@@ -8,9 +8,6 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
-- 2026-10-05 16:17: Documented version-fenced workspace-node setup renewal through the revision provider and supervisor refresh. (authoring-run/4f3e6ccd-a967-48c8-9d5d-f29a6d338d7d - fd9a082e2587432bde6282748a82e3025a64fd1a)
-- 2026-10-05 12:50: Removed repeated setup and wire-contract detail while preserving the current OpenShell provisioning sequence and moved older entries to the history page. (authoring-run/fd7f6cdb-1d1d-40d5-8d4a-d6d80cd946e7 - 4b5afe0cb653f7dd99fccdb2e3432cbf60e6a03e)
-- 2026-10-02 16:26: Passed OpenShell's provider-local workspace root to the dedicated Gateway while preserving the canonical Kubernetes Harness root. (authoring-run/3bf937d5-c422-419e-af2d-754abe024ca4 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 - 2026-10-02 15:28: Put the short-lived workspace-node bootstrap token in the development provider file and removed WebSocket credential rewriting so the signed device proof covers the token received by the Gateway. (authoring-run/a0516064-6f8a-4e9f-8237-df9bedcec479 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 - 2026-10-02 13:35: Routed same-cluster OpenShell workspace-node enrollment to the Agent Gateway Service and applied the exact route to the supervisor Pod that originates proxy traffic; enrollment waits for the provider-endpoint Gateway rollout, and other Sandbox Drivers retain private WSS. (authoring-run/a0516064-6f8a-4e9f-8237-df9bedcec479 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 - 2026-10-02 13:23: Made workspace-node retries unbounded by retaining split setup after OpenShell removes its startup projection and scheduling each next launch when the child exits. (authoring-run/a0516064-6f8a-4e9f-8237-df9bedcec479 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
