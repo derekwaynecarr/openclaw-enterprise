@@ -19,30 +19,32 @@ export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture"
 // stop, delete or withdrawal. Records each Agent lock taken first, with its stack.
 function checkClaimLockOrder(worker, violations) {
   const transactWithQueue = worker.state.transactWithQueue.bind(worker.state);
-  worker.state.transactWithQueue = (work, ...options) =>
-    transactWithQueue((unit, queue) => {
-      const locked = new Set();
-      const namespaces = {
-        ...unit.namespaces,
-        lockNamespace: async (namespaceId, ...rest) => {
-          const namespace = await unit.namespaces.lockNamespace(namespaceId, ...rest);
-          if (namespace !== undefined) {
-            locked.add(namespaceId);
-          }
-          return namespace;
-        },
-      };
-      const agents = {
-        ...unit.agents,
-        lockAgent: (namespaceId, ...rest) => {
-          if (!locked.has(namespaceId)) {
-            violations.push(new Error("Agent locked before its Namespace").stack);
-          }
-          return unit.agents.lockAgent(namespaceId, ...rest);
-        },
-      };
-      return work(Object.freeze({ ...unit, namespaces, agents }), queue);
-    }, ...options);
+  worker.state.transactWithQueue = (work, options) =>
+    transactWithQueue((unit, queue) => work(trackLockOrder(unit, violations), queue), options);
+}
+
+function trackLockOrder(unit, violations) {
+  const locked = new Set();
+  const namespaces = {
+    ...unit.namespaces,
+    lockNamespace: async (namespaceId, ...rest) => {
+      const namespace = await unit.namespaces.lockNamespace(namespaceId, ...rest);
+      if (namespace !== undefined) {
+        locked.add(namespaceId);
+      }
+      return namespace;
+    },
+  };
+  const agents = {
+    ...unit.agents,
+    lockAgent: (namespaceId, ...rest) => {
+      if (!locked.has(namespaceId)) {
+        violations.push(new Error("Agent locked before its Namespace").stack);
+      }
+      return unit.agents.lockAgent(namespaceId, ...rest);
+    },
+  };
+  return Object.freeze({ ...unit, namespaces, agents });
 }
 
 // One template per owning test file; importing this helper registers no tests or hooks.
