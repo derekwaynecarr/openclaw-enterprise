@@ -2334,4 +2334,23 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     }),
     /only for dedicated Codex revisions/,
   );
+  // Another Sandbox Driver's revision, or a deferred managed Workspace, is refused before the
+  // Harness is observed.
+  observed.length = 0;
+  await assert.rejects(
+    driver.harnessStatus({ ...statusContext, revision: { ...revision, sandboxDriverId: "other" } }),
+    /another Sandbox Driver/,
+  );
+  const managedConfiguration = sandboxInstallation().drivers.sandbox.configuration;
+  managedConfiguration.gateway.workspaceMode = "managed";
+  const managed = new OpenShellSandboxDriver(managedConfiguration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  await assert.rejects(
+    managed.harnessStatus(statusContext),
+    /managed workspace mode is not implemented; cannot observe a Harness/,
+  );
+  assert.deepEqual(observed, []);
 });
