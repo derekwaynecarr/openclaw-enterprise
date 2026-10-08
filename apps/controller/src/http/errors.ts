@@ -11,6 +11,7 @@ import {
   ChannelCredentialError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceDriverError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
   IAMAccessBindingRoleError,
@@ -722,6 +723,10 @@ export function requestFailure(error: unknown): RequestFailure {
   }
   if (error instanceof SecretDriverOwnershipError) {
     // A fixed message naming the path's fix; raised only after the Secret's grant and lookup.
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+  }
+  if (error instanceof CredentialSourceDriverError) {
+    // A fixed message naming the fix; raised only after the source's grant and lookup.
     return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
   }
   if (isDependencyUnavailable(error)) {

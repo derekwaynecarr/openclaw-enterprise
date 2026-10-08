@@ -48,6 +48,7 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   SandboxRevisionUnsupportedError,
+  CredentialSourceRevisionError,
   TransientDependencyError,
   WorkClaimLostError,
   CREDENTIAL_WITHDRAWAL_TARGET,
@@ -3057,6 +3058,7 @@ export class ControllerWorker {
       if (
         error instanceof RepositoryCredentialAuthorityError ||
         error instanceof SandboxRevisionUnsupportedError ||
+        error instanceof CredentialSourceRevisionError ||
         error instanceof ActivationFailedError
       ) {
         result = { outcome: "permanent", code: error.code };
