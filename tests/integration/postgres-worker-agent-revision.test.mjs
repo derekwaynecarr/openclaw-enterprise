@@ -3323,6 +3323,111 @@ revisionTest(
 );
 
 revisionTest(
+  "a withdrawal reaches a deployment admitted before it, which activates without the source",
+  async (fixture) => {
+    const owner = await fixture.agent("withdraw-successor", {
+      auth: "credential_source",
+      nonModelSources: 1,
+    });
+    const first = await fixture.revision(owner, 1);
+    const [tool] = toolSources(owner).map(({ sourceId }) => sourceId);
+    const dispatched = [];
+    const withdrawn = [];
+    const compute = {
+      ...fixture.compute,
+      async prepareRevision(revision, revisionContext) {
+        if (revision.namespaceId === fixture.namespace.id) {
+          dispatched.push([revision.id, (revisionContext?.credentialSources ?? []).map(({ id }) => id)]);
+        }
+        return fixture.compute.prepareRevision(revision, revisionContext);
+      },
+      async withdrawCredentialSource(revision, source) {
+        withdrawn.push([revision.id, source.id]);
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+
+    // The next deployment was admitted with the source; the withdrawal arrives before it runs.
+    const second = await fixture.revision(owner, 2);
+    const request = {
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      credentialSourceId: tool,
+    };
+    const requested = await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      request,
+    );
+    assert.equal(requested.revisionId, first.id);
+    const recorded = () =>
+      fixture.state.read((view) =>
+        Promise.all(
+          [first, second].map((revision) =>
+            view.credentialSources.findCredentialWithdrawal(
+              fixture.namespace.id,
+              revision.id,
+              tool,
+            ),
+          ),
+        ),
+      );
+    assert.deepEqual(
+      (await recorded()).map((withdrawal) => withdrawal?.state),
+      ["pending", "pending"],
+    );
+
+    await fixture.start(compute, { transformDrivers: withCredentialGateway });
+    await fixture.work(second, "succeeded", 30_000);
+    await waitFor(
+      "both withdrawals to be revoked",
+      async () => {
+        const found = await recorded();
+        return found.every((withdrawal) => withdrawal?.state === "revoked") ? found : undefined;
+      },
+      30_000,
+    );
+    await fixture.stop();
+
+    // The successor was prepared without the source and is now the active revision.
+    assert.deepEqual(
+      dispatched.filter(([revisionId]) => revisionId === first.id),
+      [[first.id, [tool]]],
+    );
+    const successorDispatches = dispatched.filter(([revisionId]) => revisionId === second.id);
+    assert.ok(successorDispatches.length > 0);
+    assert.ok(successorDispatches.every(([, sources]) => !sources.includes(tool)));
+    assert.deepEqual(
+      [...withdrawn].sort(),
+      [
+        [first.id, tool],
+        [second.id, tool],
+      ].sort(),
+    );
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, second.id);
+    // The read follows the active revision to its own withdrawal instead of answering 404.
+    const read = await fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
+    assert.equal(read.revisionId, second.id);
+    assert.equal(read.state, "revoked");
+    const audit = await fixture.observerPool.query(
+      `SELECT outcome, details->>'revisionId' AS revision_id
+       FROM occ.audit_events
+       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.credentials_withdraw'
+       ORDER BY details->>'revisionId'`,
+      [fixture.namespace.id],
+    );
+    assert.deepEqual(
+      audit.rows,
+      [first.id, second.id]
+        .sort()
+        .map((revisionId) => ({ outcome: "success", revision_id: revisionId })),
+    );
+  },
+);
+
+revisionTest(
   "a withdrawal whose requester lost Agent operate fails once with a denial, and another operator's replay completes it",
   async (fixture) => {
     const { owner, candidate: active } = await fixture.admitInitialRevision("withdraw-denied", {
