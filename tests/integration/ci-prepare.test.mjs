@@ -64,12 +64,14 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
   rmdirSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -281,6 +283,15 @@ if (command === "docker" || command === "podman") {
     ? ["image", "save", state.tag]
     : ["image", "save", "--platform", "linux/amd64", state.tag];
   if (equals(args, expectedSave)) {
+    if (scenario === "save-failed-late-exit") {
+      // The truncated stream ends before the export's exit is seen. A busy runner can
+      // observe an ordinary exit that late; closing the output first makes it certain.
+      writeSync(1, "synthetic image");
+      writeSync(2, "synthetic export failure\n");
+      closeSync(1);
+      setTimeout(() => process.exit(23), 1_000);
+      await new Promise(() => {});
+    }
     if (scenario === "save-failed") {
       // A truncated export must fail preparation even if a node accepts it.
       process.stdout.write("synthetic image");
@@ -631,6 +642,7 @@ for (const { scenario, error } of [
   { scenario: "nonzero-import", error: /synthetic import command failure/ },
   { scenario: "nonzero-worker-import", error: /synthetic import command failure/ },
   { scenario: "save-failed", error: /synthetic export failure/ },
+  { scenario: "save-failed-late-exit", error: /synthetic export failure/ },
 ]) {
   test(`fixture image CLI verifies runtime registration and cleanup: ${scenario}`, async (t) => {
     const commands = await fixtureImageCommands(
@@ -645,7 +657,8 @@ for (const { scenario, error } of [
 
     if (error) {
       assert.equal(result.status, 1, "preparation must reject an unusable imported fixture");
-      assert.match(result.stderr, error);
+      // The default message keeps only the start of stderr, before the cause.
+      assert.match(result.stderr, error, `stderr ended with:\n${result.stderr.slice(-1_500)}`);
       assert.equal(state.env, undefined);
       await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
     } else {
