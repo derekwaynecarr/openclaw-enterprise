@@ -2,6 +2,7 @@ import { Type } from "typebox";
 
 import {
   AgentId,
+  AgentProvisioningWorkId,
   PresetId,
   PresetTemplateSchema,
   ConfigurationGeneration,
@@ -15,6 +16,7 @@ import {
   CredentialSourceType,
   HarnessExecutionModeSchema,
   HarnessAuthBindingSchema,
+  AgentCredentialSourcesSchema,
   InstallationId,
   KubernetesNamespaceName,
   Meta,
@@ -311,6 +313,7 @@ export const AgentSchema = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Union([BackendId, Type.Null()]),
     harnessAuth: Type.Union([HarnessAuthBindingSchema, Type.Null()]),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -333,6 +336,7 @@ const ConfigurationReadErrorSchema = Type.Object(
       Type.Literal("repositoryBindings"),
       Type.Literal("repositoryAccess"),
       Type.Literal("harnessAuth"),
+      Type.Literal("credentialSources"),
       Type.Literal("secretBindings"),
       Type.Literal("repositoryCredentials"),
       Type.Literal("configuration"),
@@ -342,7 +346,7 @@ const ConfigurationReadErrorSchema = Type.Object(
 );
 
 const agentReadDescription =
-  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, and harnessAuth.";
+  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.";
 
 export const AgentReadSchema = Type.Union(
   [
@@ -355,6 +359,7 @@ export const AgentReadSchema = Type.Union(
           "repositoryBindings",
           "repositoryAccess",
           "harnessAuth",
+          "credentialSources",
         ]).properties,
         configurationReadError: ConfigurationReadErrorSchema,
       },
@@ -445,6 +450,54 @@ export const SecretSchema = Type.Object(
     namespaceId: NamespaceId,
     name: Name,
     ref: SecretReference,
+  },
+  { additionalProperties: false },
+);
+
+/** Mirrors `SECRET_CONSUMER_LIMIT` in OCC: the most references one read examines. */
+const SECRET_CONSUMER_LIMIT = 50;
+
+export const SecretConsumersSchema = Type.Object(
+  {
+    agents: Type.Array(AgentId, {
+      maxItems: SECRET_CONSUMER_LIMIT,
+      description:
+        "Readable Agents whose draft, active revision, or pending deployment references the Secret. Each needs a new deployment to receive a rotated value.",
+    }),
+    configurations: Type.Array(ConfigurationId, {
+      maxItems: SECRET_CONSUMER_LIMIT,
+      description: "Readable Configurations whose `secretBindings` reference the Secret.",
+    }),
+    credentialSources: Type.Array(CredentialSourceId, {
+      maxItems: SECRET_CONSUMER_LIMIT,
+      description: "Readable credential sources that hold the Secret.",
+    }),
+    provisioningRequests: Type.Array(AgentProvisioningWorkId, {
+      maxItems: SECRET_CONSUMER_LIMIT,
+      description:
+        "Work IDs of queued or running Agent provisioning requests that reference the Secret, listed only for the actor that started them.",
+    }),
+    unreadable: Type.Integer({
+      minimum: 0,
+      maximum: SECRET_CONSUMER_LIMIT,
+      description:
+        "Examined references to resources the caller may not read. They are counted, never named.",
+    }),
+    truncated: Type.Boolean({
+      description: `\`true\` when the Secret has more than ${SECRET_CONSUMER_LIMIT} references; only the first ${SECRET_CONSUMER_LIMIT}, ordered by kind and ID, are examined.`,
+    }),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Current references that block deletion of the Secret. Returned by the exact Secret read only.",
+  },
+);
+
+export const SecretDetailSchema = Type.Object(
+  {
+    ...SecretSchema.properties,
+    consumers: SecretConsumersSchema,
   },
   { additionalProperties: false },
 );
@@ -702,6 +755,11 @@ export const SecretResponse = Type.Object(
   },
 );
 
+export const SecretDetailResponse = Type.Object(
+  { data: SecretDetailSchema, meta: Meta },
+  { additionalProperties: false },
+);
+
 export const CredentialSourceResponse = Type.Object(
   { data: CredentialSourceSchema, meta: Meta },
   {
@@ -916,6 +974,7 @@ export const AgentRevisionSchema = Type.Object(
     ),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     harnessAuth: HarnessAuthBindingSchema,
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     repositoryCredentials: Type.Optional(RepositoryRevisionStateSchema),
     createdAt: Timestamp,
   },
@@ -1407,6 +1466,7 @@ export type NamespaceResponse = Type.Static<typeof NamespaceResponse>;
 export type NamespaceListResponse = Type.Static<typeof NamespaceListResponse>;
 export type ConfigurationResponse = Type.Static<typeof ConfigurationResponse>;
 export type SecretResponse = Type.Static<typeof SecretResponse>;
+export type SecretDetailResponse = Type.Static<typeof SecretDetailResponse>;
 export type CredentialSourceWire = Type.Static<typeof CredentialSourceSchema>;
 export type CredentialSourceResponse = Type.Static<typeof CredentialSourceResponse>;
 export type CredentialSourceListResponse = Type.Static<typeof CredentialSourceListResponse>;

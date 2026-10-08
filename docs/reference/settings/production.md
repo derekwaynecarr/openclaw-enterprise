@@ -37,15 +37,12 @@ session cookie before forwarding to the native gateway.
 | `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.              |
 | `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for a private gateway CA.                                                                      | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do. |
 
-For the Helm deployment, prefer `slackProxy.enabled`. The chart then passes the
-managed Service URL and its matching host only to the API Pod and grants API
-egress only to the proxy Pods. For an external proxy, set
-`api.channelDirectoryProxyUrl` to the approved proxy IP and port; the chart grants
-egress only to that exact IPv4 `/32` and TCP port. The proxy must allow CONNECT to
-`slack.com:443`; restrict its other destinations at the proxy. When neither
-setting is used, the chart renders no proxy egress rule, and Slack lookup and
-credential validation require another approved network route. See the
-[Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production).
+For Helm, prefer `slackProxy.enabled` over an external
+`api.channelDirectoryProxyUrl`; the
+[Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production)
+owns both options' API-only proxy egress and the proxy's `slack.com:443`
+requirement. With neither, the chart renders no proxy egress rule, and Slack
+lookup and credential validation require another approved network route.
 
 `OCC_AGENT_RUNTIME_LOGS_ENABLED` (`true` or `false`, default `true`) switches the
 [Agent logs](../../guides/topics/agent-logs.md) routes; `false` makes them answer
@@ -64,10 +61,9 @@ For changes to startup `logging.level`, follow the
 
 The API and worker load the same trusted startup YAML; only the API initializes
 the optional [Backend client](../backends.md). Both validate Backend membership
-and stored ownership before accepting work. When the bundled Kubernetes Compute
-Driver is selected, its `drivers.compute.configuration` section contains the
-`KubernetesComputeDriverOptions` shape described in the
-[Kubernetes Compute Driver guide](../drivers/kubernetes-compute.md#configuration).
+and stored ownership before accepting work. With the bundled Kubernetes Compute
+Driver, `drivers.compute.configuration` holds the
+[`KubernetesComputeDriverOptions` shape](../drivers/kubernetes-compute.md#configuration).
 Production use of that Driver requires `images.requireImmutableDigest: true`,
 digest-pinned gateway and Agent image references, and exactly one in-cluster
 identity or explicitly named kubeconfig/context. The processes then verify
@@ -79,18 +75,16 @@ Agent workspace-file requests use the selected Compute Driver's private gateway
 endpoint. Kubernetes derives the URL from the optional `gatewayRouting.hostname`
 and the admitted Namespace and Agent IDs. If the hostname is omitted or empty,
 Compute derives the chart's Service DNS hostname from the required `gatewayName`,
-`gatewayNamespace`, and `envoyNamespace`; see the
-[hostname contract](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes).
-`gatewayName` and `gatewayNamespace` identify the route's parent Gateway;
-`envoyNamespace` selects its data-plane namespace.
-Compute derives the allowed Envoy peer from those routing settings and rejects
-explicit `network.gatewayClients` in routed mode. It does not read a per-Agent
-endpoint file or persist a URL in Agent Configuration.
+`gatewayNamespace`, and `envoyNamespace`. It derives the allowed Envoy peer from
+those settings and rejects explicit `network.gatewayClients` in routed mode. It
+does not read a per-Agent endpoint file or persist a URL in Agent Configuration.
+See [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
+for the hostname contract and each setting's role.
 
-`OCC_GATEWAY_API_KEY_PATH` mounts a dedicated, high-entropy Envoy service key into
-the API only. Missing or invalid configured key files fail startup; a file that
-becomes unavailable during rotation makes new requests unavailable. Never reuse
-the Better Auth signing secret or a model-provider credential. The worker needs
+`OCC_GATEWAY_API_KEY_PATH` mounts a dedicated, high-entropy Envoy service key;
+never reuse the Better Auth signing secret or a model-provider credential.
+Missing or invalid key files fail startup; a file that becomes unavailable
+during rotation makes new requests unavailable. The worker needs
 route configuration and namespace-bound HTTPRoute permissions, but no service
 key or CA bundle for native file access.
 
@@ -101,17 +95,14 @@ the generated root Secret's public `tls.crt` into the API and sets
 issuer selects operator-managed issuance instead. Its optional `caSecretName`
 and `caSecretKey` must be supplied together when additional CA trust is needed.
 
-See [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
-for the Compute contract, and the
-[deployment procedure](../../guides/deploy/workspace-routing.md#agent-workspace-files) for Envoy,
-cert-manager, native trusted-proxy configuration, and key/certificate rotation.
+See the [deployment procedure](../../guides/deploy/workspace-routing.md#agent-workspace-files)
+for Envoy, cert-manager, native trusted-proxy configuration, and key/certificate rotation.
 Kubernetes gateway authentication is always trusted-proxy; private routing
 still requires the Installation, Helm, and service-key settings above. Unsupported Drivers and unavailable endpoints return
 `503 DEPENDENCY_UNAVAILABLE`.
 
-Missing, invalid, expired, or revoked sessions or service keys return `401`; an
-authenticated Principal or ServicePrincipal without the exact existing IAM grant
-receives `403`. Neither credential grants rights without IAM. See
+Sessions and service keys grant no rights without IAM; see
+[denials](../authorization.md#denials-and-failures) for `401` and `403`,
 [Authentication](../authentication/service-api-keys.md#service-api-keys) for service-key issuance,
 scope, and revocation, and the [deployment guide](../../guides/deploy/service-keys.md#service-api-keys-for-automation)
 for the procedure. Normal issuance and verification require no additional
