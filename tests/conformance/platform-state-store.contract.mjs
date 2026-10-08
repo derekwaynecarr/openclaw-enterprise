@@ -2188,6 +2188,24 @@ async function verifyCredentialSourceContract(
       ),
       { ...withdrawal, requestedBy: "principal-platform-state-replay" },
     );
+    // The worker reads the stored requester, so the reassignment must persist.
+    assert.deepEqual(
+      await transaction.credentialSources.listCredentialWithdrawals(
+        sourceNamespace.id,
+        sourceRevision.id,
+      ),
+      [{ ...withdrawal, requestedBy: "principal-platform-state-replay" }],
+    );
+    // A blank requester is refused; the worker would have no principal to authorize.
+    await assert.rejects(
+      transaction.credentialSources.reassignCredentialWithdrawal(
+        sourceNamespace.id,
+        sourceRevision.id,
+        source.id,
+        "",
+      ),
+      { name: "ScopeViolationError", message: "A credential withdrawal requester is missing." },
+    );
     assert.deepEqual(
       await transaction.credentialSources.reassignCredentialWithdrawal(
         sourceNamespace.id,
