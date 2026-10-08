@@ -499,18 +499,10 @@ capabilities:
 {{- default "git" .Values.repositoryCredentials.serviceName -}}
 {{- end -}}
 
-{{/* Quantity.UnmarshalJSON strips a JSON string's quotes and trims that raw text before ParseQuantity.
-     It does not unescape, so a tab or newline in the rendered value stays rejected.
-     A missing numerator is zero on the fast path, so m, +, ., and .e-9 are quantities.
-     A digitless exponent uses the int32 scale: below nano (-9) the decimal path rejects it, so .e-10 fails.
-     Bare Pi and Ei leave that numeric token empty and are rejected; a digit before them is kept.
-     An exponent is strconv.ParseInt base 10 bitSize 64: 1e9223372036854775807 is kept and
-     1e9223372036854775808 is rejected.
-     Decimal suffixes are case-sensitive (k and E, not K). Binary suffixes use a lowercase i (Ki, not KI). */}}
+{{/* Reject obvious quantity syntax errors; Kubernetes owns full quantity validation.
+     Preserve its JSON-text whitespace handling without emulating exponent bounds or numeric parsing. */}}
 {{- define "openclaw.quantity" -}}
 {{- $pattern := "^[+-]?([0-9]*(\\.[0-9]*)?)?(([KMGT]i)|[numkMGTPE]|([eE][+-]?[0-9]+))?$|^[+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)[PE]i$" -}}
-{{- $positiveExponent := "^([1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$" -}}
-{{- $negativeExponent := "^([1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-7]|9223372036854775808)$" -}}
 {{- $encoded := toJson (toString .value) -}}
 {{- $quantity := $encoded -}}
 {{- if ge (len $encoded) 2 -}}
@@ -519,47 +511,7 @@ capabilities:
 {{- $quantity = trim (substr 1 $last $encoded) -}}
 {{- end -}}
 {{- end -}}
-{{- $exponent := "" -}}
-{{- if ne $quantity "" -}}
-{{- $exponent = regexFind "[eE][+-]?[0-9]+$" $quantity -}}
-{{- end -}}
-{{- $withinRange := true -}}
-{{- if ne $exponent "" -}}
-{{- $significant := regexReplaceAll "^0+" (regexReplaceAll "^[eE][+-]?" $exponent "") "" -}}
-{{- if ne $significant "" -}}
-{{- $bound := $positiveExponent -}}
-{{- if regexMatch "^[eE]-" $exponent -}}
-{{- $bound = $negativeExponent -}}
-{{- end -}}
-{{- if or (gt (len $significant) 19) (and (eq (len $significant) 19) (not (regexMatch $bound $significant))) -}}
-{{- $withinRange = false -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- $digitlessFallback := false -}}
-{{- if and (ne $quantity "") $withinRange (regexMatch "^[+-]?\\.?[eE][+-]?[0-9]+$" $quantity) -}}
-{{- $expBody := regexReplaceAll "^[+-]?\\.?[eE]" $quantity "" -}}
-{{- $negative := regexMatch "^-" $expBody -}}
-{{- $digits := regexReplaceAll "^0+" (regexReplaceAll "^[+-]" $expBody "") "" -}}
-{{- if ne $digits "" -}}
-{{- $acc := 0 -}}
-{{- range $i := until (len $digits) -}}
-{{- $at := int $i -}}
-{{- $acc = int (mod (add (mul $acc 10) (atoi (substr $at (int (add $at 1)) $digits))) 4294967296) -}}
-{{- end -}}
-{{- $signed := int $acc -}}
-{{- if and $negative (ne (int $acc) 0) -}}
-{{- $signed = int (sub 4294967296 $acc) -}}
-{{- end -}}
-{{- if ge (int $signed) 2147483648 -}}
-{{- $signed = int (sub $signed 4294967296) -}}
-{{- end -}}
-{{- if lt (int $signed) -9 -}}
-{{- $digitlessFallback = true -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- if or (eq $quantity "") (not (regexMatch $pattern $quantity)) (not $withinRange) $digitlessFallback -}}
+{{- if or (eq $quantity "") (not (regexMatch $pattern $quantity)) -}}
 {{- fail (printf "%s must be a Kubernetes quantity" .name) -}}
 {{- end -}}
 {{- end -}}

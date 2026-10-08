@@ -3501,7 +3501,7 @@ test(
   },
 );
 
-test("Helm rejects Kubernetes quantities the API cannot parse", tooling, async () => {
+test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
   const collector = {
     "logging.collector.enabled": "true",
     "logging.collector.image":
@@ -3510,25 +3510,41 @@ test("Helm rejects Kubernetes quantities the API cannot parse", tooling, async (
     "logging.collector.envSecretName": "occ-otel-collector-exporter",
     "logging.collector.exporter.cidr": "203.0.113.10/32",
   };
-  await assert.rejects(
-    render({ ...collector, "logging.collector.state.sizeLimit": "foo" }),
-    /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
-  );
-  await assert.rejects(
-    render({ ...collector, "logging.collector.tmp.sizeLimit": "10MiB" }),
-    /logging\.collector\.tmp\.sizeLimit must be a Kubernetes quantity/,
-  );
-  await assert.rejects(
-    render({ "resources.requests.cpu": "foo" }),
-    /resources\.requests\.cpu must be a Kubernetes quantity/,
-  );
-  const rendered = await render(collector);
-  assert.match(rendered.stdout, /sizeLimit: "128Mi"/);
-  assert.match(rendered.stdout, /sizeLimit: "64Mi"/);
-
-  // Decimal E is exa; uppercase K is not a suffix. Exponent and binary forms stay.
   for (const isUpgrade of [false, true]) {
     const options = { isUpgrade };
+    for (const [field, value] of [
+      ["logging.collector.state.sizeLimit", "foo"],
+      ["logging.collector.tmp.sizeLimit", "10MiB"],
+      ["resources.requests.cpu", "foo"],
+      ["logging.collector.resources.limits.memory", "10MiB"],
+    ]) {
+      await assert.rejects(render({ ...collector, [field]: value }, options), (error) => {
+        assert.ok(error.stderr.includes(`${field} must be a Kubernetes quantity`));
+        return true;
+      });
+    }
+    const rendered = await render(collector, options);
+    assert.match(rendered.stdout, /sizeLimit: "128Mi"/);
+    assert.match(rendered.stdout, /sizeLimit: "64Mi"/);
+
+    // Numeric YAML quantities must not be mistaken for missing or non-string values.
+    const numeric = await resources(
+      (
+        await render(
+          { ...collector, "resources.requests.cpu": 0, "resources.limits.cpu": 1 },
+          options,
+        )
+      ).stdout,
+    );
+    const api = numeric.find(
+      (object) =>
+        object.kind === "Deployment" &&
+        object.metadata?.labels?.["app.kubernetes.io/component"] === "api",
+    );
+    assert.equal(api.spec.template.spec.containers[0].resources.requests.cpu, 0);
+    assert.equal(api.spec.template.spec.containers[0].resources.limits.cpu, 1);
+
+    // Decimal E is exa; uppercase K is not a suffix. Exponent and binary forms stay.
     await assert.rejects(
       render({ "resources.requests.memory": "1K" }, options),
       /resources\.requests\.memory must be a Kubernetes quantity/,
@@ -3623,85 +3639,6 @@ test("Helm rejects Kubernetes quantities the API cannot parse", tooling, async (
     );
     assert.match(withDigit.stdout, /memory: 1Pi/);
 
-    // Exponent digits are strconv.ParseInt(..., 10, 64). The signed 64-bit edges still render.
-    await assert.rejects(
-      render({}, { ...options, strings: { "resources.requests.memory": "1e9223372036854775808" } }),
-      /resources\.requests\.memory must be a Kubernetes quantity/,
-    );
-    await assert.rejects(
-      render(collector, {
-        ...options,
-        strings: { "logging.collector.resources.requests.memory": "1e9223372036854775808" },
-      }),
-      /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
-    );
-    await assert.rejects(
-      render(collector, {
-        ...options,
-        strings: { "logging.collector.state.sizeLimit": "1e9223372036854775808" },
-      }),
-      /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
-    );
-    await assert.rejects(
-      render(
-        {},
-        { ...options, strings: { "resources.requests.memory": "1e-9223372036854775809" } },
-      ),
-      /resources\.requests\.memory must be a Kubernetes quantity/,
-    );
-    const bounded = await render(
-      {},
-      {
-        ...options,
-        strings: {
-          "resources.requests.memory": "1e9223372036854775807",
-          "resources.limits.memory": "1e-9223372036854775808",
-        },
-      },
-    );
-    assert.match(bounded.stdout, /memory: 1e9223372036854775807/);
-    assert.match(bounded.stdout, /memory: "1e-9223372036854775808"/);
-
-    // Digitless exponents below nano take ParseQuantity's decimal path. .e-9 stays on the fast path.
-    await assert.rejects(
-      render({}, { ...options, strings: { "resources.requests.memory": ".e-10" } }),
-      /resources\.requests\.memory must be a Kubernetes quantity/,
-    );
-    await assert.rejects(
-      render(collector, {
-        ...options,
-        strings: { "logging.collector.resources.requests.memory": ".e-10" },
-      }),
-      /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
-    );
-    await assert.rejects(
-      render(collector, {
-        ...options,
-        strings: { "logging.collector.state.sizeLimit": ".e-10" },
-      }),
-      /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
-    );
-    const nanoZero = await render(
-      {},
-      { ...options, strings: { "resources.requests.memory": ".e-9" } },
-    );
-    assert.match(nanoZero.stdout, /memory: ["']?\.e-9["']?/);
-    // A digit keeps the decimal path. Int32 truncation of a huge digitless exponent can stay on the fast path.
-    const decimalDigit = await render(
-      {},
-      { ...options, strings: { "resources.requests.memory": ".0e-10" } },
-    );
-    assert.match(decimalDigit.stdout, /memory: ["']?\.0e-10["']?/);
-    const wrappedZero = await render(
-      {},
-      { ...options, strings: { "resources.limits.memory": ".e-9223372036854775808" } },
-    );
-    assert.match(wrappedZero.stdout, /memory: ["']?\.e-9223372036854775808["']?/);
-    await assert.rejects(
-      render({}, { ...options, strings: { "resources.requests.memory": ".e2147483648" } }),
-      /resources\.requests\.memory must be a Kubernetes quantity/,
-    );
-
     // sizeLimit is optional. Null clears the chart default and must stay YAML null on install and upgrade.
     const clearedLimits = await render(
       {
@@ -3787,7 +3724,7 @@ test("Helm rejects Kubernetes quantities the API cannot parse", tooling, async (
     await assert.rejects(
       render(
         { ...collector, resources: "null" },
-        { ...options, strings: { "logging.collector.resources.requests.memory": ".e-10" } },
+        { ...options, strings: { "logging.collector.resources.requests.memory": "foo" } },
       ),
       /logging\.collector\.resources\.requests\.memory must be a Kubernetes quantity/,
     );
