@@ -293,9 +293,10 @@ are rejected rather than applied to the whole app. Unsupported choices fail even
 or the value matches an inherited reviewer. Reviewer does not belong in
 `driverPolicy`.
 
-For explicit Codex reviewers, startup checks effective reviewer settings, session
-approval, and managed model requirements, but not routing after later session or
-model changes. [Native limits](drivers/plugin-bundled.md#native-mappings-and-limits)
+The dedicated Codex app-server starts with the admitted Harness model. For explicit
+Codex reviewers, startup checks that model against managed requirements along with
+effective reviewer settings and session approval. These checks do not cover routing
+after later session or model changes. [Native limits](drivers/plugin-bundled.md#native-mappings-and-limits)
 lists the value mapping and exact checks.
 
 ### Codex-specific policy
@@ -325,7 +326,15 @@ native review trigger; explicit tool overrides do not need catalog annotations.
 
 ## Failures and boundaries
 
-- `400`: invalid body or policy unsupported by the selected Driver.
+- `400`: invalid body or policy unsupported by the selected Driver. A plugin ID
+  outside the selected Driver's catalog (OpenClaw) or its prefix and marketplace
+  (Codex), such as `occ-plugin:diffs` while `codex-plugin` is selected, names
+  that Driver and the rejected plugin ID in the message, with a
+  `/plugins/<id>` detail when the selection came from this request's body. A
+  selection read back from storage (at deploy, at an update that omits
+  `plugins`, or at a provisioning replay or retry) still names the plugin but
+  has no detail. A provisioning status read does not recheck the plugin policy, so it
+  still reports the work after a Plugin Driver switch.
 - `403`: denied exact-Agent permission.
 - `404`: missing or foreign Agent or Configuration.
 - `409`: ordinary Agent conflict, such as duplicate name.

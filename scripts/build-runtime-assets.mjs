@@ -28,6 +28,7 @@ const runtimePaths = [
   "node-sqlite.mjs",
   "node-runtime-update.mjs",
   "node-runtime-recovery.mjs",
+  "node-runtime-env.mjs",
   "cli-root-options.mjs",
   "gateway-run-argv.mjs",
   "gateway-shutdown-budget.mjs",
@@ -290,7 +291,7 @@ if (command === "inputs") {
       {
         source: "https://github.com/openclaw/openclaw",
         commit: process.env.GIT_COMMIT,
-        sourceArchiveSha256: "8e0f0332bbdb798834148895d57c19e6b622dbb3b5eac39801c14c316ad93d0c",
+        sourceArchiveSha256: "c56ea921a033efd95c2c9e43e4255c675939b0aa927c6aaf5bbdb51d5b693a8b",
         openclawBridgePatchSha256:
           "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca",
         openclawConnectPatchSha256:

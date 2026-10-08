@@ -152,13 +152,18 @@ qualification until safe cleanup and its independent ownership are supported.
 
 The [standalone live smoke](repository-credentials.md#run-an-authorized-live-smoke)
 does not exercise OCC admission or a model.
-Use `repository-credentials-k3d-real.test.mjs` for the joined installed path:
-fresh Helm controller/PostgreSQL, API-created Namespace and Agent, worker-opened
-session, private Kubernetes runtime material and the model's own
-clone/edit/commit/push/native-PR task in both embedded OpenClaw and Dedicated
-Codex. Each case creates a ready-for-review PR. One explicitly authorized disposable
-repository is sufficient; two-repository deterministic coverage remains in the
-controlled platform case.
+Use the [QA matrix](qa-matrix.md) for the full native clone/edit/commit/push/PR
+journey in both presets on both shipped installation paths, with independent
+remote readback and verified session disposal.
+
+`repository-credentials-k3d-real.test.mjs` retains focused installed security proof:
+a fresh Helm controller/PostgreSQL, API-created Namespace and Agent, worker-opened
+sessions, private Kubernetes runtime material, network and credential isolation,
+and ordinary disposal. Its dedicated read-only case additionally executes a real
+native fetch, sandbox boundary probe, and rejected push. The two full-profile
+security cases do not create PRs; that journey belongs to the matrix. One explicitly
+authorized disposable repository is sufficient; two-repository deterministic
+coverage remains in the controlled platform case.
 
 Prepare the [real Kubernetes runtime prerequisites](kubernetes.md#kubernetes-model-turns-and-secrets).
 Select the `repository-credentials-installed` lane with the same prepare/run/cleanup
@@ -190,7 +195,7 @@ installs the pinned Envoy Gateway and cert-manager controllers. Dedicated
 setup enables the production Helm private route and CA, admits only the observed
 Envoy proxy address, and uses stock local-path RWO Harness storage. OCC enrolls the native workspace node through that authenticated route.
 The Helm fixture creates its own PostgreSQL; no external test database is needed.
-It grants the existing operator roles in both tenant and control-plane namespaces
+It grants the existing operator roles in the shared tenant namespace
 and gives the Gateway 2 GiB for first-request plugin loading. Tool evidence uses
 the latest result for the exact call, or a successful poll of its exact process
 session. An earlier error alone neither proves success nor hides a later completion.

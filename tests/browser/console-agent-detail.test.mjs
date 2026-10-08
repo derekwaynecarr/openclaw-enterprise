@@ -1737,13 +1737,14 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   assert.equal(secretDriver.valueFor(duplicateNameSecret), "hidden-duplicate-picker");
 
   // Simulate documented controller conflict responses; duplicate rejection above uses the real route.
+  let createStatus = 409;
   let conflictCode = "NAMESPACE_NOT_READY";
   const failSecretCreate = (route, request) => {
     if (request.method() !== "POST") {
       return route.fallback();
     }
     return route.fulfill({
-      status: 409,
+      status: createStatus,
       contentType: "application/json",
       body: JSON.stringify({
         error: { code: conflictCode, message: "masked Secret create conflict" },
@@ -1777,6 +1778,27 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
     "synthetic-duplicate-value",
   );
   assert.equal(await dialog.getByRole("alert").filter({ hasText: "may already exist" }).count(), 1);
+
+  // A denied create is a known rejection: it names the permission and keeps the input editable.
+  createStatus = 403;
+  conflictCode = "FORBIDDEN";
+  await dialog.getByLabel("Name", { exact: true }).fill("Denied picker Secret");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog
+    .getByRole("alert")
+    .filter({
+      hasText: "Access denied. You do not have permission to manage this Secret binding.",
+    })
+    .waitFor();
+  assert.equal(await dialog.getByLabel("Name", { exact: true }).isDisabled(), false);
+  assert.equal(
+    await dialog.getByLabel("Value", { exact: true }).inputValue(),
+    "synthetic-duplicate-value",
+  );
+  assert.equal(
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).isDisabled(),
+    false,
+  );
   await page.unroute(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
 
   const distinctName = "Combobox Agent corrected service account token";
@@ -3742,6 +3764,12 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   await waitForSettledFetches(page, nativeAdminPath, 1);
   assert.equal(reads(nativeAdminPath), 1);
   assert.equal(reads(configurationPath), 1);
+  // The card settles on the denial and stays hidden: a 403 is not a failed read with Refresh.
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector(".native-admin-access [role='status']")?.textContent === "",
+  );
+  assert.equal(await page.locator(".native-admin-access:not([hidden])").count(), 0);
 
   // Each denied read is an audited authorization denial; reloading the view does not repeat it.
   for (let view = 0; view < 2; view += 1) {
@@ -4804,4 +4832,67 @@ test("Slack editor preserves existing qualified channel and user targets", async
     assert.equal(entry.requireMention, false);
   }
   assert.deepEqual(persisted.allowFrom, dmUsers);
+});
+
+test("Credentials saves an issued service account as a PAT source without granting Secret access", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Managed PAT source", { ready: true });
+  // Issuance is outside this Console test. Seed its realistic result through State;
+  // the browser still lists, selects and saves it through production API/IAM paths.
+  const account = await fixture.controller.transact(async (state) => {
+    const created = await state.serviceAccounts.createServiceAccount({
+      id: `sa_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Issued research account",
+    });
+    return state.serviceAccounts.updateCredential(namespace.id, created.id, {
+      kind: "access_token",
+      secretRef: { name: "managed-pat-browser-fixture", key: "token" },
+    });
+  });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Managed PAT Agent",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByLabel("Authentication source", { exact: true }).selectOption("service_account");
+  await page.getByLabel("Issued ChatGPT service account", { exact: true }).selectOption(account.id);
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" && response.url().endsWith(`/agents/${agent.id}`),
+  );
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("Authentication source", { exact: true }).inputValue(),
+    "service_account",
+  );
+  assert.equal(
+    await page.getByLabel("Issued ChatGPT service account", { exact: true }).inputValue(),
+    account.id,
+  );
+  assert.deepEqual(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data
+      .harnessAuth,
+    {
+      method: "codex_pat",
+      source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
+    },
+  );
+  assert.equal(
+    requests.some(
+      (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),
+    ),
+    false,
+  );
 });

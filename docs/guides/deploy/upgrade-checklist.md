@@ -2,24 +2,21 @@
 
 Use this checklist before changing an OpenClaw Enterprise (OCE) controller,
 runtime, Helm chart, or Installation configuration in an environment that must
-retain data. It inventories the state boundaries an operator must classify so
-an image update does not silently leave old configuration or Namespace-owned
-copies behind.
+retain data. It inventories the state an image update does not change by itself.
 
 The checklist complements the
 [production image upgrade procedure](production-upgrade.md) and the
 [persistent local k3d procedure](local-k3d-image-upgrade.md). A custom retained
 Compose or Compose-and-k3d environment has no supported in-place upgrade
-command. Use this page as its migration inventory, retain its named volumes,
-cluster, and private state directory, and maintain a reviewed procedure for its
-own topology.
+command; use this page as its migration inventory.
 
 ## Classify the release
 
 - [ ] Record the candidate OCE source commit, upstream OpenClaw commit, Codex
       version, configured image references, and immutable controller and runtime
-      image digests. Confirm the build source was clean and recorded. Do not use
-      a moving tag or a configured reference alone as upgrade evidence.
+      image digests. Confirm the build source was clean, recorded, and includes
+      this release's required changes. Do not use a moving tag or a configured
+      reference alone as upgrade evidence.
 - [ ] Diff the deployed and candidate source for database migrations, Helm
       templates, Installation schema, bundled Presets, Driver settings, runtime
       dependencies, and required Kubernetes assets.
@@ -29,10 +26,19 @@ own topology.
       drop the four `devday*.json` files. The helper refuses Installation
       changes other than the Plugin Driver, so remove those entries and restart
       first; saved Presets stay.
-      After the upgrade, you can add `/app/deploy/presets/swe-preset.json`
-      (the former `devday.json`).
-- [ ] Confirm the recorded image source includes the changes required for this
-      release; a published tag alone does not establish their inclusion.
+      You can add `/app/deploy/presets/swe-preset.json` (formerly
+      `devday.json`) afterward.
+- [ ] On a single-cluster install, run
+      `kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespace`.
+      Releases with the shared tenant namespace refuse to start while a row has
+      an empty `NAMESPACE` column (a
+      [split-layout tenant](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations));
+      the image helper's preflight stops before quiescence.
+- [ ] Before the window, render the candidate chart with your live values
+      (`helm template`): releases after 2026-10-05
+      [refuse some values](production-upgrade-recovery.md#correct-values-newer-releases-refuse)
+      older ones accepted. The image helper renders again and runs its startup
+      preflight before stopping anything.
 - [ ] Decide whether this is a controller-only, runtime-only, or coordinated
       release. A controller-only release does not request Agent deployments; a
       worker restart can still interrupt repository-bound revisions. A runtime
@@ -47,24 +53,23 @@ own topology.
 ## Record the starting state
 
 Create a private evidence directory and record these values before mutation.
-[Record the pre-upgrade baseline](upgrade-baseline.md) gives commands for many of them:
+[The pre-upgrade baseline](upgrade-baseline.md) gives commands for many:
 
 - [ ] OCC Installation ID, cluster/context, Helm release or Compose project,
       source revision, chart revision, and all running image digests.
 - [ ] Protected Helm values and Installation YAML, plus the live rendered values
       and mounted Installation Secret or file. Resolve unexplained drift first.
-- [ ] Database migration catalog and receipts. Take a PostgreSQL backup when
+- [ ] Database migration catalog and receipts. Back up PostgreSQL when
       recovery could require restoring control-plane data.
 - [ ] Namespace, Agent, Configuration, Preset, Secret metadata, IAM Role,
       AccessBinding, Backend, service account, active revision, desired state,
-      deployment work, and audit-record inventories. Do not record Secret values
-      in upgrade evidence.
+      deployment work, and audit-record inventories. Never record Secret values.
 - [ ] Kubernetes Namespace labels, RoleBindings, Services, NetworkPolicies,
       Gateway resources, storage classes, seccomp profiles, and supporting
       controller or sidecar versions.
 - [ ] PVC names and UIDs, PV names, representative workspace file hashes,
-      session counts, and gateway state. Arrange separate volume backups when
-      recovery could require restoring Agent data.
+      session counts, and gateway state. Back up volumes when recovery could
+      require restoring Agent data.
 - [ ] Authentication origin, cookie domain, auth-secret identity, TLS material,
       bootstrap key storage, service-principal and service-key identities,
       repository registry metadata, broker sessions, and external provider or
@@ -97,13 +102,10 @@ Create a private evidence directory and record these values before mutation.
 
 ## Assign every surface a disposition
 
-Do not treat “the image was replaced” as evidence that these other surfaces
-changed.
-
 | Surface                                                           | Disposition                                         | Upgrade behavior                                                                                                                                                                                                                                                                                                               | Required operator action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ----------------------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Controller, worker, and Console assets                            | Replace                                             | The controller image owns all three.                                                                                                                                                                                                                                                                                           | Roll out API and worker together. Verify the embedded source revision and both observed image digests or IDs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| PostgreSQL schema and migration-owned data                        | Auto-migrate and preserve                           | The canonical migrator applies supported pending migrations before API and worker startup. An image rollback does not reverse them.                                                                                                                                                                                            | Run migration preflight, inspect pending migrations, retain the receipt, and stop all old writers. The production image helper quiesces the API and worker; the operator must stop other writers. Prefer a reviewed forward fix after commit.                                                                                                                                                                                                                                                                                                                                                                |
+| PostgreSQL schema and migration-owned data                        | Auto-migrate and preserve                           | The canonical migrator applies supported pending migrations before API and worker startup. An image rollback does not reverse them.                                                                                                                                                                                            | Run migration preflight, inspect pending migrations, retain the receipt, and stop all old writers. The image helper stops only the API and worker. Prefer a reviewed forward fix after commit.                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Installation YAML                                                 | Reconcile manually                                  | API and worker read it independently at startup. Updating a protected file alone does not reload either process.                                                                                                                                                                                                               | Reconcile every Driver, Backend, image, network, storage, logging, and Preset-file setting. Update the mounted Secret or file and restart API and worker.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | IAM, Backends, and control-plane records                          | Preserve and reconcile                              | Namespaces, Roles, AccessBindings, service accounts, Backends, deployment work, and audit records persist in PostgreSQL; external identity providers and sinks do not.                                                                                                                                                         | Compare counts and stable IDs, retain service-principal ownership, finish or resolve active work, and verify audit and observability delivery.                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Helm chart and cluster prerequisites                              | Reconcile manually                                  | Helm reconciles chart-owned resources. CRDs, node assets, storage classes, cluster overlays, and external controllers may have separate owners.                                                                                                                                                                                | Diff the rendered candidate against live resources. Preserve reviewed RBAC, selectors, NetworkPolicies, sidecars, probes, Gateway and HTTP routes, certificates, DNS rewrites, CSI and local-path settings, proxy rules, and seccomp profiles. Apply prerequisites before workloads need them.                                                                                                                                                                                                                                                                                                               |
@@ -111,7 +113,7 @@ changed.
 | Default and file-backed Presets                                   | Create missing; refresh untouched; reconcile edited | Startup creates missing names in each eligible Namespace. With `includeDefaults` enabled, it also [refreshes](../../reference/presets.md#bundled-default-upgrades) copies still equal to an earlier shipped bundled default, keeping their IDs. Copies matching no shipped version, and `presets.files` copies, are preserved. | Per Namespace, save `occ preset get ID -o json` per default copy before and after: a refreshed copy keeps its ID with the new template; refusals log `presets.default-refresh-skipped`. Its `installation-defaults-refresh` audit event (`version`, `previousVersion`) is [database-only](../topics/audit-log.md#access-and-limitations). For edited copies and file-backed Presets, compare persisted templates with candidate files and `PATCH` intended same-name Presets in place so IDs, IAM grants, and bookmarks remain stable. Remove obsolete copies only after checking exact-resource references. |
 | Agent draft and Configuration metadata                            | Preserve                                            | PostgreSQL stores Agent drafts, Configuration metadata, references, and revision relationships. A deployment snapshots the current draft rather than replaying the active revision.                                                                                                                                            | Review drafts before a runtime release. Preserve IDs and do not assume a bundled default rewrites saved Configuration JSON.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Configuration values                                              | Preserve in the selected ConfigurationDriver        | The current Kubernetes Driver stores values in ConfigMaps; the filesystem development Driver uses `occ_configuration_data`. Switching Drivers does not migrate values.                                                                                                                                                         | Inventory and back up the active Driver's storage. Keep the Driver identity stable, or run a separately reviewed data migration before changing it.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Runtime image selection                                           | Reconcile manually                                  | Installation configuration selects images for future deployments. Reloading the controller does not replace active Agent workloads.                                                                                                                                                                                            | Set immutable gateway and Agent runtime digests and restart API and worker. The production helper deploys every recorded running Agent; it has no selected-Agent or canary mode. Leave stopped and deleting Agents untouched.                                                                                                                                                                                                                                                                                                                                                                                |
+| Runtime image selection                                           | Reconcile manually                                  | Installation configuration selects images for future deployments. Reloading the controller does not replace active Agent workloads.                                                                                                                                                                                            | Set immutable gateway and Agent runtime digests and restart API and worker. The production helper deploys every recorded running Agent. Leave stopped and deleting Agents untouched.                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Agent revisions and Kubernetes workloads                          | Preserve or redeploy deliberately                   | Controller-only releases do not request deployments, but a broker restart can fail repository-bound revisions and queue retirement. Runtime releases create immutable replacement revisions through the ordinary deployment path. Projected runtime Secrets and Pods are recreated.                                            | Record the fleet first, allow replacement capacity and downtime, wait for durable deployment success, and verify the selected revision and Pod digest. Never replay an unknown deployment response until revision history shows whether OCC accepted it.                                                                                                                                                                                                                                                                                                                                                     |
 | Secret metadata, values, and generated credentials                | Preserve across both stores                         | PostgreSQL stores Secret metadata and references; the selected SecretDriver owns values. External tokens, Slack apps, and provider accounts can change outside OCE.                                                                                                                                                            | Back up the owning Secret store, preserve canonical Kubernetes Secrets, verify references and access metadata, and prove delivery with a real operation. Never copy credential bytes into Compose, YAML, logs, or upgrade evidence.                                                                                                                                                                                                                                                                                                                                                                          |
 | Repository access and broker state                                | Reconcile durable inputs; recreate sessions         | Repository metadata, broker image, service name, CA, runtime policy, volumes, and external GitHub App grants must remain compatible. Broker sessions are ephemeral and image rollout does not expand external installations.                                                                                                   | Preserve the exact Service name, hostname, certificate, and CA until old sessions drain, along with repository volumes and grants. A lost session can fail its revision; inspect cleanup and explicitly deploy a new authorized revision when needed. Verify clone and the required read or write operation.                                                                                                                                                                                                                                                                                                 |
@@ -144,8 +146,9 @@ Agent. Existing RWO-backed Agents need no recreation.
 
 ## Apply the release in dependency order
 
-1. Install cluster prerequisites and reconcile protected inputs without replacing
-   retained data.
+1. Install cluster prerequisites (on two clusters, upgrade the
+   [execution chart](../../testing/two-cluster-local.md#upgrade-the-execution-chart)
+   first) and reconcile protected inputs without replacing retained data.
 2. Run the canonical migration preflight. Stop if the history is unsupported or
    a required quiescence step is unresolved.
 3. Upgrade the controller, worker, and Console. Wait for database migration,
@@ -161,8 +164,9 @@ Agent. Existing RWO-backed Agents need no recreation.
 
 ## Verify the retained installation
 
-- [ ] The Console reports the candidate source revision. API and worker run the
-      expected controller digest, and migration history is canonical.
+- [ ] The [debug](../../reference/console/debug-fields.md) Console **OCE commit**
+      matches the candidate's `OCC_BUILD_REVISION`. API and worker run the
+      expected controller digest; migration history is canonical.
 - [ ] The authenticated Installation and protected startup configuration agree.
       API and worker selected the same Driver identities.
 - [ ] Namespace, Agent, Configuration, Preset, and Secret-metadata inventories
@@ -179,7 +183,7 @@ Agent. Existing RWO-backed Agents need no recreation.
       sessions match the baseline for retained Agents. Recreated legacy RWX Agents
       have new identities and fresh storage; verify their new RWO claims instead.
 - [ ] Authentication, audit, metrics, traces, and alert delivery still reach
-      their configured sinks.
+      their sinks.
 - [ ] A real model response succeeds for each execution mode and provider in
       scope. Startup and Pod readiness alone do not prove model access.
 - [ ] Required Slack or other channel delivery, repository clone or write,
@@ -190,7 +194,7 @@ Agent. Existing RWO-backed Agents need no recreation.
       bindings, then verify a real model response through the selected Gateway.
 - [ ] Evidence contains the before/after inventory, rendered configuration,
       migration receipt, rollout status, deployment results, and any accepted
-      exceptions. It contains no credential values.
+      exceptions, but no credential values.
 
 ## Stop and recover safely
 

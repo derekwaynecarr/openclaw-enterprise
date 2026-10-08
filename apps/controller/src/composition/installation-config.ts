@@ -1,9 +1,7 @@
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadYaml } from "@kubernetes/client-node";
 import type {
   Backend,
   ComputeDriver,
@@ -33,7 +31,6 @@ import {
   type SkippedDefaultPreset,
 } from "@openclaw-enterprise/occ";
 import { Check, Errors } from "typebox/value";
-import { validatePresetTemplate } from "@openclaw-enterprise/contracts";
 import {
   KubernetesComputeDriver,
   type KubernetesComputeDriverOptions,
@@ -49,6 +46,13 @@ import {
   type KubernetesSecretDriverOptions,
 } from "../drivers/secret/kubernetes/index.ts";
 import { type LoggingConfiguration, operationalLoggingConfiguration } from "../logging.ts";
+import {
+  closed,
+  type ConfigurationRecord,
+  nonempty,
+  object,
+  startupConfiguration,
+} from "./startup-file.ts";
 import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
@@ -60,7 +64,9 @@ import {
   type OpenShellCredentialGatewayOptions,
 } from "../drivers/credential-gateway/openshell.ts";
 
-type ConfigurationRecord = Readonly<Record<string, unknown>>;
+import { loadInstallationPresets, type ShadowedDefaultPreset } from "./installation-presets.ts";
+
+export { loadOperationalLoggingConfiguration } from "./startup-file.ts";
 
 export interface StartupConfigurationSnapshot {
   readonly configuration?: ConfigurationRecord;
@@ -101,13 +107,6 @@ export type ServiceAccountDriverFactory = (
   controller: OpenClawController,
   state: PostgresPlatformState,
 ) => void;
-
-/** A bundled default skipped because a `presets.files` entry uses its name. */
-export interface ShadowedDefaultPreset {
-  readonly presetName: string;
-  /** Resolved path of the operator's file. */
-  readonly presetFile: string;
-}
 
 export interface InstallationRuntimeDrivers {
   readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
@@ -209,61 +208,6 @@ export async function initializeInstallationPresets(
   );
 }
 
-interface LoadedStartupConfiguration {
-  readonly configuration?: ConfigurationRecord;
-  readonly path?: string;
-}
-
-async function startupConfiguration(
-  options: {
-    readonly mode: "development" | "production";
-    readonly environment?: Readonly<Record<string, string | undefined>>;
-  },
-  required: boolean,
-): Promise<LoadedStartupConfiguration> {
-  const environment = options.environment ?? process.env;
-  const path = environment.OCC_CONFIG_PATH;
-  if (path === undefined) {
-    if (!required) {
-      return {};
-    }
-    throw new Error("OCC_CONFIG_PATH must identify the Installation startup YAML.");
-  }
-  if (typeof path !== "string" || path.trim().length === 0) {
-    throw new Error("OCC_CONFIG_PATH must identify the Installation startup YAML.");
-  }
-  if (!isAbsolute(path)) {
-    throw new Error("OCC_CONFIG_PATH must identify an absolute Installation startup YAML path.");
-  }
-
-  let contents: string;
-  try {
-    contents = await readFile(path, "utf8");
-  } catch {
-    throw new Error("The configured Installation startup YAML is unavailable.");
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = loadYaml(contents);
-  } catch {
-    throw new Error("The configured Installation startup file must contain valid YAML.");
-  }
-  const configuration = object(parsed, "Installation startup configuration");
-  safe(configuration, "Installation startup configuration");
-  if (Object.hasOwn(configuration, "integrations")) {
-    throw new Error(
-      "integrations is retired; configure ChatGPT with backend[].configuration.apiKeyPath.",
-    );
-  }
-  closed(
-    configuration,
-    ["occ", "drivers", "backend", "logging", "presets", "observability", "runtime"],
-    "Installation startup configuration",
-  );
-  return { configuration, path };
-}
-
 export async function loadStartupConfigurationSnapshot(options: {
   readonly mode: "development" | "production";
   readonly environment?: Readonly<Record<string, string | undefined>>;
@@ -289,34 +233,6 @@ interface BundledOpenShellSandboxDriverModule extends DriverImplementation {
       readonly backend: Backend<OpenShellGateway>;
     },
   ) => SandboxDriver;
-}
-
-const FORBIDDEN_SECRET_KEY =
-  /(?:password|passwd|api[_-]?key|(?:access[_-]?)?token|private[_-]?key|(?:client[_-]?)?secret|credentials?)$/i;
-const FORBIDDEN_SECRET_VALUE =
-  /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ghp|gho|github_pat)_[A-Za-z0-9_]{12,}|\bAKIA[0-9A-Z]{16}\b/i;
-
-function object(value: unknown, path: string): ConfigurationRecord {
-  const result = asRecord(value);
-  if (result === undefined) {
-    throw new Error(`${path} must be one object.`);
-  }
-  return result;
-}
-
-function closed(value: ConfigurationRecord, keys: readonly string[], path: string): void {
-  for (const key of Object.keys(value)) {
-    if (!keys.includes(key)) {
-      throw new Error(`${path} contains unsupported option ${key}.`);
-    }
-  }
-}
-
-function nonempty(value: unknown, path: string): string {
-  if (!isNonEmptyString(value)) {
-    throw new Error(`${path} must be a nonempty string.`);
-  }
-  return value;
 }
 
 function runtimeConfiguration(
@@ -358,38 +274,6 @@ function observabilityConfiguration(value: unknown): { readonly url: string } | 
     );
   }
   return Object.freeze({ url: url.href });
-}
-
-function safe(value: unknown, path: string): void {
-  if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
-    throw new Error(`${path} must be a safe integer.`);
-  }
-  if (typeof value === "string" && FORBIDDEN_SECRET_VALUE.test(value)) {
-    throw new Error(`${path} must not contain a plaintext credential.`);
-  }
-  if (Array.isArray(value)) {
-    value.forEach((entry, index) => safe(entry, `${path}[${index}]`));
-    return;
-  }
-  if (typeof value !== "object" || value === null) {
-    return;
-  }
-  for (const [key, entry] of Object.entries(value)) {
-    if (key === "installationId" || key === "installation_id") {
-      throw new Error("Installation startup configuration must not contain an Installation ID.");
-    }
-    if (key === "__proto__" || key === "constructor" || key === "prototype") {
-      throw new Error(`${path} contains an unsafe configuration key.`);
-    }
-    if (FORBIDDEN_SECRET_KEY.test(key) && typeof entry === "string") {
-      throw new Error(`${path}.${key} must not contain a plaintext credential.`);
-    }
-    if (key === "secretRef") {
-      nonempty(entry, `${path}.${key}`);
-      throw new Error("Installation-scoped secret references cannot be resolved safely.");
-    }
-    safe(entry, `${path}.${key}`);
-  }
 }
 
 function backendConfiguration(
@@ -446,82 +330,6 @@ function backendConfiguration(
     }
   }
   return backends;
-}
-
-function presetDefinition(value: unknown, path: string): Pick<Preset, "name" | "template"> {
-  const preset = object(value, path);
-  closed(preset, ["name", "template"], path);
-  return Object.freeze({
-    name: nonempty(preset.name, `${path}.name`),
-    template: validatePresetTemplate(preset.template),
-  });
-}
-
-/**
- * A `presets.files` list or entry that cannot become a default Preset: not a list of
- * paths, or a file that is missing, unreadable, malformed, invalid, or a duplicate name. API and worker startup report it as
- * `PRESET_FILE_INVALID` without the path or message, which stay in the thrown error.
- */
-export class PresetFileError extends Error {
-  override readonly name = "PresetFileError";
-}
-
-async function loadPresetDefinition(
-  path: string | URL,
-): Promise<Pick<Preset, "name" | "template">> {
-  let contents: string;
-  try {
-    contents = await readFile(path, "utf8");
-  } catch {
-    throw new Error(`Preset file ${path} is unavailable.`);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(contents);
-  } catch {
-    throw new Error(`Preset file ${path} must contain valid JSON.`);
-  }
-  return presetDefinition(parsed, `Preset file ${path}`);
-}
-
-const bundledPresetDirectory = new URL("../../../../deploy/presets/", import.meta.url);
-
-/**
- * Load every shipped version of the bundled defaults. `archive/versions.json` lists each
- * bundled file's versions oldest first; the last is the file itself and the others are
- * archived as `archive/<file stem>/<version>.json`. A conformance test keeps it complete.
- */
-async function loadBundledPresetVersions(): Promise<readonly BundledPresetVersion[]> {
-  const indexPath = new URL("archive/versions.json", bundledPresetDirectory);
-  let index: unknown;
-  try {
-    index = JSON.parse(await readFile(indexPath, "utf8"));
-  } catch (cause) {
-    throw new Error(
-      `Bundled Preset version index ${fileURLToPath(indexPath)} is unavailable or invalid.`,
-      { cause },
-    );
-  }
-  const versions: BundledPresetVersion[] = [];
-  for (const [file, history] of Object.entries(object(index, "Bundled Preset versions"))) {
-    if (
-      !/^[a-z0-9-]+\.json$/.test(file) ||
-      !Array.isArray(history) ||
-      history.length === 0 ||
-      history.some((version) => typeof version !== "string" || !/^[0-9a-f]{16}$/.test(version))
-    ) {
-      throw new Error(`Bundled Preset versions for ${file} are invalid.`);
-    }
-    const stem = file.slice(0, -".json".length);
-    for (const [position, version] of (history as string[]).entries()) {
-      const current = position === history.length - 1;
-      const preset = await loadPresetDefinition(
-        new URL(current ? file : `archive/${stem}/${version}.json`, bundledPresetDirectory),
-      );
-      versions.push(Object.freeze({ ...preset, file, version, current }));
-    }
-  }
-  return Object.freeze(versions);
 }
 
 export function backendSummariesFromDefinitions(
@@ -638,75 +446,8 @@ export async function loadInstallationConfiguration(options: {
   ) {
     return undefined;
   }
-  const presets = object(
-    configuration.presets === undefined ? {} : configuration.presets,
-    "presets",
-  );
-  closed(presets, ["includeDefaults", "files"], "presets");
-  if (presets.includeDefaults !== undefined && typeof presets.includeDefaults !== "boolean") {
-    throw new Error("presets.includeDefaults must be a boolean.");
-  }
-  if (
-    presets.files !== undefined &&
-    (!Array.isArray(presets.files) || presets.files.some((entry) => typeof entry !== "string"))
-  ) {
-    throw new PresetFileError("presets.files must be an array of Preset JSON file paths.");
-  }
-  const includeDefaults = presets.includeDefaults === true;
-  const bundledPresetVersions = await loadBundledPresetVersions();
-  const filePresets: {
-    readonly path: string;
-    readonly preset: Pick<Preset, "name" | "template">;
-  }[] = [];
-  const filePresetPaths = new Map<string, string>();
-  for (const entry of (presets.files ?? []) as readonly string[]) {
-    const trimmed = entry.trim();
-    if (trimmed.length === 0) {
-      throw new PresetFileError("presets.files entries must be nonempty file paths.");
-    }
-    if (!isAbsolute(trimmed) && configurationPath === undefined) {
-      throw new PresetFileError(
-        "Relative presets.files entries require an Installation startup YAML path.",
-      );
-    }
-    const path = isAbsolute(trimmed) ? trimmed : resolve(dirname(configurationPath!), trimmed);
-    let preset: Pick<Preset, "name" | "template">;
-    try {
-      preset = await loadPresetDefinition(path);
-    } catch (error) {
-      throw new PresetFileError(error instanceof Error ? error.message : String(error), {
-        cause: error,
-      });
-    }
-    const earlier = filePresetPaths.get(preset.name);
-    if (earlier !== undefined) {
-      throw new PresetFileError(
-        `Default Preset ${preset.name} is configured more than once: ${earlier} and ${path}.`,
-      );
-    }
-    filePresetPaths.set(preset.name, path);
-    filePresets.push({ path, preset });
-  }
-  // An operator file named like a bundled default replaces that default: a later release can
-  // bundle a name an operator already uses (default-codex), and startup must not stop for it.
-  const defaultPresets: Pick<Preset, "name" | "template">[] = [];
-  const shadowedDefaultPresets: ShadowedDefaultPreset[] = [];
-  if (includeDefaults) {
-    for (const version of bundledPresetVersions) {
-      if (!version.current) {
-        continue;
-      }
-      const shadow = filePresets.find(({ preset }) => preset.name === version.name);
-      if (shadow !== undefined) {
-        shadowedDefaultPresets.push(
-          Object.freeze({ presetName: version.name, presetFile: shadow.path }),
-        );
-        continue;
-      }
-      defaultPresets.push(Object.freeze({ name: version.name, template: version.template }));
-    }
-  }
-  defaultPresets.push(...filePresets.map(({ preset }) => preset));
+  const { includeDefaults, bundledPresetVersions, defaultPresets, shadowedDefaultPresets } =
+    await loadInstallationPresets(configuration, configurationPath);
   const occ = object(configuration.occ, "occ");
   closed(occ, ["cluster"], "occ");
   const cluster = nonempty(occ.cluster, "occ.cluster");
@@ -932,9 +673,6 @@ export async function loadInstallationConfiguration(options: {
         "Production Kubernetes workloads require the explicitly configured Codex runtime.",
       );
     }
-    if (kubernetes.servicePrincipalCredentials.mode !== "projectedServiceAccountToken") {
-      throw new Error("Production Codex Agents require projected ServicePrincipal credentials.");
-    }
   }
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
@@ -1088,14 +826,6 @@ export async function loadInstallationConfiguration(options: {
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     ...(repositoryRuntime ?? {}),
   });
-}
-
-export async function loadOperationalLoggingConfiguration(options: {
-  readonly mode: "development" | "production";
-  readonly environment?: Readonly<Record<string, string | undefined>>;
-}): Promise<LoggingConfiguration> {
-  const { configuration } = await startupConfiguration(options, false);
-  return operationalLoggingConfiguration(configuration?.logging);
 }
 
 async function loadBundledOpenShellSandboxDriver(): Promise<BundledOpenShellSandboxDriverModule> {

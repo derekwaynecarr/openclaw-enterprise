@@ -21,7 +21,8 @@ Run the commands below from the repository root on Linux or macOS. You need:
   in `package.json`.
 - About 20 GB of free container-engine storage for the first build. On macOS
   that space is inside the Podman or Docker virtual machine rather than on your
-  host disk; check it with `podman machine ssh df -h /var`. Without it, startup
+  host disk; check it with `podman machine ssh df -h /var`, or for Docker
+  Desktop with `docker run --rm alpine df -h /`. Without it, startup
   fails late with `no space left on device` and rolls back the cluster.
 - Free local ports `3000` for the API, `8443` for the browser console, and
   `6443` for Kubernetes. If a port is in use, override `OPENCLAW_DEV_PORT`,
@@ -46,9 +47,10 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 
 The first start builds and imports both images unless you selected published
 images. This can take several minutes. Wait for `OpenClaw Enterprise development stack is ready.` The
-command prints the API URL, Installation ID, local service-key file, kubeconfig,
-Kubernetes context, and cleanup command. Keep this output; the service-key file
-is an administrator credential and must remain on your machine.
+command prints the browser console URL and CA certificate, then the API URL,
+Installation ID, service-key file, administrator password file, kubeconfig,
+Kubernetes context, and cleanup command. Keep this output. The service-key and
+password files are administrator credentials and must remain on your machine.
 
 If startup stalls on cert-manager, follow [local startup troubleshooting](operate/troubleshooting.md#local-startup-stalls-on-cert-manager).
 

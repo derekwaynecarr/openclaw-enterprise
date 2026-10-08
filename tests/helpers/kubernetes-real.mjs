@@ -326,7 +326,9 @@ export async function assertGatewayModelTurn({ gatewayUrl, gatewayPassword, nonc
     }
   }
   assert.equal(response.status, 200, `real provider-backed model turn failed: ${body}`);
-  assert.match(JSON.parse(body).choices?.[0]?.message?.content ?? "", new RegExp(nonce));
+  const message = JSON.parse(body).choices?.[0]?.message;
+  assert.equal(message?.role, "assistant");
+  assert.match(message?.content ?? "", new RegExp(nonce));
 }
 
 export function createRealKubernetesFixture({
@@ -410,7 +412,7 @@ export function createRealKubernetesFixture({
     directory,
     namespace,
     agentId,
-    { gatewayPassword, executionMode = "dedicated" } = {},
+    { gatewayPassword, legacyCombined = false } = {},
   ) {
     const suffix = kubernetesHash(agentId);
     const tokenDirectory = join(directory, `tokens-${suffix}`);
@@ -427,17 +429,13 @@ export function createRealKubernetesFixture({
       const owner = await kubernetes.resource("namespace", namespace);
       const namespaceId = owner.metadata.labels["openclaw.dev/namespace"];
       assert.ok(namespaceId, "transport source must belong to the resolved data-plane Namespace");
-      const { kubernetesGatewayNamespaceName } =
-        await import("../../apps/controller/src/drivers/compute/kubernetes/index.ts");
-      const target =
-        executionMode === "embedded" ? namespace : kubernetesGatewayNamespaceName(namespaceId);
-      const bundles =
-        executionMode === "embedded"
-          ? [[`openclaw-agent-transport-${suffix}`, ["app-server-token", "gateway-password"]]]
-          : [
-              [`openclaw-agent-transport-${suffix}`, ["app-server-token"]],
-              [`gateway-password-${suffix}`, ["gateway-password"]],
-            ];
+      const target = namespace;
+      const bundles = legacyCombined
+        ? [[`openclaw-agent-transport-${suffix}`, ["app-server-token", "gateway-password"]]]
+        : [
+            [`openclaw-agent-transport-${suffix}`, ["app-server-token"]],
+            [`gateway-password-${suffix}`, ["gateway-password"]],
+          ];
       for (const [name, keys] of bundles) {
         await kubectl(
           "create",

@@ -1,6 +1,6 @@
 {{- $collector := .Values.logging.collector -}}
 {{- if $collector.enabled -}}
-{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-fA-F0-9]{64}$" $collector.image) -}}
+{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $collector.image) -}}
 {{- fail "logging.collector.image must be an approved immutable SHA-256 image reference" -}}
 {{- end -}}
 {{- if or (not $collector.configSecretName) (not $collector.envSecretName) -}}
@@ -33,7 +33,7 @@
 {{- fail "logging.collector.exporter requires either cidr or paired selectors, not both" -}}
 {{- end -}}
 {{- if empty $exporter.namespaceLabels -}}
-{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" $exporter.cidr) -}}
+{{- if not (regexMatch (include "openclaw.ipv4Host32" .) $exporter.cidr) -}}
 {{- fail "logging.collector.exporter.cidr must identify exactly one approved IPv4 exporter or proxy host with /32" -}}
 {{- end -}}
 {{- end -}}

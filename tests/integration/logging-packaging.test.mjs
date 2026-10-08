@@ -281,6 +281,14 @@ test(
         "broad exporter egress",
         { ...loggingValues, "logging.collector.exporter.cidr": "0.0.0.0/0" },
       ],
+      [
+        "exporter host that is not an IPv4 address",
+        { ...loggingValues, "logging.collector.exporter.cidr": "999.1.2.3/32" },
+      ],
+      [
+        "exporter host with a leading-zero octet",
+        { ...loggingValues, "logging.collector.exporter.cidr": "01.2.3.4/32" },
+      ],
       ["missing env Secret", { ...loggingValues, "logging.collector.envSecretName": "" }],
       [
         "shared GitHub sign-in Secret",
@@ -298,6 +306,19 @@ test(
         description,
       );
     }
+    // OCI SHA-256 digests are lowercase hex; containerd refuses uppercase at pull time.
+    await assert.rejects(
+      render({
+        ...loggingValues,
+        "logging.collector.image": `docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:${"C".repeat(64)}`,
+      }),
+      ({ code, stderr }) =>
+        code !== 0 &&
+        stderr.includes(
+          "logging.collector.image must be an approved immutable SHA-256 image reference",
+        ),
+      "uppercase Collector image digest",
+    );
     const oidc = {
       "auth.oidc.enabled": "true",
       "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ",

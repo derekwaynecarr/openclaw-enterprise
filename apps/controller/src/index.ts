@@ -7,6 +7,7 @@ import {
   AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
   CredentialSourceResponse,
+  ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
   JsonValue,
   occApiRoutes,
@@ -48,6 +49,7 @@ import {
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
+  ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
@@ -93,18 +95,18 @@ import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
+import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
 import {
   canonicalFailure,
+  cappedPath,
   dependencyUnavailable,
   failure,
   isAuthorizationDenied,
   isDependencyUnavailable,
-  jsonPointer,
   RequestFailure,
   requestFailure,
   responseHeaders,
   unstorableTextFailure,
-  type ErrorDetail,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
 import {
@@ -379,7 +381,7 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   if (depth > 24) {
     throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-      { path, code: "TOO_DEEP" },
+      { path: cappedPath(path), code: "TOO_DEEP" },
     ]);
   }
   if (value === null || typeof value !== "object") {
@@ -394,7 +396,7 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   for (const [key, entry] of Object.entries(value)) {
     if (key === "__proto__" || key === "constructor" || key === "prototype") {
       throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-        { path: `${path}/${jsonPointer(key)}`, code: "INVALID_VALUE" },
+        { path: cappedPath(`${path}/${jsonPointer(key)}`), code: "INVALID_VALUE" },
       ]);
     }
     validateConfiguration(entry, depth + 1, `${path}/${jsonPointer(key)}`);
@@ -654,7 +656,10 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     operation.operationId === "deleteIAMRole" ||
     operation.operationId === "listIAMAccessBindings" ||
     operation.operationId === "getIAMAccessBinding" ||
-    operation.operationId === "deleteIAMAccessBinding"
+    operation.operationId === "deleteIAMAccessBinding" ||
+    operation.operationId === "listIAMServicePrincipals" ||
+    operation.operationId === "createIAMServicePrincipal" ||
+    operation.operationId === "getIAMServicePrincipal"
   ) {
     return [
       { action: "administer", resourceKind: "installation", scope: "requested" },
@@ -1046,7 +1051,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       canonicalFailure(reply, mapped);
     },
     ajv: {
-      customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false },
+      // `verbose` attaches each failure's schema and value, so contract errors can tell which
+      // shape of a discriminated union a request chose (http/error-details.ts). Neither is logged or
+      // returned: problems name only paths and the schema's accepted values, and http/errors.ts
+      // drops both from the error once its problems are built. An onError hook runs before
+      // that, so none may log `error.validation`.
+      customOptions: {
+        removeAdditional: false,
+        coerceTypes: false,
+        useDefaults: false,
+        verbose: true,
+      },
       plugins: [formatsPlugin],
     },
     schemaController: { compilersFactory: { buildSerializer: cachedResponseSerializers() } },
@@ -1203,8 +1218,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               restrictionIds: authorizationEvidence.restrictionIds,
             },
           };
+    // A request admitted by a service key names that key (its non-secret ID), so an
+    // administrator can tell which of a ServicePrincipal's keys acted. `serviceKeyId` stays
+    // the key a key-management event acts on.
+    const admitted = admissions.get(request);
+    const actorKeyDetails =
+      admitted?.method === "api_key" && admitted.serviceKeyId !== undefined
+        ? { actorServiceKeyId: admitted.serviceKeyId }
+        : undefined;
     const details =
-      result?.details === undefined ? evidenceDetails : { ...evidenceDetails, ...result.details };
+      result?.details === undefined && actorKeyDetails === undefined
+        ? evidenceDetails
+        : { ...evidenceDetails, ...result?.details, ...actorKeyDetails };
     return factory.create({
       installationId,
       ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
@@ -1575,7 +1600,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs"
     ) {
-      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+      throw failure(
+        400,
+        "INVALID_REQUEST",
+        "The request does not match the operation contract: this operation accepts no query parameters.",
+      );
     }
     for (const [parameter, pattern] of Object.entries(RESOURCE_ID)) {
       if (
@@ -2375,7 +2404,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           throw failure(
             400,
             "INVALID_REQUEST",
-            "The request does not match the operation contract.",
+            "The request does not match the operation contract: querystring /cursor cannot be combined with /download; a download always starts a new view.",
+            [{ path: "/cursor", code: "INVALID_VALUE" }],
           );
         }
         const page = await controller!.readAgentRuntimeLogs(
@@ -2450,7 +2480,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           type: "object",
           additionalProperties: false,
           required: ["code", "message"],
-          properties: { code: { type: "string" }, message: { type: "string" } },
+          properties: {
+            code: { type: "string" },
+            message: { type: "string" },
+            // Schema 400s point at the rejected field; without this the serializer drops it.
+            details: { type: "array", maxItems: 32, items: ErrorDetailSchema },
+          },
         },
         meta,
       },
@@ -2460,6 +2495,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       401: { description: "Unauthorized", ...error },
       503: { description: "Service Unavailable", ...error },
     });
+    // Every route that reads a body answers an oversized one 413 and a non-JSON one 415.
+    const bodyErrors = {
+      413: { description: "Payload Too Large", ...error },
+      415: { description: "Unsupported Media Type", ...error },
+    };
     const accountBody = (
       createAuthAccountOperation.schema as {
         readonly body: { readonly properties: Record<string, unknown> };
@@ -2552,6 +2592,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
+            ...(creating ? bodyErrors : {}),
           },
         } as DocumentedFastifySchema,
         onRequest: async (request) => admit(request, operation),
@@ -2565,10 +2606,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw failure(409, "RESOURCE_CONFLICT", "Bootstrap the Installation first.");
           }
           if (!creating && request.body !== undefined) {
+            // The same wording as OCC's operations that take no body.
             throw failure(
               400,
               "INVALID_REQUEST",
-              "The request does not match the operation contract.",
+              "The request does not match the operation contract: this operation accepts no request body.",
             );
           }
           const { selected, target, decision } = await requireInstallationAdmin(
@@ -2576,13 +2618,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             operation,
             context,
           );
-          const audit = (key: { id: string; servicePrincipalId: string }) => {
+          // Names the key acted on by ID and its non-secret name; never the credential.
+          const audit = (key: { id: string; servicePrincipalId: string; name: string }) => {
             const base = event(operation, request, target, "mutation", context, decision.evidence);
             return {
               ...base,
               details: {
                 ...base.details,
                 serviceKeyId: key.id,
+                serviceKeyName: key.name,
                 servicePrincipalId: key.servicePrincipalId,
               },
             };
@@ -2831,6 +2875,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               properties: { attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } },
             },
             response: {
+              // A body without the exact attemptId fails the schema.
+              400: { description: "Bad Request", ...error },
               ...responses({
                 type: "object",
                 additionalProperties: false,
@@ -2838,6 +2884,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 properties: { sessionKey: { type: "string" } },
               }),
               403: { description: "Forbidden", ...error },
+              ...bodyErrors,
             },
           },
         },
@@ -3109,9 +3156,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 required: ["userId"],
                 properties: { userId: { type: "string" } },
               }),
+              400: { description: "Bad Request", ...error },
               403: { description: "Forbidden", ...error },
               404: { description: "Not Found", ...error },
               409: { description: "Conflict", ...error },
+              ...bodyErrors,
             },
           },
           onRequest: async (request) => admit(request, operation),
@@ -3262,9 +3311,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               required: [...recoveryResponse.required, "changed"],
               properties: { ...recoveryResponse.properties, changed: { type: "boolean" } },
             }),
+            400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
+            ...bodyErrors,
           },
         },
         onRequest: async (request) => admit(request, recoveryReplaceOperation),
@@ -3417,6 +3468,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
           },
           response: {
+            // A browser Origin other than the console's, or a cross-site fetch, is refused
+            // before the credentials are read.
+            403: { description: "Forbidden", ...error },
             ...responses({
               type: "object",
               additionalProperties: false,
@@ -3426,7 +3480,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 sessionKey: { type: "string" },
               },
             }),
+            400: { description: "Bad Request", ...error },
             429: { description: "Too Many Requests", ...error },
+            ...bodyErrors,
           },
         },
       },
@@ -3441,7 +3497,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           description: "Revokes the current user session cookie.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
-          response: responses({ type: "object", additionalProperties: true }),
+          response: {
+            ...responses({ type: "object", additionalProperties: true }),
+            // A missing or foreign browser Origin, or a cross-site fetch.
+            403: { description: "Forbidden", ...error },
+          },
         },
       },
       async (request, reply) => options.auth.signOut(request, reply),
@@ -3509,6 +3569,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             409: { description: "Conflict", ...error },
+            ...bodyErrors,
           },
         },
         onRequest: async (request) => admit(request, createAuthAccountOperation),
@@ -3678,7 +3739,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw failure(
               400,
               "INVALID_REQUEST",
-              "The request does not match the operation contract.",
+              "The request does not match the operation contract: this operation accepts no request body.",
             );
           }
           const unstorable =
@@ -3803,6 +3864,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         kubernetesNamespace: error.kubernetesNamespace,
         plane: error.plane,
         kubernetesStatus: error.status,
+      });
+    }
+    if (error instanceof ComputeProvisioningRefusedError) {
+      // The response keeps fixed text, because the Compute Driver's reason can name
+      // Installation gateway or routing settings; the operator finds it here by request ID.
+      app.log.warn({
+        event: "agent_provisioning.compute_refused",
+        requestId: request.id,
+        route: request.routeOptions.url ?? "unmatched",
+        reason: error.reason,
       });
     }
     if (error instanceof DeviceAuthorizationStartError) {

@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
+  assertConsoleSignIn,
+  assertExternalSignInRefused,
   attachProvider,
-  authRowCounts,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -17,11 +16,13 @@ import {
   githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
+  loginDenialCount,
   memoryLogger,
   oidcSignIn,
   oidcUpgradeSettings,
   onboardPasswordAccounts,
   passwordSignIn,
+  postgresSignInState,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
@@ -58,7 +59,6 @@ const disabledSubject = "auth0|6500000000000000000000a3";
 const bothSubject = "auth0|6500000000000000000000a4";
 const bothGoogleSubject = "110000000000000000044";
 const bothGithubSubject = "9600004";
-const sessionCookieName = "__Host-openclaw_occ.session_token";
 
 const recoveryOnly = (settings) =>
   Object.freeze({ ...settings, OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only" });
@@ -71,13 +71,8 @@ test(
   "PostgreSQL OIDC sign-in admits only attached (issuer, subject) pairs",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     const idp = fakeOidc(t, { clientId, clientSecret });
     const address = clientAddresses("198.20");
     // Password onboarding on the default install, before OIDC is configured.
@@ -100,36 +95,24 @@ test(
     const { member, disabled, both, stranded } = accounts;
     let adminHeaders;
 
-    const counts = () => authRowCounts(pool);
-    const denials = async (reason) =>
-      (await state.transact((unit) => unit.audit.list())).filter(
-        ({ action, outcome, reasonCode, details }) =>
-          action === "authentication.login" &&
-          outcome === "denied" &&
-          reasonCode === reason &&
-          details?.provider === "oidc",
-      ).length;
+    const denials = (reason) => loginDenialCount(state, reason, "oidc");
     const attach = (userId, subject, provider = "oidc") =>
       attachProvider(app, adminHeaders, userId, provider, subject);
-    async function assertRefused(authorization, message, reason = "EXTERNAL_IDENTITY_REJECTED") {
-      const before = await counts();
-      const deniedBefore = await denials(reason);
-      const { callback } = await oidcSignIn(app, origin, idp, authorization, address());
-      assert.equal(callback.statusCode, 302, message);
-      assert.equal(callback.headers.location, "/console/?authError=oidc", message);
-      assert.equal(
-        String(callback.headers["set-cookie"] ?? "").includes(sessionCookieName),
-        false,
-        `${message}: no session cookie`,
+    const assertRefused = (authorization, message, reason, consoleReason) =>
+      assertExternalSignInRefused(
+        {
+          pool,
+          provider: "oidc",
+          denials,
+          signIn: () => oidcSignIn(app, origin, idp, authorization, address()),
+        },
+        message,
+        reason,
+        consoleReason,
       );
-      assert.deepEqual(await counts(), before, `${message}: no user, method or session`);
-      assert.equal(await denials(reason), deniedBefore + 1, `${message}: the denial is audited`);
-    }
     async function assertSignIn(subject, userId, extra = {}) {
       const signIn = await oidcSignIn(app, origin, idp, { subject, ...extra }, address());
-      assert.equal(signIn.callback.headers.location, "/console/", signIn.callback.body);
-      const cookie = cookieHeaderFromSetCookie(signIn.callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, userId);
+      const cookie = await assertConsoleSignIn(app, signIn.callback, userId);
       return { ...signIn, cookie };
     }
 
@@ -328,7 +311,19 @@ test(
       });
       assert.equal(disable.statusCode, 200, disable.body);
       assert.equal(await currentSession(app, cookie), null);
-      await assertRefused({ subject: disabledSubject }, "disabled account");
+      // The IdP proved this identity, and it is attached: the person is told the account is
+      // disabled rather than to retry or ask for an attach. Only their own browser gets this.
+      await assertRefused(
+        { subject: disabledSubject },
+        "disabled account",
+        "ACCOUNT_DISABLED",
+        "account-disabled",
+      );
+      // The denial names the disabled account, so an administrator can tell whose sign-in it was.
+      const refusals = (await state.transact((unit) => unit.audit.list())).filter(
+        ({ reasonCode }) => reasonCode === "ACCOUNT_DISABLED",
+      );
+      assert.deepEqual(refusals.at(-1).details, { provider: "oidc", userId: disabled.id });
     });
 
     await t.test("the coverage report drops accounts once their identity is attached", async () => {
