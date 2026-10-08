@@ -768,19 +768,25 @@ export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictEr
   }
 }
 
+const SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES = Object.freeze({
+  issue:
+    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  deploy:
+    "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  delete:
+    "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. An administrator must configure it again before deleting the account; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+});
+
 /**
  * The Installation has no ChatGPT Backend, so it selects no ServiceAccount Driver: no account
- * credential can be issued, and a ChatGPT Harness binding cannot deploy. An Installation
+ * credential can be issued, a ChatGPT Harness binding cannot deploy, and an account holding an
+ * issued access token cannot be deleted, since nothing can revoke the token. An Installation
  * property, raised only after the caller's grant and the account lookup, so it reveals nothing
  * a 403 or 404 hides. The fixed message names the fix.
  */
 export class ServiceAccountDriverNotConfiguredError extends ResourceConflictError {
-  constructor(operation: "issue" | "deploy") {
-    super(
-      operation === "issue"
-        ? "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/"
-        : "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
-    );
+  constructor(operation: "issue" | "deploy" | "delete") {
+    super(SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES[operation]);
     this.name = "ServiceAccountDriverNotConfiguredError";
   }
 }

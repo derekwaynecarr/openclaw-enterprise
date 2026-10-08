@@ -122,9 +122,10 @@ issue a credential for a new account.
 - **`409 RESOURCE_CONFLICT` on deployment:** verify that the account has an
   issued credential from the selected Backend and Driver. Only dedicated Codex
   supports this binding.
-- **`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` when issuing or deploying:**
-  the Installation has no ChatGPT Backend (`GET /backends` lists none). Complete
-  step 1, then issue the credential again.
+- **`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` when issuing, deploying, or
+  deleting an account:** the Installation has no ChatGPT Backend (`GET /backends`
+  lists none). Complete step 1, then retry. Deleting an account that holds an
+  issued token needs the same Backend (same `backendId`) to revoke that token.
 - **`503 DEPENDENCY_UNAVAILABLE` when issuing:** the selected ServiceAccount
   Driver failed or does not match its Backend. Have the network operator check
   API Pod DNS and the destination allowed by the NetworkPolicy; also check the

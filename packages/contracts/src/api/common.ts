@@ -916,7 +916,7 @@ export const ErrorResponse = Type.Object(
           }),
           Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
             description:
-              "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued or used for Harness authentication.",
+              "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued, used for Harness authentication, or revoked to delete their account.",
           }),
           Type.Literal("REPOSITORY_OPTIONS_UNAVAILABLE", {
             description:

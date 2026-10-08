@@ -4403,7 +4403,11 @@ export class OpenClawController {
       }
       const driver = this.serviceAccountDriver();
       if (account.credential?.kind === "access_token" && driver === undefined) {
-        throw new DependencyUnavailableError("The selected ServiceAccount Driver is unavailable.");
+        // Only the Backend's Driver can revoke the issued token, so deletion waits for it.
+        // Only the worker sets a configured Driver id, so the API always answers the 409.
+        throw this.configuredServiceAccountDriverId === undefined
+          ? new ServiceAccountDriverNotConfiguredError("delete")
+          : new DependencyUnavailableError("The selected ServiceAccount Driver is unavailable.");
       }
       if (driver !== undefined) {
         await this.driverOperation(() => driver.delete(account), "ServiceAccount");
