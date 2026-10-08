@@ -216,6 +216,24 @@ installation and reports the recovery path. Keep that broker alive until its
 sessions are `DISPOSED`, with zero active uses, active/pending/uncertain cleanup,
 and no auxiliary cleanup pending. Do not delete another run's resources.
 
+### Intermittent Git connection failures
+
+If native Git reports `GnuTLS recv error` or an unexpectedly closed TLS
+connection, check the broker's upstream connectivity before changing certificate
+trust or command deadlines. An upstream connection failure can cause the broker
+to close the Agent connection without returning an HTTP error.
+
+Verify the addresses resolved for both `github.com` and `api.github.com` from
+the broker Pod against the private `upstream-cidrs.json` fixture and installed
+NetworkPolicy. DNS answers can rotate: an allowed address may succeed while a
+different address is refused on the next clone or fetch. A successful API call
+does not prove Git egress, and a single successful DNS lookup is insufficient.
+Use the [local repository input procedure](../guides/deploy/local-repository-credentials.md#prepare-the-approved-inputs)
+to refresh the approved endpoints. After confirming session disposal, recreate
+only the run-owned installation and rerun the affected scenarios. Keep the Git,
+sandbox, and disposal assertions intact; retries do not correct a missing
+egress destination.
+
 ## Extend the scenarios
 
 Add a named `stage(...)` in
