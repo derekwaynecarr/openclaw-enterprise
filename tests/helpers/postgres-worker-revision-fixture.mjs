@@ -14,6 +14,37 @@ import { waitFor } from "./wait-for.mjs";
 
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
 
+// Admission locks a Namespace, then its Agent. Every worker transaction that locks a claim's
+// Agent must already hold the Namespace (#1742), or it deadlocks with a concurrent deploy,
+// stop, delete or withdrawal. Records each Agent lock taken first, with its stack.
+function checkClaimLockOrder(worker, violations) {
+  const transactWithQueue = worker.state.transactWithQueue.bind(worker.state);
+  worker.state.transactWithQueue = (work, ...options) =>
+    transactWithQueue((unit, queue) => {
+      const locked = new Set();
+      const namespaces = {
+        ...unit.namespaces,
+        lockNamespace: async (namespaceId, ...rest) => {
+          const namespace = await unit.namespaces.lockNamespace(namespaceId, ...rest);
+          if (namespace !== undefined) {
+            locked.add(namespaceId);
+          }
+          return namespace;
+        },
+      };
+      const agents = {
+        ...unit.agents,
+        lockAgent: (namespaceId, ...rest) => {
+          if (!locked.has(namespaceId)) {
+            violations.push(new Error("Agent locked before its Namespace").stack);
+          }
+          return unit.agents.lockAgent(namespaceId, ...rest);
+        },
+      };
+      return work(Object.freeze({ ...unit, namespaces, agents }), queue);
+    }, ...options);
+}
+
 // One template per owning test file; importing this helper registers no tests or hooks.
 export function createWorkerRevisionFixtures(testFile) {
   // Each test owns a database (Work claims span one), copied from one migrated template
@@ -120,6 +151,10 @@ export function createWorkerRevisionFixtures(testFile) {
       createdAt: new Date().toISOString(),
     };
     let worker;
+    const lockOrderViolations = [];
+    context.after(() =>
+      assert.deepEqual(lockOrderViolations, [], "the worker locked an Agent before its Namespace"),
+    );
     await state.transact((unit) => unit.namespaces.createNamespace(namespace));
     const compute = {
       ...createDevelopmentComputeDriver(),
@@ -457,6 +492,7 @@ export function createWorkerRevisionFixtures(testFile) {
         emit,
       });
       database.workers.add(worker);
+      checkClaimLockOrder(worker, lockOrderViolations);
       return worker.start();
     }
 

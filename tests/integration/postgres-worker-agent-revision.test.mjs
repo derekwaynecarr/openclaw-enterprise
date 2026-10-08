@@ -4169,6 +4169,86 @@ test(
 );
 
 revisionTest(
+  "a model-withdrawn revision's maintenance rechecks every revoked source, and a failed recheck keeps the chain",
+  async (fixture) => {
+    const owner = await fixture.agent("withdrawn-model-recheck", {
+      auth: "credential_source",
+      nonModelSources: 1,
+    });
+    const active = await fixture.revision(owner, 1);
+    const modelSourceId = owner.harnessAuth.sourceId;
+    const [toolSourceId] = toolSources(owner).map(({ sourceId }) => sourceId);
+    const rechecked = [];
+    let recheckFailure;
+    const events = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        maintenanceIntervalMs: 3_600_000,
+        async withdrawCredentialSource(revision, source, _signal, options = {}) {
+          if (options.recheck === true) {
+            rechecked.push([revision.id, source.id]);
+            if (recheckFailure !== undefined) {
+              throw recheckFailure;
+            }
+          }
+          return { sourceId: source.id, state: "revoked" };
+        },
+      },
+      {
+        convergenceTimeoutMs: 50,
+        transformDrivers: withCredentialGateway,
+        emit: (event) => events.push(event),
+      },
+    );
+    await fixture.work(active, "succeeded");
+    for (const credentialSourceId of [toolSourceId, modelSourceId]) {
+      const target = { namespaceId: fixture.namespace.id, agentId: owner.id, credentialSourceId };
+      await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, target);
+      await waitFor(`withdrawal of ${credentialSourceId} to be revoked`, async () => {
+        const withdrawal = await fixture.controller.readAgentCredentialWithdrawal(
+          fixture.actor.id,
+          target,
+        );
+        return withdrawal.state === "revoked" ? withdrawal : undefined;
+      });
+    }
+    const maintenancePass = async () => {
+      const due = await fixture.advanceMaintenance(active);
+      assert.equal(due.rowCount, 1, "one maintenance pass is queued");
+      return { id: active.id, idempotencyKey: due.rows[0].idempotency_key };
+    };
+
+    // A gateway outage during the recheck ends only this pass, under the gateway's code; the
+    // chain queues the next pass instead of stopping with a revoked source maybe still attached.
+    recheckFailure = new DependencyUnavailableError("The Credential Gateway did not answer.");
+    rechecked.length = 0;
+    const failed = await maintenancePass();
+    const pending = await completion(
+      events,
+      "the failed recheck's pass to end pending",
+      (event) =>
+        event.event === "worker.completed" &&
+        event.workId === failed.idempotencyKey &&
+        event.outcome === "pending",
+    );
+    assert.equal(pending.code, "REVISION_FINALIZATION_INCOMPLETE");
+    assert.deepEqual(rechecked, [[active.id, modelSourceId]]);
+
+    // The next pass rechecks every revoked source in admission order, then the chain stops:
+    // all withdrawals are revoked.
+    recheckFailure = undefined;
+    rechecked.length = 0;
+    await fixture.work(await maintenancePass(), "succeeded");
+    assert.deepEqual(rechecked, [
+      [active.id, modelSourceId],
+      [active.id, toolSourceId],
+    ]);
+    assert.equal((await fixture.advanceMaintenance(active)).rowCount, 0);
+  },
+);
+
+revisionTest(
   "maintenance keeps re-queuing withdrawals after a withdrawn source loses its Agent grant",
   async (fixture) => {
     const owner = await fixture.agent("withdrawn-grant-revoked", {
