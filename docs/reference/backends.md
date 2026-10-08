@@ -138,7 +138,8 @@ backend:
 Its closed `configuration` accepts:
 
 - `endpoint`: `host:port`, or an `http` or `https` origin without credentials,
-  path, query, or fragment.
+  path, query, or fragment. An `https` endpoint at an IP address sends no TLS
+  server name, so the gateway certificate must carry that IP address.
 - `serviceName`, `scheme`, and `port`: used when `endpoint` is omitted. A dotted
   name is used as-is; a bare name resolves in each tenant namespace. `port`
   defaults to `8080`, and `scheme` defaults to `https` only when
