@@ -635,7 +635,7 @@ export const scenarios = {
       "Returning to unchanged pages and Agent tabs preserves loaded controls, expanded panels, and edits. Access is rechecked before page controls become active. Refresh explicitly reloads. Simulated API; no backend persistence proof.",
     steps: [
       "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. The loaded list and search remain visible while reads are pending.",
-      "Visit Namespaces and Settings, then repeat with browser Back and Forward. First visits may load; returning pages retain their content.",
+      "Use Tab to focus Namespaces, then Enter. After loading, its heading has focus and the next Tab reaches Refresh. Back and Forward focus the destination heading while retaining loaded content.",
       "Open an Agent and expand Native configuration. Visit Credentials and Workspace files, then return to Configuration: the disclosure stays expanded. Return to Agents and use Back: native admin access and the selected tab stay loaded through access checks. Refresh explicitly rereads the page.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
     ],
@@ -976,9 +976,9 @@ export const scenarios = {
     description:
       "The actual form lists the first catalog page, places enableable plugins first, and keeps unavailable rows compact with reasons in popovers. Selecting a plugin loads its tools before Add becomes available.",
     steps: [
-      "Review the Driver's workspace access and service account setup guidance. Connection status is unverified; catalog availability does not confirm linked credentials. External help links open separately from plugin navigation.",
+      "Expand Access and credential setup for the full Driver guidance and external help links, then collapse it. The credential/access reminder stays visible; catalog availability does not verify connections.",
       "Open the information button beside each unavailable plugin to compare its administrator, plan, or unsupported-runtime reason and help link. Escape or a click outside dismisses the popover. Choose the plugin row to see the same guidance in detail; Add stays disabled.",
-      "Available and Configured share a compact sidebar; page controls stay below the scrolling list. Next page and Previous page navigate server pages.",
+      "At 390px width and both 844px and 640px height, scroll the plugin list and use Next page and Previous page. Search and pagination remain reachable while the list and details scroll within the dialog.",
       "Choose Calendar to load its tools and inspect their IDs beneath the titles, then Add Calendar. Configure its plugin defaults and expand a tool to override them.",
       "Type create into Filter tools: only Create event remains, and the caret stays after the text. Clear it to restore the other tools. Search plugins for Documents before visiting its catalog page, then clear the query.",
       "Click Done and expand Plugin selections JSON: one heading labels a bounded monospace editor. Replacing the dummy token or authentication method clears discovery results and preserves selections.",
@@ -2875,6 +2875,7 @@ export const scenarios = {
     description:
       "The Logs tab shows the Gateway Pod, its OOMKilled restart and BackOff Event, then redacted operational output with a withheld-structured-output row. Previous instance is available after the restart.",
     steps: [
+      "At 390px, open this direct Logs route and check its selected tab is visible. Visit Configuration, then use Back and Forward; selected tabs remain visible without resetting expanded panels.",
       "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
       "Expand the runtime.startup_phase row to inspect its fields. The timestamp, level, origin, and message remain aligned in the collapsed rows.",
       "Select Follow, confirm it changes to Following, then select Following to stop. Resize the preview to 390px and check that controls remain usable and log metadata wraps without clipping messages.",
@@ -3097,7 +3098,11 @@ export const scenarios = {
     mobile: true,
     actions: [{ selector: '.content [aria-busy="false"]' }, click("Open navigation")],
     description:
-      "390px viewport with the simulated OCC revision beside OCE in the open drawer. Escape or the overlay closes it.",
+      "390px viewport with the simulated OCC revision beside OCE in the open drawer. Escape or the overlay closes it; widening to desktop releases the page.",
+    steps: [
+      "With the drawer open, widen past 760px. Search Agents without pressing Escape; content is active and navigation is no longer trapped.",
+      "Return to 390px. The drawer starts closed; reopen it and press Escape to return focus to Open navigation.",
+    ],
   },
   slack: {
     group: "Components/Channels",
@@ -3775,7 +3780,11 @@ export const scenarios = {
     auth: "service",
     rules: [{ suffix: "/service-accounts", method: "GET", status: 403 }],
     description:
-      "A failed list request preserves the saved account and explains that accounts are unavailable.",
+      "A failed list request preserves the saved account and explains that accounts are unavailable only while issued-account authentication is selected.",
+    steps: [
+      "Switch Authentication source to API key, Service Accounts, and Operator-managed credentials. The issued-account error disappears; each source shows its own fields with consistent styling.",
+      "Return to Issued ChatGPT service account. The unavailable-account feedback and saved account return; the failed lookup does not change its selection.",
+    ],
   },
   nativeAdmin: {
     group: "Components/Native admin",
