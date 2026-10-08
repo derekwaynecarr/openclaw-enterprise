@@ -3487,6 +3487,12 @@ revisionTest(
     await fixture.stop();
 
     assert.equal((await fixture.workResult(second)).rows[0].reason_code, "CREDENTIAL_WITHDRAWN");
+    // The status names the withdrawal and the way out, not the generic failure text (D549).
+    assert.deepEqual((await fixture.deploymentStatus(owner, second)).error, {
+      code: "CREDENTIAL_WITHDRAWN",
+      message:
+        "The Harness credential source was withdrawn from this revision, so the revision cannot start. Deploy again to admit a new revision with the Agent's current sources.",
+    });
     assert.deepEqual(prepared, [first.id]);
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, first.id);
     const read = await fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
@@ -7660,6 +7666,73 @@ revisionTest(
       },
     });
     assert.equal(preparations, 1);
+  },
+);
+
+revisionTest(
+  "credential-source dispatch refusals fail deployment with a fixed message per code",
+  async (fixture) => {
+    // Each revision's admitted snapshot no longer matches the Installation or the source records,
+    // so dispatch fails it at once. The status names the cause and the fix, without IDs, instead
+    // of the generic "Deployment reconciliation failed." (D549).
+    const cases = [
+      {
+        label: "credential-gateway-removed",
+        // The worker starts without the Credential Gateway that admitted the revision.
+        withoutGateway: true,
+        error: {
+          code: "CREDENTIAL_GATEWAY_MISMATCH",
+          message:
+            "The Installation no longer selects the Credential Gateway this revision was admitted with. Bind sources registered through the selected gateway, then deploy again.",
+        },
+      },
+      {
+        label: "harness-source-deleting",
+        deleting: (owner) => owner.harnessAuth.sourceId,
+        error: {
+          code: "HARNESS_AUTH_SOURCE_UNAVAILABLE",
+          message:
+            "The Harness authentication source this revision was admitted with is missing, being deleted, or changed since admission. Bind an available source, then deploy again.",
+        },
+      },
+      {
+        label: "tool-source-deleting",
+        nonModelSources: 1,
+        deleting: (owner) => owner.credentialSources[1].sourceId,
+        error: {
+          code: "CREDENTIAL_SOURCE_UNAVAILABLE",
+          message:
+            "A credential source this revision lists is missing, being deleted, or changed since admission. Bind available sources, then deploy again.",
+        },
+      },
+    ];
+    for (const { label, withoutGateway, deleting, nonModelSources, error } of cases) {
+      const { owner, candidate } = await fixture.admitInitialRevision(label, {
+        agent: { auth: "credential_source", nonModelSources },
+      });
+      if (deleting !== undefined) {
+        await fixture.state.transact((unit) =>
+          unit.credentialSources.markCredentialSourceDeleting(fixture.namespace.id, deleting(owner)),
+        );
+      }
+      const prepared = [];
+      await fixture.start(
+        {
+          ...fixture.compute,
+          async prepareRevision(revision, revisionContext) {
+            prepared.push(revision.id);
+            return fixture.compute.prepareRevision(revision, revisionContext);
+          },
+        },
+        withoutGateway ? {} : { transformDrivers: withCredentialGateway },
+      );
+      await fixture.work(candidate, "failed_permanent");
+      await fixture.stop();
+      assert.deepEqual(prepared, [], label);
+      const status = await fixture.deploymentStatus(owner, candidate);
+      assert.equal(status.status, "failed", label);
+      assert.deepEqual(status.error, error, label);
+    }
   },
 );
 

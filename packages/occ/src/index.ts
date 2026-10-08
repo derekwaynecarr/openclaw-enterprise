@@ -153,6 +153,7 @@ import {
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
   CredentialSourceDriverError,
+  CredentialSourceTypeNotOfferedError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
@@ -279,6 +280,7 @@ export {
   CredentialGatewayNotConfiguredError,
   CredentialSourceDriverError,
   CredentialSourceRevisionError,
+  CredentialSourceTypeNotOfferedError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
@@ -2053,8 +2055,10 @@ export class OpenClawController {
         `Agent provisioning needs ${provisioningModes.join(" or ")} execution; this request uses ${executionMode} execution. Set executionMode.`,
       );
     }
+    // A rule about the request body, checked after the Namespace grants: name it (400) instead
+    // of hiding it as a scope miss.
     if (harnessAuth === null || harnessAuth.method === "runtime") {
-      throw new ScopeViolationError(
+      throw new SecretBindingValidationError(
         "Agent provisioning requires dedicated Harness authentication.",
       );
     }
@@ -8665,9 +8669,9 @@ export class OpenClawController {
     );
     const entry = catalog.find((candidate) => candidate.type === type);
     if (entry === undefined) {
-      throw new ScopeViolationError(
-        "The selected Credential Gateway does not support this source type.",
-      );
+      // Callers check the caller's grant and look up an existing source first. The catalog is
+      // Installation configuration, so the refusal names the fix instead of a generic 404.
+      throw new CredentialSourceTypeNotOfferedError();
     }
     return entry;
   }

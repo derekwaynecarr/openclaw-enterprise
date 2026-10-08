@@ -8,6 +8,7 @@ import {
   AuthorizationDeniedError,
   CredentialGatewayNotConfiguredError,
   CredentialSourceDriverError,
+  CredentialSourceTypeNotOfferedError,
   DependencyUnavailableError,
   InMemoryPlatformState,
   NamespaceNotEmptyError,
@@ -358,7 +359,7 @@ test("registration validates the catalog and hands the gateway values OCC never 
 
   // Unknown types, missing required inputs, and unknown fields fail before any gateway effect.
   for (const [input, expected] of [
-    [{ type: "unknown" }, /does not support this source type/],
+    [{ type: "unknown" }, CredentialSourceTypeNotOfferedError],
     [{ type: "openai" }, /secrets field api_key is required/],
     [
       { type: "openai", secrets: { api_key: secret.ref, extra: secret.ref } },
@@ -2369,10 +2370,7 @@ test("deploy admission rechecks every listed source for the deployer, Sandbox an
   const listSourceTypes = gateway.listSourceTypes;
   gateway.listSourceTypes = async () =>
     (await listSourceTypes()).filter(({ type }) => type !== "registry");
-  await assert.rejects(deploy(), {
-    name: "ScopeViolationError",
-    message: "The selected Credential Gateway does not support this source type.",
-  });
+  await assert.rejects(deploy(), CredentialSourceTypeNotOfferedError);
   gateway.listSourceTypes = listSourceTypes;
   assert.deepEqual((await deploy()).credentialSources, [
     { sourceId: model.id, credentialGatewayId: gateway.id, sourceType: "openai" },
@@ -2408,6 +2406,102 @@ test("deploy admission rechecks every listed source for the deployer, Sandbox an
       message: "Agent credential sources require a selected Sandbox Driver.",
     },
   );
+});
+
+test("a source type the gateway stops offering is a 409 naming the fix, after the grant and lookup", async () => {
+  const {
+    controller,
+    dedicatedAgent,
+    gateway,
+    grantAgentSourceOperate,
+    makeReady,
+    modelSecret,
+    namespace,
+  } = await fixture();
+  await makeReady();
+  const model = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: (await modelSecret()).ref },
+  });
+  const tool = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "registry",
+    type: "registry",
+    config: { host: "registry.example.com" },
+  });
+  const agent = await dedicatedAgent();
+  await controller.updateAgent(administrator, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "credential_source", sourceId: model.id },
+    credentialSources: [{ sourceId: model.id }, { sourceId: tool.id }],
+  });
+  grantAgentSourceOperate(agent, model);
+  grantAgentSourceOperate(agent, tool, "registry");
+  const deploy = (principal = administrator) =>
+    controller.deployAgent(
+      principal,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    );
+  const update = (principal = administrator) =>
+    controller.updateCredentialSource(principal, {
+      namespaceId: namespace.id,
+      credentialSourceId: tool.id,
+    });
+  const register = (principal = administrator) =>
+    controller.createCredentialSource(principal, {
+      namespaceId: namespace.id,
+      name: "registry-2",
+      type: "registry",
+      config: { host: "registry.example.com" },
+    });
+  // The sources exist, so a generic "not found" would mislead (D548): the answer names the
+  // Installation setting to restore, the way OpenShell drops bearer-token without toolBinaries.
+  const notOffered = (error) => {
+    assert.ok(error instanceof CredentialSourceTypeNotOfferedError, error.name);
+    const failure = requestFailure(error);
+    assert.deepEqual(
+      { status: failure.status, code: failure.code, message: failure.message },
+      {
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message: new CredentialSourceTypeNotOfferedError().message,
+      },
+    );
+    return true;
+  };
+  const offered = gateway.listSourceTypes;
+  const withdrawType = (type) => {
+    gateway.listSourceTypes = async () =>
+      (await offered()).filter((entry) => entry.type !== type);
+  };
+
+  withdrawType("registry");
+  const updatesBefore = gateway.calls.filter(({ operation }) => operation === "updateSource");
+  await assert.rejects(update(), notOffered);
+  await assert.rejects(register(), notOffered);
+  await assert.rejects(deploy(), notOffered);
+  assert.deepEqual(
+    gateway.calls.filter(({ operation }) => operation === "updateSource"),
+    updatesBefore,
+  );
+  // The catalog is an Installation property, but callers without the grant still learn nothing.
+  for (const call of [update, register, deploy]) {
+    await assert.rejects(call(zeroGrant), AuthorizationDeniedError);
+  }
+
+  // The Harness source's type is checked the same way.
+  withdrawType("openai");
+  await assert.rejects(deploy(), notOffered);
+
+  // Offering the type again restores every path.
+  gateway.listSourceTypes = offered;
+  assert.deepEqual((await update()).status, { state: "ready" });
+  assert.equal((await deploy()).credentialSources.length, 2);
 });
 
 test("after a Credential Gateway change, every path refuses an old source with one fixed message and DELETE keeps it ready", async () => {
