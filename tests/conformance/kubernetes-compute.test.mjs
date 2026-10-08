@@ -28,6 +28,7 @@ import {
   ActivationPendingError,
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
+  DependencyUnavailableError,
 } from "../../packages/occ/src/index.ts";
 import {
   currentComputeAbortSignal,
@@ -7817,6 +7818,7 @@ function providerReadinessFixture({
   harnessEndpoint,
   lifecycleDrivers = [],
   nodeEnrollment,
+  credentialGatewayDriver,
 } = {}) {
   const driver = new KubernetesComputeDriver(
     routedOptions({
@@ -7860,6 +7862,7 @@ function providerReadinessFixture({
         },
         ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
       },
+      ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
     },
   );
   const revision = routedRevision(driver, {
@@ -8216,9 +8219,22 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   const provisions = [];
   const endpoints = [];
   const setupRequests = [];
+  const attachmentChecks = [];
   const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
   const providerWorkspaceRoot = "/sandbox/enterprise";
   const fixture = providerReadinessFixture({
+    // Used only by revisions that bind credential sources.
+    credentialGatewayDriver: {
+      id: "credential-gateway",
+      capability: "credential_gateway",
+      async attachForRevision(context) {
+        return context.sources.map(({ id }) => ({ sourceId: id, ref: `ref-${id}` }));
+      },
+      async attachmentStatus(context) {
+        attachmentChecks.push(context.sources.map(({ id }) => id));
+        return context.sources.map(({ id }) => ({ sourceId: id, state: "ready" }));
+      },
+    },
     async provisionHarness(context) {
       // The provider fences Harness egress; a Compute auth grant would be unioned with it.
       assert.equal(
@@ -8725,6 +8741,61 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   await driver.activateRevision(revision, authContext(revision));
   assert.equal(harnessObservations.length, observedBeforeActivation + 1);
   assert.equal(harnessObservations.at(-1).transportToken, "test-transport");
+
+  // Ready credential attachments do not stand in for a serving Harness: a revision whose
+  // Sandbox carries gateway-held credentials waits for the Harness too.
+  const toolSource = {
+    id: "cs_00000000-0000-4000-8000-000000000546",
+    namespaceId: tenant.id,
+    name: "tool",
+    type: "bearer-token",
+    config: { host: "api.example.com", env_var: "TOOL_TOKEN" },
+    secrets: {},
+    driverId: "credential-gateway",
+    state: "ready",
+    createdAt: "2026-10-08T00:00:00.000Z",
+  };
+  const sourced = {
+    ...revision,
+    credentialSources: [
+      {
+        sourceId: toolSource.id,
+        credentialGatewayId: "credential-gateway",
+        sourceType: "bearer-token",
+      },
+    ],
+  };
+  const sourcedContext = { ...authContext(sourced), credentialSources: [toolSource] };
+  for (const [answer, outcome] of [
+    [{ state: "starting" }, { ready: false }],
+    [
+      { state: "failed", runtimeFailure: heldFailure },
+      { ready: false, runtimeFailure: heldFailure },
+    ],
+    [{ state: "serving" }, { ready: true }],
+  ]) {
+    harnessAnswer = answer;
+    const checksBefore = attachmentChecks.length;
+    const observedBeforeSourced = harnessObservations.length;
+    assert.deepEqual(await driver.prepareRevision(sourced, sourcedContext), {
+      ...expected,
+      ...outcome,
+    });
+    assert.deepEqual(attachmentChecks.slice(checksBefore), [[toolSource.id]]);
+    assert.equal(harnessObservations.length, observedBeforeSourced + 1);
+    assert.equal(harnessObservations.at(-1).revision, sourced);
+  }
+
+  // An unreachable Harness transport is a Sandbox provisioning failure in diagnostics.
+  fixture.sandbox.harnessStatus = async () => {
+    throw new DependencyUnavailableError("OpenShell service is unreachable.");
+  };
+  const unreachable = await driver.prepareRevision(revision, authContext(revision)).then(
+    () => assert.fail("an unreachable Harness must not prepare"),
+    (error) => error,
+  );
+  assert.ok(unreachable instanceof DependencyUnavailableError, String(unreachable));
+  assert.equal(driver.describePrepareRevisionFailure(unreachable).stage, "sandbox_provision");
 });
 
 test("provider Harness readiness preserves API errors and owner cancellation", async () => {

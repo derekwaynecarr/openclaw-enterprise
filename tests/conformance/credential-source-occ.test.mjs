@@ -2469,7 +2469,9 @@ test("a source type the gateway stops offering is a 409 naming the fix, after th
       {
         status: 409,
         code: "RESOURCE_CONFLICT",
-        message: new CredentialSourceTypeNotOfferedError().message,
+        // Fixed text that names the Installation setting and where it is documented.
+        message:
+          "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
       },
     );
     return true;

@@ -7842,6 +7842,66 @@ revisionTest(
 );
 
 revisionTest(
+  "a revision whose Harness or listed credential source is no longer ready fails with a fixed status message",
+  async (fixture) => {
+    // Admission saw ready sources; each was marked deleting before dispatch, so the worker fails
+    // the revision without preparing it. The status names the cause and the fix, without IDs,
+    // instead of the generic "Deployment reconciliation failed." (D549).
+    const harness = await fixture.admitInitialRevision("harness-source-deleting", {
+      agent: { auth: "credential_source" },
+    });
+    const listed = await fixture.admitInitialRevision("listed-source-deleting", {
+      agent: { auth: "credential_source", nonModelSources: 1 },
+    });
+    const [tool] = toolSources(listed.owner);
+    await fixture.state.transact(async (unit) => {
+      for (const sourceId of [harness.owner.harnessAuth.sourceId, tool.sourceId]) {
+        assert.ok(
+          await unit.credentialSources.markCredentialSourceDeleting(fixture.namespace.id, sourceId),
+        );
+      }
+    });
+    const prepared = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, revisionContext) {
+          prepared.push(revision.id);
+          return fixture.compute.prepareRevision(revision, revisionContext);
+        },
+      },
+      { transformDrivers: withCredentialGateway },
+    );
+    await fixture.work(harness.candidate, "failed_permanent");
+    await fixture.work(listed.candidate, "failed_permanent");
+    await fixture.stop();
+    assert.deepEqual(prepared, []);
+    for (const [{ owner, candidate }, error] of [
+      [
+        harness,
+        {
+          code: "HARNESS_AUTH_SOURCE_UNAVAILABLE",
+          message:
+            "The Harness authentication source this revision was admitted with is missing, being deleted, or changed since admission. Bind an available source, then deploy again.",
+        },
+      ],
+      [
+        listed,
+        {
+          code: "CREDENTIAL_SOURCE_UNAVAILABLE",
+          message:
+            "A credential source this revision lists is missing, being deleted, or changed since admission. Bind available sources, then deploy again.",
+        },
+      ],
+    ]) {
+      const status = await fixture.deploymentStatus(owner, candidate);
+      assert.equal(status.status, "failed", error.code);
+      assert.deepEqual(status.error, error);
+    }
+  },
+);
+
+revisionTest(
   "a Gateway route that lags its Ready Pod is retried within the deadline, not the attempt budget",
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("gateway-route-lag");
