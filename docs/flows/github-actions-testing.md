@@ -114,14 +114,6 @@ under `fileConcurrency` a record can include a sibling's namespaces. A failed
 start logs `Agent namespace activity unavailable`. Each lane that writes the
 artifact uploads it.
 
-The capture also gives each file a private `OPENCLAW_CI_CONTAINER_LOG_DIR`. A test
-that follows a container with `tests/helpers/container-log-capture.mjs` writes a
-record there only when a wait fails: its markers, Pod and event snapshots, and
-the log, waiting up to 60 s for the container to exit. `projectContainerLog`
-keeps at most 1,500 lines, redacts environment values and secret shapes in lines
-and event messages, and adds the record under `containerLogs`. The platform
-recovery test follows its fixture gateway, which logs its drain, across Agent stop.
-
 Dedicated Codex preparation and the operator's offline profile generator share
 `scripts/lib/codex-seccomp-profile.mjs:deriveCodexBwrapProfile`. Preparation
 requires an actual workspace write and denied write to a container-writable
