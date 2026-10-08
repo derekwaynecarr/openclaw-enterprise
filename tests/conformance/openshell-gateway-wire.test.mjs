@@ -235,7 +235,7 @@ test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", as
     },
     DeleteSandbox(call, callback) {
       deleteRequests.push(call.request);
-      callback(null, { deleted: true });
+      callback(null, { outcome: "DELETION_OUTCOME_COMPLETED", sandbox_id: "sandbox-id" });
     },
   });
   const port = await bindWireServer(server);
@@ -378,6 +378,102 @@ test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", as
       ),
       /OpenShell CreateSandbox returned no service URL map/,
     );
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell client reports a Sandbox deleted only once OpenShell confirms it", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const deletes = [];
+  const gets = [];
+  // Per Sandbox name: how DeleteSandbox answers, and what GetSandbox reports afterwards.
+  const scenarios = {
+    // Finding 857: OpenShell answers only after the Sandbox Pod's termination grace,
+    // which outlasts the ordinary request deadline.
+    "sandbox-slow": { delayMs: 1_500, outcome: "DELETION_OUTCOME_COMPLETED" },
+    "sandbox-accepted": { outcome: "DELETION_OUTCOME_ACCEPTED", presentFor: 2 },
+    "sandbox-no-outcome": { presentFor: 1 },
+    "sandbox-replaced": { outcome: "DELETION_OUTCOME_ACCEPTED", replacedBy: "sandbox-id-2" },
+    "sandbox-stuck": { outcome: "DELETION_OUTCOME_ACCEPTED", presentFor: Infinity },
+  };
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    DeleteSandbox(call, callback) {
+      deletes.push(call.request.name);
+      const scenario = scenarios[call.request.name];
+      setTimeout(
+        () =>
+          callback(null, {
+            ...(scenario.outcome === undefined ? {} : { outcome: scenario.outcome }),
+            sandbox_id: "sandbox-id-1",
+          }),
+        scenario.delayMs ?? 0,
+      );
+    },
+    GetSandbox(call, callback) {
+      gets.push(call.request.name);
+      const scenario = scenarios[call.request.name];
+      const seen = gets.filter((name) => name === call.request.name).length;
+      if (scenario.replacedBy === undefined && seen > scenario.presentFor) {
+        callback({ code: grpc.status.NOT_FOUND });
+        return;
+      }
+      callback(null, {
+        sandbox: {
+          metadata: {
+            id: scenario.replacedBy ?? "sandbox-id-1",
+            name: call.request.name,
+            workspace: call.request.workspace_scope.workspace,
+          },
+          status: { phase: "SANDBOX_PHASE_DELETING" },
+        },
+      });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `127.0.0.1:${port}`,
+    requestTimeoutMs: 1_000,
+    sandboxDeleteTimeoutMs: 3_000,
+  });
+  const remove = (name) =>
+    client.deleteSandbox({ name, workspace: "tenant-workspace" }, AbortSignal.timeout(10_000));
+
+  try {
+    await remove("sandbox-slow");
+    assert.deepEqual(gets, []);
+
+    await remove("sandbox-accepted");
+    assert.deepEqual(gets, ["sandbox-accepted", "sandbox-accepted", "sandbox-accepted"]);
+
+    await remove("sandbox-no-outcome");
+    assert.equal(gets.filter((name) => name === "sandbox-no-outcome").length, 2);
+
+    await remove("sandbox-replaced");
+    assert.equal(gets.filter((name) => name === "sandbox-replaced").length, 1);
+
+    const started = Date.now();
+    await assert.rejects(remove("sandbox-stuck"), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError);
+      assert.match(error.message, /did not finish it within 3 s/);
+      return true;
+    });
+    assert.ok(Date.now() - started < 5_000);
+    assert.deepEqual(deletes, Object.keys(scenarios));
+
+    const aborted = new AbortController();
+    const cancelled = client.deleteSandbox(
+      { name: "sandbox-stuck", workspace: "tenant-workspace" },
+      aborted.signal,
+    );
+    setTimeout(() => aborted.abort(new Error("cancelled by test")), 700);
+    await assert.rejects(cancelled, /cancelled by test/);
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));
