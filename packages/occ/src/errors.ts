@@ -288,7 +288,8 @@ export class AgentCredentialSourceBindingError extends ScopeViolationError {
 /**
  * A request names an invalid Secret binding: Agent provisioning or a Configuration write
  * with a reserved or invalid environment destination or an unsupported binding shape
- * (including credential-source Harness authentication in Agent provisioning), or
+ * (including missing, runtime or credential-source Harness authentication in Agent
+ * provisioning), or
  * any of those, an Agent's Harness authentication, a credential source, or plugin discovery
  * naming a Secret in another Namespace. Messages are static, so HTTP reports them as an
  * invalid request instead of hiding them as a scope miss; Secret existence is still checked
@@ -748,6 +749,22 @@ export class CredentialGatewayNotConfiguredError extends Error {
       "This Installation has no Credential Gateway, so credential sources are unavailable. An administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/",
     );
     this.name = "CredentialGatewayNotConfiguredError";
+  }
+}
+
+/**
+ * The selected Credential Gateway's catalog lacks a source type: registration names one it does
+ * not offer, or a configuration change dropped an existing source's type (OpenShell offers
+ * `bearer-token` only with `toolBinaries`). An Installation property, raised only after the
+ * caller's grant and the source lookup, so it reveals nothing a 403 or 404 hides. The fixed
+ * message names the fix.
+ */
+export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
+    );
+    this.name = "CredentialSourceTypeNotOfferedError";
   }
 }
 

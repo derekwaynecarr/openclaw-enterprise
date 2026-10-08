@@ -5251,7 +5251,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     { body: provisioningRequestBody(namespace.data.id, secrets) },
   );
   assert.equal(refusedUnauthorized.status, 403, JSON.stringify(refusedUnauthorized.body));
-  // Authorization also precedes OCC's own plan checks. Each body below draws a 400 or 404 from
+  // Authorization also precedes OCC's own plan checks. Each body below draws a 400 from
   // an authorized caller; without the grant it is the same 403, so a caller learns nothing about
   // a Namespace they cannot provision in from how the plan is refused.
   const planRefusals = [
@@ -5260,15 +5260,19 @@ test("Agent provisioning API validates inline configuration with existing Secret
       provisioningRequestBody(namespace.data.id, secrets, { executionMode: undefined }),
       400,
     ],
+    // Provisioning needs dedicated Harness authentication. The rule is about the body, so an
+    // authorized caller gets it by name, not a generic "not found" (D547).
     [
       "no Harness authentication",
       provisioningRequestBody(namespace.data.id, secrets, { harnessAuth: null }),
-      404,
+      400,
+      "Agent provisioning requires dedicated Harness authentication.",
     ],
     [
       "runtime Harness authentication",
       provisioningRequestBody(namespace.data.id, secrets, { harnessAuth: { method: "runtime" } }),
-      404,
+      400,
+      "Agent provisioning requires dedicated Harness authentication.",
     ],
   ];
   const assertPlanRefusalsDenied = async (grant) => {
@@ -5294,7 +5298,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   });
   await assertPlanRefusalsDenied("without Installation administer");
   fixture.state.restrictions.pop();
-  for (const [description, body, status] of planRefusals) {
+  for (const [description, body, status, message] of planRefusals) {
     const refused = await injectedRequest(
       fixture.app,
       "POST",
@@ -5302,6 +5306,13 @@ test("Agent provisioning API validates inline configuration with existing Secret
       { body },
     );
     assert.equal(refused.status, status, `${description}: ${JSON.stringify(refused.body)}`);
+    if (message !== undefined) {
+      assert.deepEqual(
+        { code: refused.body.error.code, message: refused.body.error.message },
+        { code: "INVALID_REQUEST", message },
+        description,
+      );
+    }
   }
   // The logged reason keeps at most 512 characters, and a thrown non-Error's value is not logged.
   for (const [thrown, reason] of [

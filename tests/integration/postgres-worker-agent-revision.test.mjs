@@ -3487,6 +3487,12 @@ revisionTest(
     await fixture.stop();
 
     assert.equal((await fixture.workResult(second)).rows[0].reason_code, "CREDENTIAL_WITHDRAWN");
+    // The status names the withdrawal and the way out, not the generic failure text (D549).
+    assert.deepEqual((await fixture.deploymentStatus(owner, second)).error, {
+      code: "CREDENTIAL_WITHDRAWN",
+      message:
+        "The Harness credential source was withdrawn from this revision, so the revision cannot start. Bind a replacement source or another authentication method, then deploy again.",
+    });
     assert.deepEqual(prepared, [first.id]);
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, first.id);
     const read = await fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
@@ -7802,6 +7808,36 @@ revisionTest(
       },
     });
     assert.equal(preparations, 1);
+  },
+);
+
+revisionTest(
+  "a revision whose Credential Gateway is no longer selected fails with a fixed status message",
+  async (fixture) => {
+    // The Installation dropped the Credential Gateway after admission, so dispatch fails the
+    // revision at once. The status names the cause and the fix, without IDs, instead of the
+    // generic "Deployment reconciliation failed." (D549).
+    const { owner, candidate } = await fixture.admitInitialRevision("credential-gateway-removed", {
+      agent: { auth: "credential_source" },
+    });
+    const prepared = [];
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision, revisionContext) {
+        prepared.push(revision.id);
+        return fixture.compute.prepareRevision(revision, revisionContext);
+      },
+    });
+    await fixture.work(candidate, "failed_permanent");
+    await fixture.stop();
+    assert.deepEqual(prepared, []);
+    const status = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(status.status, "failed");
+    assert.deepEqual(status.error, {
+      code: "CREDENTIAL_GATEWAY_MISMATCH",
+      message:
+        "The Installation no longer selects the Credential Gateway this revision was admitted with. Bind sources registered through the selected gateway, or remove them and change harnessAuth, then deploy again.",
+    });
   },
 );
 

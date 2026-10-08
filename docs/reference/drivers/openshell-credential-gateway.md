@@ -66,7 +66,9 @@ binary keeps access; to cut it at once, withdraw the source or delete it. During
 a controller rollout, replicas with different lists may rewrite a profile in
 turn; the last write wins. Removing `toolBinaries` entirely blocks
 registrations, updates, deployments, and repairs of `bearer-token` sources,
-because OpenShell treats an empty binary list as any binary. Existing providers
+because OpenShell treats an empty binary list as any binary. Registration,
+update, and deployment requests then answer `409 RESOURCE_CONFLICT` naming the
+fix. Existing providers
 and profiles stay until you withdraw or delete them; status and deletion keep
 working.
 
@@ -236,7 +238,7 @@ Driver startup integration covers Backend membership and selection rules.
 | `drivers.credential_gateway requires an owning backend entry with type openshell.`                | Add the `openshell` Backend.                                                                                     |
 | `backend[…].drivers.credential_gateway must match …`                                              | Make the Backend member IDs match the selected Driver IDs.                                                       |
 | `OpenShell Credential Gateway binaries must be a nonempty list of absolute paths.`                | Correct `binaries`.                                                                                              |
-| Registering `bearer-token` returns `404` for an unsupported type                                  | Configure `toolBinaries`.                                                                                        |
+| Registering, updating, or deploying `bearer-token` returns `409`: the gateway does not offer it   | Configure `toolBinaries`.                                                                                        |
 | A tool request reaches the endpoint with the placeholder, or OpenShell denies it                  | Call it from a `toolBinaries` executable, at the source's exact host, port, and path.                            |
 | Deployment fails with `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`                                    | Two sources share a variable. Bind one `openai` source; give each `bearer-token` a distinct `env_var`.           |
 | Model requests fail with `403` "A credential placeholder in the request body cannot be forwarded" | A tool printed a placeholder into the conversation. Start a new thread, and avoid printing credential variables. |
