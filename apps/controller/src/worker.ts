@@ -4116,7 +4116,8 @@ export class ControllerWorker {
   // Lock the claim's Agent in admission order: Namespace, then Agent. These
   // transactions can later take Namespace locks (a Controller work insert's
   // foreign key, or the queue's cleanup transfer), so locking the Agent first
-  // deadlocks with a concurrent deployment, stop or delete.
+  // deadlocks with a concurrent Namespace-scoped mutation that then locks the
+  // Agent, such as deploy, stop, delete or credential withdrawal.
   private async lockClaimAgent(
     unit: PlatformUnitOfWork,
     claim: ClaimedWork,

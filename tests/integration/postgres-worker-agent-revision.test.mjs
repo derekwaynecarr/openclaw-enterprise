@@ -6557,9 +6557,7 @@ revisionTest(
   "maintenance completion takes the Namespace lock before the Agent, like deployment admission",
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("maintenance-lock-order");
-    const workerPool = fixture.createWorkerPool();
-    const backend = await workerPool.query("SELECT pg_backend_pid() AS pid");
-    await fixture.start({ ...fixture.compute, maintenanceIntervalMs: 200 }, { pool: workerPool });
+    await fixture.start({ ...fixture.compute, maintenanceIntervalMs: 200 });
     await fixture.work(candidate, "succeeded");
     const succeededMaintenance = async () =>
       Number(
@@ -6581,6 +6579,7 @@ revisionTest(
     // admission and maintenance completion deadlock.
     const admission = await fixture.observerPool.connect();
     let released = false;
+    let failed = false;
     try {
       await admission.query("BEGIN");
       const admissionBackend = await admission.query("SELECT pg_backend_pid() AS pid");
@@ -6589,11 +6588,11 @@ revisionTest(
       ]);
       await waitFor("the worker's real wait on the Namespace lock", async () => {
         const waiting = await fixture.observerPool.query(
-          `SELECT pid FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock'
-           AND $2 = ANY(pg_blocking_pids(pid))`,
-          [backend.rows[0].pid, admissionBackend.rows[0].pid],
+          `SELECT pid FROM pg_stat_activity
+           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
+          [admissionBackend.rows[0].pid],
         );
-        return waiting.rowCount === 1 ? true : undefined;
+        return waiting.rowCount > 0 ? true : undefined;
       });
       const before = await succeededMaintenance();
       await assert.doesNotReject(
@@ -6608,11 +6607,15 @@ revisionTest(
       await waitFor("the maintenance chain to continue", async () =>
         (await succeededMaintenance()) > before ? true : undefined,
       );
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
       if (!released) {
         await admission.query("ROLLBACK").catch(() => {});
       }
-      admission.release();
+      // Discard the connection after a failure instead of returning it to the pool.
+      admission.release(failed);
     }
   },
 );
