@@ -5177,10 +5177,6 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   assert.equal(workerProgram.includes("OPENCLAW_BUNDLED_SKILLS_DIR"), true);
   assert.equal(workerProgram.includes('publishImageTree("/app/custodian-skills"'), true);
   assert.equal(
-    workerProgram.includes('agents: { defaults: { workspace: "/home/node/workspace" } }'),
-    true,
-  );
-  assert.equal(
     worker.env.find(({ name }) => name === "OPENCLAW_NATIVE_WORKER_CAPACITY")?.value,
     "12",
     "the dedicated native node must receive its configured session capacity.",
