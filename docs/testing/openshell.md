@@ -142,8 +142,9 @@ change lands, not on its pull request.
 that the native Harness requests no inbound OpenShell service exposure and
 completes a real model turn through its outbound enrolled-worker connection.
 The selected network policy permits provider egress from the Codex executable
-for Codex or from the Node executable for native OpenClaw. Native enrollment
-egress uses the Workspace Gateway's configured endpoint port, including the
+for Codex or from the Node executable for native OpenClaw. The native verification
+fixture explicitly admits enrollment egress for the Node executable and the
+Workspace Gateway's exact host and configured port, including the
 high loopback port allocated by the Docker Desktop or Podman Machine verification
 relay on macOS. The real fixture
 also gives the delegated Sandbox the same 2 GiB Harness memory limit as

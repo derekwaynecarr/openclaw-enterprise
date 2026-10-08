@@ -1931,6 +1931,20 @@ async function prepareProductionInstallation(
     configuration.runtime = { nativeWorkerSupport: "custom-image" };
     configuration.drivers.compute.configuration.runtime.nativeOpenClawSessionCapacity = 2;
     configuration.drivers.credential_gateway.configuration.binaries = ["/usr/local/bin/node"];
+    // Automatic enrollment egress belongs to the Driver's Codex runtime provider. The native
+    // verification bridge must admit only its Node executable and exact Gateway endpoint.
+    configuration.drivers.sandbox.configuration.policy.networkPolicies.push({
+      name: "workspace-node-enrollment",
+      binaries: [{ path: "/usr/local/bin/node" }],
+      endpoints: [
+        {
+          host: workspaceGateway.routing.hostname,
+          ports: [workspaceGateway.routing.endpointPort],
+          tls: "skip",
+          enforcement: "enforce",
+        },
+      ],
+    });
   }
   // A cluster-internal echo service stands in for a protected non-model API. Only curl may
   // carry a non-model source's credential to it.
@@ -1945,7 +1959,7 @@ async function prepareProductionInstallation(
   configuration.drivers.sandbox.configuration.policy.filesystem.readWrite.push(
     "/home/node/.openclaw-node",
   );
-  // The Sandbox Driver adds the workspace node's Gateway egress rule itself
+  // For Codex, the Sandbox Driver adds the workspace node's Gateway egress rule itself
   // (`workspace-node-enrollment`); a second rule for the same host and port is ambiguous.
   configuration.drivers.secret.configuration.authentication = controller.authentication;
   const gatewayApiKeyPath = join(directory, "workspace-gateway-api-key");
