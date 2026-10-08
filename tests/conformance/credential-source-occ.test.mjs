@@ -2402,10 +2402,13 @@ test("after a Credential Gateway change, every path refuses an old source with o
   }
   // The refused deletion committed nothing: the source is still ready, so it is not stranded
   // in the one-way `deleting` state, and no gateway was asked to remove anything.
-  assert.equal(
-    (await controller.readCredentialSource(administrator, namespace.id, unbound.id)).state,
-    "ready",
-  );
+  const unchanged = await controller.readCredentialSource(administrator, namespace.id, unbound.id);
+  assert.equal(unchanged.state, "ready");
+  // Its live status names the driver change rather than an outage.
+  assert.deepEqual(unchanged.status, {
+    state: "failed",
+    reason: "A Credential Gateway Driver that is no longer selected registered the source.",
+  });
   assert.equal(removals().length, removalsBefore);
   // A referenced source still reports the reference first.
   await assert.rejects(

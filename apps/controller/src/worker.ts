@@ -47,8 +47,8 @@ import {
   OpenClawController,
   ActivationFailedError,
   ActivationPendingError,
-  SandboxRevisionUnsupportedError,
   CredentialSourceRevisionError,
+  SandboxRevisionUnsupportedError,
   TransientDependencyError,
   WorkClaimLostError,
   CREDENTIAL_WITHDRAWAL_TARGET,
@@ -3008,7 +3008,10 @@ export class ControllerWorker {
           }
           // As for a lost repository credential authority, this ends a maintenance
           // claim's chain too: the revision cannot activate without a new one.
-          if (error instanceof ActivationFailedError) {
+          if (
+            error instanceof ActivationFailedError ||
+            error instanceof CredentialSourceRevisionError
+          ) {
             await this.finalizeRevision(
               claim,
               { outcome: "permanent", code: error.code },

@@ -174,7 +174,7 @@ export class SecretStorageDriverError extends SecretDriverOwnershipError {
 export class CredentialSourceDriverError extends DependencyUnavailableError {
   constructor() {
     super(
-      "The selected Credential Gateway Driver did not register this credential source. Bind and deploy only sources registered through the selected driver: register a replacement and bind it in place of this one. To update or delete this source, an administrator must first select the driver that registered it again.",
+      "The selected Credential Gateway Driver did not register this credential source. Bind a replacement registered through the selected driver instead. To update or delete this source, an administrator must first re-select the driver that registered it.",
     );
     this.name = "CredentialSourceDriverError";
   }

@@ -233,7 +233,8 @@ Installation selects another driver in `drivers.credential_gateway`, binding,
 deploying, updating, or deleting an old source returns
 `503 DEPENDENCY_UNAVAILABLE` with one fixed message: "The selected Credential
 Gateway Driver did not register this credential source. …". OCC answers it only
-after the caller's grant and the source lookup.
+after the caller's grant and the source lookup. `GET` on such a source reports a
+`failed` status whose reason names the driver change.
 
 - To keep an Agent running, register a replacement source through the selected
   driver, list it in place of the old one, and deploy again.
