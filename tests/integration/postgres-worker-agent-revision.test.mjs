@@ -3337,7 +3337,10 @@ revisionTest(
       ...fixture.compute,
       async prepareRevision(revision, revisionContext) {
         if (revision.namespaceId === fixture.namespace.id) {
-          dispatched.push([revision.id, (revisionContext?.credentialSources ?? []).map(({ id }) => id)]);
+          dispatched.push([
+            revision.id,
+            (revisionContext?.credentialSources ?? []).map(({ id }) => id),
+          ]);
         }
         return fixture.compute.prepareRevision(revision, revisionContext);
       },
