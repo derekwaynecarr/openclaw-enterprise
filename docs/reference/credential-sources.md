@@ -194,7 +194,9 @@ again to queue another attempt.
 
 A withdrawn source never re-attaches to that revision. If its Sandbox is
 recreated, a withdrawn source is left out and the revision keeps running
-without it, unless `harnessAuth` names it. A withdrawn Harness source instead fails provisioning with
+without it, unless `harnessAuth` names it. If a Sandbox create that started
+before the withdrawal finishes after it, the next deployment or maintenance
+pass detaches the source again. A withdrawn Harness source instead fails provisioning with
 `CREDENTIAL_WITHDRAWN`, and maintenance of the revision stops preparing it. While any
 withdrawal is `pending`, each maintenance pass queues another attempt if none is
 outstanding. Maintenance does not recheck grants on withdrawn sources, which never

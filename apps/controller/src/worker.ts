@@ -1394,6 +1394,7 @@ export class ControllerWorker {
       await this.assertRepositoryAuthority(claim, revision);
       this.repositoryCredentials.validate(revision);
     }
+    await this.recheckRevokedCredentialSources(claim, revision);
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
     );
@@ -2603,6 +2604,23 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
   ): Promise<void> {
+    try {
+      await this.recheckRevokedCredentialSources(claim, revision);
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      // A failed recheck ends only this claim; the maintenance chain continues, so the next
+      // pass rechecks again and still re-queues pending withdrawals.
+      const pending = activationPendingResult(error);
+      await this.finalizeActiveRevision(claim, revision, pending.code, undefined, {
+        ...(pending.dependencyFailure === undefined
+          ? {}
+          : { dependencyFailure: pending.dependencyFailure }),
+        failureLogFields: revisionFailureLogFields(error),
+      });
+      return;
+    }
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
@@ -2644,6 +2662,53 @@ export class ControllerWorker {
       outcome: "success",
       code: "CREDENTIAL_WITHDRAWN",
     });
+  }
+
+  /**
+   * A withdrawal that found no Sandbox records the source revoked, yet a CreateSandbox that
+   * OpenShell accepted before its worker lost the claim can still land afterwards, with the
+   * source attached. Before each preparation, and each pass of a model-withdrawn revision,
+   * the gateway detaches every revoked source again if the Sandbox still lists it. Revoked
+   * rows stay revoked; the next pass checks again until the Sandbox no longer lists it. A
+   * recheck needs no requester reauthorization: the revocation is already recorded.
+   */
+  private async recheckRevokedCredentialSources(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    const withdraw = this.compute.withdrawCredentialSource?.bind(this.compute);
+    const sourceIds = revisionCredentialSourceIds(revision);
+    if (withdraw === undefined || sourceIds.length === 0) {
+      return;
+    }
+    const sources = await this.state.read(async (view) => {
+      const revokedIds = new Set(
+        (await view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id))
+          .filter(({ state }) => state === "revoked")
+          .map(({ credentialSourceId }) => credentialSourceId),
+      );
+      const revoked: Readonly<CredentialSource>[] = [];
+      // Admission order, as withdrawal uses.
+      for (const sourceId of sourceIds) {
+        if (!revokedIds.has(sourceId)) {
+          continue;
+        }
+        // A deleted source took its gateway provider, and its withdrawals, with it.
+        const source = await view.credentialSources.findCredentialSource(
+          revision.namespaceId,
+          sourceId,
+        );
+        if (source !== undefined) {
+          revoked.push(source);
+        }
+      }
+      return revoked;
+    });
+    for (const source of sources) {
+      await this.withClaimHeartbeat(claim, (signal) =>
+        withdraw(revision, source, signal, { recheck: true }),
+      );
+    }
   }
 
   /**

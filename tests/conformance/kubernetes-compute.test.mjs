@@ -4679,6 +4679,10 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   });
   assert.equal(withdrawals[0].sourceId, source.id);
   assert.equal(withdrawals[0].revision, revision);
+  assert.equal(withdrawals[0].recheck, undefined);
+  // A recheck of a recorded revocation reaches the gateway as one.
+  await driver.withdrawCredentialSource(revision, source, signal, { recheck: true });
+  assert.equal(withdrawals[1].recheck, true);
 
   // A gateway answer about another source is not evidence for this withdrawal.
   reportedSource = "cs_00000000-0000-4000-8000-000000000003";
