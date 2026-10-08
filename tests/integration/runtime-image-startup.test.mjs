@@ -1150,6 +1150,7 @@ function run(args, env, readinessUrl) {
     OPENCLAW_NATIVE_WORKER_CAPACITY: "8",
     OPENCLAW_NODE_STATE_DIR: "/home/node/.openclaw-node",
     OPENCLAW_NODE_SETUP_CODE: "runtime-image-schema-setup-code",
+    OPENCLAW_WORKSPACE_DIR: "/tmp/runtime-image-provider-workspace",
     OPENCLAW_NATIVE_INFERENCE_CONFIG: JSON.stringify({
       models: { providers: { openai: {
         baseUrl: "https://api.openai.com/v1",
@@ -1211,6 +1212,7 @@ function run(args, env, readinessUrl) {
     assert.equal(gateway.config.cloudWorkers?.requiredProfile, "dedicated-native");
     assert.equal(gateway.config.cloudWorkers?.profiles?.["dedicated-native"]?.provider, "device");
     assert.equal(harness.config.models.providers.openai.models[0].id, "runtime-image-schema");
+    assert.equal(harness.config.agents.defaults.workspace, "/tmp/runtime-image-provider-workspace");
     assert.deepEqual(harness.config.models.providers.openai.apiKey, {
       source: "env",
       provider: "model",

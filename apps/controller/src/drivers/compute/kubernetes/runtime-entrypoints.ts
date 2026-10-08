@@ -3660,12 +3660,14 @@ ${OPENCLAW_AUTH_PROBE_HELPERS}
 const inferenceConfig = process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
 const setupCode = process.env.OPENCLAW_NODE_SETUP_CODE;
+const workspace = process.env.OPENCLAW_WORKSPACE_DIR;
 const temporary = process.env.TMPDIR;
 const workerCapacity = Number(process.env.OPENCLAW_NATIVE_WORKER_CAPACITY);
 if (
   !inferenceConfig ||
   !state ||
   !setupCode ||
+  !workspace?.startsWith("/") ||
   !temporary ||
   !Number.isSafeInteger(workerCapacity) ||
   workerCapacity < 1 ||
@@ -3684,7 +3686,7 @@ mkdirSync(state, { recursive: true });
 const workerConfigPath = join(state, "openclaw.json");
 writeFileSync(workerConfigPath, JSON.stringify({
   ...JSON.parse(inferenceConfig),
-  agents: { defaults: { workspace: "/home/node/workspace" } },
+  agents: { defaults: { workspace } },
   plugins: {
     allow: ["file-transfer"],
     slots: { memory: "none" },
