@@ -6897,7 +6897,7 @@ revisionTest(
     assert.deepEqual((await fixture.deploymentStatus(owners[1], candidates[1])).error, {
       code: "SERVICE_ACCOUNT_BACKEND_MISMATCH",
       message:
-        "The ServiceAccount's Backend binding or credential issuance changed since this revision was admitted. Issue the account's credential again if it was revoked, then deploy again.",
+        "The ServiceAccount's Backend binding no longer matches the Agent's Backend, or its credential is no longer issued. Bind a ServiceAccount created and issued under the Agent's current Backend, then deploy again.",
     });
   },
 );
@@ -8603,7 +8603,7 @@ revisionTest(
     assert.deepEqual((await fixture.deploymentStatus(unsupported, unsupportedRevision)).error, {
       code: "HARNESS_DESCRIPTOR_MISMATCH",
       message:
-        "This revision's Harness version is no longer approved, for example after a controller upgrade. Deploy again to admit a revision with the approved version.",
+        "This revision's Harness or Harness version is no longer approved, for example after a controller upgrade. Deploy again to admit a revision with the approved version.",
     });
   },
 );
@@ -8860,7 +8860,7 @@ revisionTest(
     assert.deepEqual((await fixture.deploymentStatus(owner, candidate)).error, {
       code: "SECRET_DRIVER_MISMATCH",
       message:
-        "The Installation no longer selects the Secret Driver this revision was admitted with. Bind Secrets created through the selected Secret Driver, then deploy again.",
+        "The Installation no longer selects the Secret Driver this revision was admitted with. Bind Secrets created through the selected Secret Driver, or remove the old Secret bindings, then deploy again.",
     });
   },
 );
@@ -8870,7 +8870,7 @@ revisionTest(
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("changed-compute-owner");
     // Installation composition changed after admission: the revision stays pinned to the
-    // Compute Driver it was admitted with, and a new deployment admits one for the new driver.
+    // Compute Driver it was admitted with, so dispatch refuses it before any Compute effect.
     const effects = [];
     await fixture.start({
       ...fixture.compute,
