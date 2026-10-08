@@ -373,12 +373,13 @@ function execFile(command, args, options = {}) {
     };
     // A separate group no longer receives the terminal's or runner's signals.
     // Pass them on while the command runs, then let the default action stop us.
+    // Each such command adds one listener per signal; only k3d create uses it.
     const forwardSignal = (signal) => {
       stopForwardingSignals();
       signalCommand(signal);
       process.kill(process.pid, signal);
     };
-    const forwardedSignals = options.processGroup === true ? ["SIGINT", "SIGTERM", "SIGHUP"] : [];
+    const forwardedSignals = options.processGroup === true ? ["SIGINT", "SIGTERM"] : [];
     const stopForwardingSignals = () => {
       for (const signal of forwardedSignals) {
         process.removeListener(signal, forwardSignal);
@@ -407,6 +408,8 @@ function execFile(command, args, options = {}) {
           signalCommand("SIGKILL");
           // A descendant outside the child's group can hold its output pipes
           // open, and "close" waits for them. Stop waiting after a grace period.
+          // A streamed stdout is only unpiped here; its consumer's own timeout
+          // bounds the consumer.
           abandonTimer = setTimeout(() => {
             child.stdout?.destroy();
             child.stderr?.destroy();
@@ -1240,12 +1243,19 @@ async function createK3dCluster(statePath, state, resource, args) {
         failure.k3dDiagnosticsCaptured = true;
         throw failure;
       }
-      await k3dStage(state, "k3d-create-discard", () =>
-        deleteOwnedK3dCluster(resource, {
-          execFile: (command, commandArgs) =>
-            execFile(command, commandArgs, { timeoutMs: 2 * 60_000 }),
-        }),
-      );
+      try {
+        await k3dStage(state, "k3d-create-discard", () =>
+          deleteOwnedK3dCluster(resource, {
+            execFile: (command, commandArgs) =>
+              execFile(command, commandArgs, { timeoutMs: 2 * 60_000 }),
+          }),
+        );
+      } catch (discardError) {
+        // Keep the report that names the timeout; cleanup retries the deletion.
+        discardError.message = `${summary}; deleting the partial cluster failed: ${discardError.message}`;
+        discardError.k3dDiagnosticsCaptured = true;
+        throw discardError;
+      }
     }
   }
 }

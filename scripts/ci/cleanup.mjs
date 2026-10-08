@@ -192,7 +192,6 @@ async function cleanupDatabase(resource, state) {
 
 async function cleanupK3dCluster(resource, state) {
   assertResourceOwner(resource, state);
-  assertOwnedName("openclaw-k8s-", resource.name, "k3d cluster");
   assertOwnedK3dFilesystem(resource);
   await deleteOwnedK3dCluster(resource);
   await rm(resource.directory, { recursive: true, force: true });

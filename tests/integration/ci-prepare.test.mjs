@@ -445,16 +445,22 @@ if (command === "k3d") {
     }
     state.cluster = args[2];
     state.clusterDeleted = false;
-    if (scenario === "cluster-create-hangs" ||
-        (scenario === "cluster-create-hangs-once" && !state.createHung)) {
+    const hangOnce = ["cluster-create-hangs-once", "cluster-create-hangs-escaped"].includes(scenario);
+    if (scenario === "cluster-create-hangs" || (hangOnce && !state.createHung)) {
       state.createHung = true;
       commitState();
+      // The escaped case ignores SIGTERM and its descendant leaves the group, so
+      // only SIGKILL stops k3d and nothing can close the held pipes.
+      const escaped = scenario === "cluster-create-hangs-escaped";
+      if (escaped) process.on("SIGTERM", () => {});
       // A descendant that shares the output pipes, as a credential helper would.
       // The timeout must reach it, or "close" never comes.
       const descendant = spawn(process.execPath, ["-e", "setTimeout(() => {}, 40_000)"], {
         stdio: ["ignore", "inherit", "inherit"],
+        detached: escaped,
       });
-      appendFileSync(join(root, "hung-pids"), process.pid + "\n" + descendant.pid + "\n");
+      appendFileSync(join(root, "hung-pids"), process.pid + "\n" + (escaped ? "" : descendant.pid + "\n"));
+      if (escaped) appendFileSync(join(root, "escaped-pids"), descendant.pid + "\n");
       await hang();
     }
     if (scenario === "cluster-create-failed") {
@@ -1001,6 +1007,44 @@ test("k3d preparation times out a hung cluster create, discards it and retries o
   const cleanup = commands.cleanup();
   assert.equal(cleanup.status, 0, cleanup.stderr);
   await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
+});
+
+test("k3d preparation stops waiting for create output held outside its process group", async (t) => {
+  const commands = await fixtureImageCommands(t, "cluster-create-hangs-escaped", undefined, {
+    OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "4000",
+  });
+  const escapedPids = join(dirname(commands.statePath), "escaped-pids");
+  t.after(async () => {
+    const text = await readFile(escapedPids, "utf8").catch(() => "");
+    for (const pid of text.split("\n").map(Number)) {
+      if (!Number.isInteger(pid) || pid <= 0) {
+        continue;
+      }
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+  });
+  const result = commands.prepare();
+  assert.equal(result.error, undefined, "held output must not reach the CLI watchdog");
+  assert.equal(result.status, 0, result.stderr);
+  const timings = fixturePreparationMetrics(result.stderr).filter(
+    ({ stage, status }) => stage.startsWith("k3d-create") && status !== "started",
+  );
+  assert.deepEqual(
+    timings.map(({ stage, status }) => `${stage}:${status}`),
+    ["k3d-create:failed", "k3d-create-discard:passed", "k3d-create:passed"],
+  );
+  // SIGTERM is ignored: SIGKILL follows after 5 s, and the held pipes are
+  // abandoned 5 s later.
+  assert.ok(timings[0].elapsedMs >= 13_500, `first attempt ended after ${timings[0].elapsedMs} ms`);
+  for (const pid of await hungK3dProcesses(commands)) {
+    assert.equal(processRunning(pid), false, `hung k3d process ${pid} must not survive`);
+  }
+  const cleanup = commands.cleanup();
+  assert.equal(cleanup.status, 0, cleanup.stderr);
 });
 
 test("k3d preparation fails clearly when every cluster create attempt hangs", async (t) => {
