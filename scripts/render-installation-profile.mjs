@@ -181,17 +181,19 @@ function sha256Hex(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-// The bootstrap Job and the chart apply the Name rule to installation.name: 1 to 200
-// code points, no leading or trailing whitespace (including U+FEFF), and no controls.
-const installationNameText = /^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/u;
-const loneSurrogate = /\p{Cs}/u;
-
+// The bootstrap Job's isName rule, written without a control character in the pattern so
+// no-control-regex stays clear. U+0085 is inside the C1 range, and U+FEFF is leading whitespace.
 function isInstallationName(value) {
-  return (
-    installationNameText.test(value) &&
-    !loneSurrogate.test(value) &&
-    Array.from(value).length <= 200
-  );
+  if (Array.from(value).length > 200 || /^\s|\s$/u.test(value) || /\p{Cs}/u.test(value)) {
+    return false;
+  }
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function asString(source, path, diagnostics, { pattern, validate, description } = {}) {
@@ -877,6 +879,7 @@ function buildRendered(profile, parsed, diagnostics) {
   } = parsed;
   const releaseName = asString(controlPlane, ["controlPlane", "releaseName"], diagnostics);
   const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics);
+  // Same Name rule the bootstrap Job applies with isName, and the chart checks on installation.name.
   const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics, {
     validate: isInstallationName,
     description:
