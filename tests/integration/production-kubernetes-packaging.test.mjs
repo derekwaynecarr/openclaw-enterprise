@@ -3702,6 +3702,76 @@ test("Helm rejects Kubernetes quantities the API cannot parse", tooling, async (
       /resources\.requests\.memory must be a Kubernetes quantity/,
     );
 
+    // sizeLimit is optional. Null clears the chart default and must stay YAML null on install and upgrade.
+    const clearedLimits = await render(
+      {
+        ...collector,
+        "logging.collector.state.sizeLimit": "null",
+        "logging.collector.tmp.sizeLimit": "null",
+      },
+      options,
+    );
+    const clearedVolumes = (await resources(clearedLimits.stdout)).find(
+      (object) =>
+        object.kind === "DaemonSet" && object.metadata?.name === "openclaw-enterprise-collector",
+    ).spec.template.spec.volumes;
+    assert.equal(
+      clearedVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
+      null,
+    );
+    assert.equal(
+      clearedVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
+      null,
+    );
+    const stateCleared = await resources(
+      (await render({ ...collector, "logging.collector.state.sizeLimit": "null" }, options)).stdout,
+    );
+    const stateVolumes = stateCleared.find((object) => object.kind === "DaemonSet").spec.template
+      .spec.volumes;
+    assert.equal(
+      stateVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
+      null,
+    );
+    assert.equal(
+      stateVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
+      "64Mi",
+    );
+    const tmpCleared = await resources(
+      (await render({ ...collector, "logging.collector.tmp.sizeLimit": "null" }, options)).stdout,
+    );
+    const tmpVolumes = tmpCleared.find((object) => object.kind === "DaemonSet").spec.template.spec
+      .volumes;
+    assert.equal(
+      tmpVolumes.find((volume) => volume.name === "collector-state").emptyDir.sizeLimit,
+      "128Mi",
+    );
+    assert.equal(
+      tmpVolumes.find((volume) => volume.name === "collector-tmp").emptyDir.sizeLimit,
+      null,
+    );
+    await assert.rejects(
+      render(
+        {
+          ...collector,
+          "logging.collector.state.sizeLimit": "null",
+          "logging.collector.tmp.sizeLimit": "10MiB",
+        },
+        options,
+      ),
+      /logging\.collector\.tmp\.sizeLimit must be a Kubernetes quantity/,
+    );
+    await assert.rejects(
+      render(
+        {
+          ...collector,
+          "logging.collector.state.sizeLimit": "foo",
+          "logging.collector.tmp.sizeLimit": "null",
+        },
+        options,
+      ),
+      /logging\.collector\.state\.sizeLimit must be a Kubernetes quantity/,
+    );
+
     // resources: null clears defaults. Indexing that absent map used to abort the render.
     const cleared = await render(
       {
