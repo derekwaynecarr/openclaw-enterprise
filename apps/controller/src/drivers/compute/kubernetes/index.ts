@@ -1961,6 +1961,7 @@ function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): vo
 function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocument): void {
   const agents = asRecord(configuration.agents);
   const roster = asRecord(agents?.entries);
+  const explicit = agents?.ownership === "explicit";
   const defaults = asRecord(agents?.defaults);
   // OpenClaw matches normalized ids case-insensitively, as the OpenShell workspace pin does.
   const isMain = (id: unknown) => typeof id === "string" && id.trim().toLowerCase() === "main";
@@ -1969,11 +1970,12 @@ function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocum
     asRecord(defaults?.systemAgent)?.agentId,
   ];
   const entries = Object.entries(roster ?? {});
-  // OpenClaw reads an empty implicit roster as `{ main: {} }` (an explicit one is refused).
-  const implicitMain = roster !== undefined && entries.length === 0;
+  // OpenClaw reads an empty roster as `{ main: {} }` unless ownership is explicit.
+  const implicitMain = roster !== undefined && entries.length === 0 && !explicit;
   if (
     owners.some((owner) => owner !== undefined && !isMain(owner)) ||
-    (agents?.entries !== undefined &&
+    // An explicit roster without entries has no Agent, so it fails like an empty one.
+    ((agents?.entries !== undefined || explicit) &&
       !implicitMain &&
       // Other spellings normalize to ids OpenClaw may match first, so keys must be canonical.
       (entries.some(([id]) => !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id)) ||
