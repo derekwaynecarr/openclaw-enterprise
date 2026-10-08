@@ -23,6 +23,7 @@ import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
   createOpenShellServiceLoopbackLookup,
+  OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY,
   openShellAgentName,
   openShellGatewayName,
   openshellHash as hash,
@@ -767,6 +768,7 @@ async function waitForCredentialJobDeletion(operatorKubernetes, context, name) {
 }
 
 function credentialBridgeResource(context, claimName, subPath) {
+  const { uid: runtimeUser, gid: runtimeGroup } = OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY;
   const namespaceName = context.namespace.name;
   const name = credentialJobName(context.revision.id);
   const workloadIdentity = context.requirements.workloadIdentity;
@@ -823,9 +825,9 @@ function credentialBridgeResource(context, claimName, subPath) {
           automountServiceAccountToken: false,
           securityContext: {
             runAsNonRoot: true,
-            runAsUser: 10001,
-            runAsGroup: 10001,
-            fsGroup: 10001,
+            runAsUser: runtimeUser,
+            runAsGroup: runtimeGroup,
+            fsGroup: runtimeGroup,
             seccompProfile: { type: "RuntimeDefault" },
           },
           containers: [
@@ -1087,6 +1089,11 @@ function bridgeRequirements(context, claimName, subPath) {
   const nodeSetupCode = optionalSecretEnvironment(context.requirements, "OPENCLAW_NODE_SETUP_CODE");
   literalEnvironment(context.requirements, "OPENCLAW_NODE_CA_PEM");
   const credentialBootstrap = [
+    // The Driver keeps launch-time TMPDIR at /tmp for the supervisor; after
+    // launch, the native worker must use the private mount it owns.
+    ...(needsNativeTemporary
+      ? [`process.env.TMPDIR = ${JSON.stringify(nativeTemporaryMountPath)};`]
+      : []),
     ...(appServerToken === undefined
       ? []
       : [

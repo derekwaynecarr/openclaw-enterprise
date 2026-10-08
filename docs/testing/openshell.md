@@ -231,7 +231,13 @@ checkpoint, and symptom-based recovery notes, see
 
 The native OpenClaw selector retains its verification-only bootstrap Job and
 PVC bridge. It is a separate containment experiment, not a supported
-first-Agent path. See the
+first-Agent path. The pinned Kubernetes driver chooses workload identity independently
+of `policy.process`: this k3d fixture uses its default UID/GID `10001:10001`.
+The bridge prepares private storage for that identity and verifies the resulting
+workload Pod identity. Preparing it for the image or policy UID `1000` leaves
+foreign-owned ancestors that fs-safe rejects, even when Kubernetes grants group
+write access. The supervisor launches with `TMPDIR=/tmp`; the bridge switches the
+native worker to its private temporary mount before running its entrypoint. See the
 [qualification contract](../reference/drivers/openshell-sandbox.md#qualification-contract)
 and the [pre.5 experiment handoff](openshell-pre5-local-experiment.md).
 
