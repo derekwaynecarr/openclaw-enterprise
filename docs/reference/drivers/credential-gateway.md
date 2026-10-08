@@ -135,7 +135,8 @@ credentialGatewayId, sourceType, loginMode }` in the revision. The source must
    withdrawal of the revision. Only `revoked` or `absent` marks one `revoked`;
    otherwise the work retries. The revision never re-attaches a withdrawn
    source. Because a Sandbox create accepted before a withdrawal can land after
-   it, each preparation first calls `withdraw` with `recheck` for every
+   it, each preparation, and each maintenance pass of a revision whose Harness
+   source is withdrawn, first calls `withdraw` with `recheck` for every
    `revoked` source of the revision: the gateway then detaches only a source
    the Sandbox still lists.
 8. **Deletion.** The API refuses deletion while an Agent draft, active revision,

@@ -546,8 +546,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const provider = openShellProviderName(context.sourceId);
     const sandbox = context.sandbox.resourceName;
     if (context.recheck === true) {
-      // A revocation already confirmed needs a new detach only if the Sandbox lists the
-      // provider again, for example after a create accepted before the withdrawal landed later.
+      // A recorded revocation needs a new detach only if the Sandbox lists the provider again,
+      // for example after a create that OpenShell accepted before the withdrawal landed after it.
       const existing = await client.getSandbox({ name: sandbox, workspace }, context.signal);
       if (existing === undefined) {
         return Object.freeze({ sourceId: context.sourceId, state: "absent" });

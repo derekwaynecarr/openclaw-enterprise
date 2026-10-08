@@ -2604,7 +2604,23 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
   ): Promise<void> {
-    await this.recheckRevokedCredentialSources(claim, revision);
+    try {
+      await this.recheckRevokedCredentialSources(claim, revision);
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      // A failed recheck ends only this claim; the maintenance chain continues, so the next
+      // pass rechecks again and still re-queues pending withdrawals.
+      const pending = activationPendingResult(error);
+      await this.finalizeActiveRevision(claim, revision, pending.code, undefined, {
+        ...(pending.dependencyFailure === undefined
+          ? {}
+          : { dependencyFailure: pending.dependencyFailure }),
+        failureLogFields: revisionFailureLogFields(error),
+      });
+      return;
+    }
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
@@ -2653,7 +2669,8 @@ export class ControllerWorker {
    * OpenShell accepted before its worker lost the claim can still land afterwards, with the
    * source attached. Before each preparation, and each pass of a model-withdrawn revision,
    * the gateway detaches every revoked source again if the Sandbox still lists it. Revoked
-   * rows stay revoked; the next pass checks again until the Sandbox no longer lists it.
+   * rows stay revoked; the next pass checks again until the Sandbox no longer lists it. A
+   * recheck needs no requester reauthorization: the revocation is already recorded.
    */
   private async recheckRevokedCredentialSources(
     claim: ClaimedWork,

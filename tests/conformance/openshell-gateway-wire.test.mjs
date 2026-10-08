@@ -1121,6 +1121,8 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
   const sandboxes = new Map([
     ["os-listed", ["operator-static", provider]],
     ["os-detached", ["operator-static"]],
+    // An empty repeated field is not encoded, so the client sees no providers list at all.
+    ["os-bare", []],
   ]);
   const calls = [];
   const server = new grpc.Server();
@@ -1191,6 +1193,7 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
     // Once the Sandbox no longer lists it, or no longer exists, a recheck mutates nothing.
     assert.deepEqual(await recheck("os-listed"), { sourceId, state: "revoked" });
     assert.deepEqual(await recheck("os-detached"), { sourceId, state: "revoked" });
+    assert.deepEqual(await recheck("os-bare"), { sourceId, state: "revoked" });
     assert.deepEqual(await recheck("os-missing"), { sourceId, state: "absent" });
     assert.deepEqual(calls, [
       ["GetSandbox", "os-listed"],
@@ -1198,6 +1201,7 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
       ["GetSandboxProviderStatus", "os-listed", "receipt-recheck"],
       ["GetSandbox", "os-listed"],
       ["GetSandbox", "os-detached"],
+      ["GetSandbox", "os-bare"],
       ["GetSandbox", "os-missing"],
     ]);
   } finally {

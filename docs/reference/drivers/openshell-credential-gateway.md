@@ -166,8 +166,9 @@ OpenShell reports `REVOKED` only after the Sandbox supervisor reports a running
 process with the provider removed. A Sandbox with no running process, for
 example one still provisioning or crash-looping, reports `WaitingForProcess`,
 which stays `pending`. A missing Sandbox reports `absent`. A `recheck` first
-calls `GetSandbox` and detaches only when `SandboxSpec.providers` still lists
-the provider; otherwise it reports `revoked` without a mutation.
+calls `GetSandbox`: a missing Sandbox reports `absent`, one that no longer lists
+the provider in `SandboxSpec.providers` reports `revoked` without a mutation,
+and only a listed provider is detached again.
 
 In the running Sandbox, the Harness environment holds only an
 `openshell:resolve:env:` placeholder for `OPENAI_API_KEY`. `codex login
