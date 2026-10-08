@@ -503,6 +503,38 @@ capabilities:
 {{- default "git" .Values.repositoryCredentials.serviceName -}}
 {{- end -}}
 
+{{/* Reject obvious quantity syntax errors; Kubernetes owns full quantity validation.
+     Preserve its JSON-text whitespace handling without emulating exponent bounds or numeric parsing. */}}
+{{- define "openclaw.quantity" -}}
+{{- $pattern := "^[+-]?([0-9]*(\\.[0-9]*)?)?(([KMGT]i)|[numkMGTPE]|([eE][+-]?[0-9]+))?$|^[+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)[PE]i$" -}}
+{{- $encoded := toJson (toString .value) -}}
+{{- $quantity := $encoded -}}
+{{- if ge (len $encoded) 2 -}}
+{{- $last := int (sub (len $encoded) 1) -}}
+{{- if and (eq (substr 0 1 $encoded) "\"") (eq (substr $last (len $encoded) $encoded) "\"") -}}
+{{- $quantity = trim (substr 1 $last $encoded) -}}
+{{- end -}}
+{{- end -}}
+{{- if or (eq $quantity "") (not (regexMatch $pattern $quantity)) -}}
+{{- fail (printf "%s must be a Kubernetes quantity" .name) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* A null map clears chart defaults. Skip it; indexing nil aborts install and upgrade. */}}
+{{- define "openclaw.resourceRequirements" -}}
+{{- if .requirements -}}
+{{- $name := .name -}}
+{{- $requirements := .requirements -}}
+{{- range $section := list "requests" "limits" -}}
+{{- with index $requirements $section -}}
+{{- range $key, $qty := . -}}
+{{- include "openclaw.quantity" (dict "name" (printf "%s.%s.%s" $name $section $key) "value" $qty) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "openclaw.repositoryCredentials.clusterDomain" -}}
 {{- .Values.repositoryCredentials.clusterDomain -}}
 {{- end -}}
