@@ -6,7 +6,7 @@ last_updated_session: authoring-run/0da79016-d6a4-4217-a420-1e8b0b314e14
 
 # Compose development startup
 
-Trace startup for the [Compose development flow](../docker-compose-development.md).
+[Compose development flow](../docker-compose-development.md).
 
 ## Overview
 
@@ -54,8 +54,7 @@ graph TD
 `internal/occdev/compose.go:AnalyzeCompose`,
 `deploy/runtime/Dockerfile`
 
-The helper requires `bin/occ` (`pnpm cli:build`) and forwards arguments after `--`
-to Compose. For Kubernetes Compute, required by OpenShell, see
+`bin/occ` (`pnpm cli:build`) is required; arguments after `--` go to Compose. For Kubernetes Compute, required by OpenShell, see
 [step 12](#12-select-kubernetes-development-and-preserve-cleanup-ownership).
 Without a Sandbox Driver, Compose Kubernetes startup requires Node before creating resources.
 
@@ -120,7 +119,8 @@ attempts, and failure recovery.
 
 The API starts in `NODE_ENV=development`, binds inside the Compose network, and
 publishes its host port only on `127.0.0.1`. `OCC_AUTH_SECRET` signs user
-sessions and `OCC_AUTH_BASE_URL` fixes the cookie origin.
+sessions and `OCC_AUTH_BASE_URL` fixes the cookie origin. The API and initializer
+accept HTTP(S) origins on `localhost`, `127.0.0.1`, or `[::1]` in development.
 
 Development accepts the explicitly configured Compose bridge CIDR as local
 control-plane traffic, while non-loopback clients, forwarded headers,
@@ -138,9 +138,7 @@ bootstrap to replace a missing key.
 
 `dev-up` then reads the Installation with `./bin/occ installation get` and the
 copied key. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
-maps the `x-api-key` to the Installation-scoped service administrator. The
-startup proof succeeds only when the returned resource ID matches the copied
-key response's `meta.installationId`. The
+maps the `x-api-key` to the Installation-scoped service administrator. Startup requires the returned resource ID to match the copied key response's `meta.installationId`. The
 [service-key flow](../service-api-keys.md#3-verify-the-credential-and-enforce-its-fixed-identity-scope)
 owns admission and `401` rejection without cookie fallback; current IAM policy
 still authorizes each resource operation.
@@ -239,10 +237,7 @@ publications with `internal/occdev/compose.go:AnalyzeCompose`, and rejects
 external or unscoped networks and volumes with
 `internal/occdev/up.go:validateResourceOwnership`. It claims the state directory
 by exclusive `0700` creation and privately writes the rendered Compose snapshot
-before creating resources. Before saving, `setKubernetesBridgeGateway` keeps an
-explicit development-network gateway or derives the first usable address from
-the rendered subnet, the bridge gateway k3d requires when the operator overrides
-the subnet. Startup and cleanup both use that snapshot, so later `.env` edits
+before creating resources. Before saving, `setKubernetesBridgeGateway` preserves an explicit development-network gateway or uses the rendered subnet's first usable address, supplying k3d's required bridge gateway for subnet overrides. Startup and cleanup both use that snapshot, so later `.env` edits
 cannot change it.
 
 With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Kubernetes Compute branches
@@ -331,9 +326,7 @@ Namespace readiness and repository discovery bind each OCC request to the
 polling deadline and caller cancellation via `occclient.Client.WithContext`.
 The original client remains available for later startup operations.
 
-Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to
-`k3d cluster create --timeout`, so a node that never becomes ready fails startup
-instead of waiting indefinitely.
+Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to `k3d cluster create --timeout`; node readiness timeout fails startup.
 
 `internal/occdev/state.go:exclusiveWrite` removes a newly created output when
 permission setting, writing, or closing fails, including a partial external key
@@ -343,8 +336,7 @@ removal failure is returned with the original file-operation error.
 On failure, startup attempts cleanup. Explicit Kubernetes shutdown validates the
 marker, state, and Compose snapshot, then uses the recorded engine endpoint.
 Cleanup stops the API and worker, then deletes the named k3d cluster and Compose
-project volumes. It continues past individual errors and keeps state when a step
-fails; complete cleanup removes the state directory and its helper-owned key. A
+project volumes. Cleanup continues after individual errors, retaining state on any failure; complete cleanup removes the state directory and helper-owned key. A
 returned external `--key-output` file stays operator-owned; startup removes a
 newly written external key if a later OpenShell readiness step fails.
 
@@ -376,6 +368,8 @@ newly written external key if a later OpenShell readiness step fails.
 
 - 2026-10-06 17:46: Remove newly created exclusive outputs after file-write failures. (authoring-run/e789ef10-ca82-4ee2-b31d-8d11100d9744 - 6508695f267e1441bf5a797b9710965f9b10990a)
 - 2026-10-05 16:01: Rejected interrupted Docker response streams in the request owner. (authoring-run/91705365-6496-4de8-943f-15c1ba105410 - 9b5a60467022d815d1259ff30d3ed64657657247)
+
+- 2026-10-05 14:02: Matched the API and initializer localhost auth origin acceptance. (authoring-run/cb5a7445-804a-48ad-8c35-118ae9f417b1 - 91e316e7a559f5a09884262755f8fe2a9b655d72)
 
 - 2026-10-05 08:52: Documented bridge-route cancellation and node-inventory context. (authoring-run/cfd0ce95-b6e3-4088-a97b-d6d4c9ff400c - fa8c90b5b6eb3464fcf3af42a7297b5de7d65454)
 
