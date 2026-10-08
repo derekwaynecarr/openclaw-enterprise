@@ -214,11 +214,11 @@ Startup waits for the Gateway, certificate, and proxy Pods before reporting
 success. Envoy source addresses must fall inside the selected node's Pod CIDR;
 the tenant ingress policy must still admit only the Gateway's exact proxy peer.
 
-The loopback development proxy also terminates browser HTTPS with a private
-per-installation CA whose leaf covers only that installation's console and Agent
-hosts. API and browser NodePorts publish only on host loopback. The CA private
-key stays in the private state directory; browser CA trust is an explicit
-operator action.
+Loopback HTTPS uses a per-installation CA whose leaf covers only its console
+and Agent hosts. API and browser NodePorts publish only on host loopback; the CA
+key stays private. `internal/occdev/openshell_k3d.go:upK3d` prints
+[required browser trust instructions](../../guides/operate/troubleshooting.md#the-local-console-reports-a-certificate-error)
+beside the URL and public CA path. Stack readiness does not establish browser trust.
 
 ### 12. Select Kubernetes development and preserve cleanup ownership
 
