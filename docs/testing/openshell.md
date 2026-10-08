@@ -144,7 +144,8 @@ completes a real model turn through its outbound enrolled-worker connection.
 The selected network policy permits provider egress from the Codex executable
 for Codex or from the Node executable for native OpenClaw. Native enrollment
 egress uses the Workspace Gateway's configured endpoint port, including the
-high loopback port allocated by the Podman verification relay. The real fixture
+high loopback port allocated by the Docker Desktop or Podman Machine verification
+relay on macOS. The real fixture
 also gives the delegated Sandbox the same 2 GiB Harness memory limit as
 Kubernetes Compute; the cluster's 1 GiB container default is insufficient while
 the native worker installs its Gateway bundle.
@@ -237,7 +238,11 @@ The bridge prepares private storage for that identity and verifies the resulting
 workload Pod identity. Preparing it for the image or policy UID `1000` leaves
 foreign-owned ancestors that fs-safe rejects, even when Kubernetes grants group
 write access. The supervisor launches with `TMPDIR=/tmp`; the bridge switches the
-native worker to its private temporary mount before running its entrypoint. See the
+native worker to its private temporary mount before running its entrypoint.
+It places bootstrap code inside the compressed program, preserving the Driver's
+fixed-loader contract. Readiness retries reuse the completed bootstrap Job because
+deleting its Pod invalidates the copied ServiceAccount token. The Job remains until
+the token's admitted lifetime ends or the test cleans it up. See the
 [qualification contract](../reference/drivers/openshell-sandbox.md#qualification-contract)
 and the [pre.5 experiment handoff](openshell-pre5-local-experiment.md).
 
