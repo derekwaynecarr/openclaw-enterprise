@@ -499,9 +499,10 @@ capabilities:
 {{- default "git" .Values.repositoryCredentials.serviceName -}}
 {{- end -}}
 
-{{/* Kubernetes resource.ParseQuantity grammar: a number plus an optional suffix, or a bare exponent. */}}
+{{/* Kubernetes resource.ParseQuantity: a number plus an optional suffix, or a bare exponent.
+     Decimal suffixes are case-sensitive (k and E, not K or e). Binary suffixes use a lowercase i (Ki, not KI). */}}
 {{- define "openclaw.quantity" -}}
-{{- $pattern := "^([+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+))(([eE][+-]?[0-9]+)|([KMGTPE]i)|[numkKMGTP])?$|^[eE][+-]?[0-9]+$" -}}
+{{- $pattern := "^([+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+))(([eE][+-]?[0-9]+)|([KMGTPE]i)|[numkMGTPE])?$|^[eE][+-]?[0-9]+$" -}}
 {{- if not (regexMatch $pattern (toString .value)) -}}
 {{- fail (printf "%s must be a Kubernetes quantity" .name) -}}
 {{- end -}}
