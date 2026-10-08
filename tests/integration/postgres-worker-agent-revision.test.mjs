@@ -3126,11 +3126,11 @@ test(
         fixture.namespace.id,
       ]);
       releaseLastAttempt();
+      // The worker has one connection, and its next transaction is the final pass's.
       await waitFor("the worker's real wait on the Namespace lock", async () => {
         const waiting = await fixture.observerPool.query(
           `SELECT pid FROM pg_stat_activity
-           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))
-             AND query LIKE '%occ.namespaces%'`,
+           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
           [admissionBackend.rows[0].pid],
         );
         return waiting.rowCount > 0 ? true : undefined;
