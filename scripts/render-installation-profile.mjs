@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isName, NAME_RULE } from "../packages/contracts/src/index.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -179,21 +180,6 @@ async function writeYaml(path, value) {
 
 function sha256Hex(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-// The bootstrap Job's isName rule, written without a control character in the pattern so
-// no-control-regex stays clear. U+0085 is inside the C1 range, and U+FEFF is leading whitespace.
-function isInstallationName(value) {
-  if (Array.from(value).length > 200 || /^\s|\s$/u.test(value) || /\p{Cs}/u.test(value)) {
-    return false;
-  }
-  for (const character of value) {
-    const code = character.codePointAt(0);
-    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function asString(source, path, diagnostics, { pattern, validate, description } = {}) {
@@ -879,11 +865,10 @@ function buildRendered(profile, parsed, diagnostics) {
   } = parsed;
   const releaseName = asString(controlPlane, ["controlPlane", "releaseName"], diagnostics);
   const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics);
-  // Same Name rule the bootstrap Job applies with isName, and the chart checks on installation.name.
+  // The bootstrap Job applies isName to installation.name, and the chart mirrors that rule.
   const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics, {
-    validate: isInstallationName,
-    description:
-      "1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators",
+    validate: isName,
+    description: NAME_RULE,
   });
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
     pattern: digestImage,
