@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { getEventListeners } from "node:events";
-import { readFileSync } from "node:fs";
-import { createSecureServer } from "node:http2";
-import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { createSecureServer } from "node:http2";
 import test from "node:test";
 import {
   GrpcOpenShellGatewayClient,
@@ -807,7 +806,7 @@ test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP 
   const directory = await mkdtemp(join(tmpdir(), "openshell-grpc-tls-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   // IPv6 loopback is optional on CI hosts; without it the IPv6 cases are skipped.
-  const probe = createServer();
+  const probe = createSecureServer();
   const ipv6 = await new Promise((resolve) => {
     probe.once("error", () => resolve(false));
     probe.listen(0, "::1", () => probe.close(() => resolve(true)));
