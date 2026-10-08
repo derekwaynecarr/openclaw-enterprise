@@ -107,13 +107,44 @@ export function redactLogLine(line, secrets, limit) {
 }
 
 // Redacts the reporter's raw `message` and `frame` in one pass over the raw text.
+// The whole `stack` stays out of results; failureDetail keeps it.
 export function redactFailure(error, secrets, root) {
   if (!error || typeof error !== "object") {
     return error;
   }
+  const { stack: _stack, ...rest } = error;
   return {
-    ...error,
+    ...rest,
     message: redactText(error.message, failureMessageLimit, secrets, root),
     frame: redactText(error.frame, failureFrameLimit, secrets, root),
   };
+}
+
+// Value-level redaction cannot see every credential, so lines that name one are
+// dropped whole, as for followed container logs (k3d-diagnostics.mjs).
+const credentialLine = /authorization|bearer\s|private.?key|-----BEGIN|https?:\/\/[^\s/]+@/i;
+
+function dropCredentialLines(text) {
+  return text
+    ?.split("\n")
+    .map((line) => (credentialLine.test(line) ? "[redacted credential-bearing line]" : line))
+    .join("\n");
+}
+
+// The diagnostics report's copy of a failure: the whole message and stack the
+// reporter forwarded (up to failureInputLimit each) instead of the job log's
+// 600 characters, with the same redaction plus credential-line drops.
+export function redactFailureDetail(error, secrets, root) {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  const message = dropCredentialLines(redactText(error.message, failureInputLimit, secrets, root));
+  const stack = dropCredentialLines(redactText(error.stack, failureInputLimit, secrets, root));
+  return message === undefined && stack === undefined ? undefined : { message, stack };
+}
+
+// One line of a failed file's output for the diagnostics report.
+export function redactOutputLine(line, secrets, root, limit) {
+  const redacted = redactText(line, limit, secrets, root) ?? "";
+  return credentialLine.test(redacted) ? "[redacted credential-bearing line]" : redacted;
 }
