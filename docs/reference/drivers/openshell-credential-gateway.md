@@ -66,8 +66,9 @@ binary keeps access; to cut it at once, withdraw the source or delete it. During
 a controller rollout, replicas with different lists may rewrite a profile in
 turn; the last write wins. Removing `toolBinaries` entirely blocks
 registrations, updates, deployments, and repairs of `bearer-token` sources,
-because OpenShell treats an empty binary list as any binary; the API answers
-`409 RESOURCE_CONFLICT` naming the fix. Existing providers
+because OpenShell treats an empty binary list as any binary. Registration,
+update, and deployment requests then answer `409 RESOURCE_CONFLICT` naming the
+fix. Existing providers
 and profiles stay until you withdraw or delete them; status and deletion keep
 working.
 

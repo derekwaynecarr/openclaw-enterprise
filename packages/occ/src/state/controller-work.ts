@@ -517,9 +517,9 @@ function deploymentErrorMessage(code: string): string {
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
       return "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.";
     case "CREDENTIAL_WITHDRAWN":
-      return "The Harness credential source was withdrawn from this revision, so the revision cannot start. Deploy again to admit a new revision with the Agent's current sources.";
+      return "The Harness credential source was withdrawn from this revision, so the revision cannot start. Bind a replacement source or another authentication method, then deploy again.";
     case "CREDENTIAL_GATEWAY_MISMATCH":
-      return "The Installation no longer selects the Credential Gateway this revision was admitted with. Bind sources registered through the selected gateway, then deploy again.";
+      return "The Installation no longer selects the Credential Gateway this revision was admitted with. Bind sources registered through the selected gateway, or remove them and change harnessAuth, then deploy again.";
     case "HARNESS_AUTH_SOURCE_UNAVAILABLE":
       return "The Harness authentication source this revision was admitted with is missing, being deleted, or changed since admission. Bind an available source, then deploy again.";
     case "CREDENTIAL_SOURCE_UNAVAILABLE":
