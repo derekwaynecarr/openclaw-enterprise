@@ -2476,8 +2476,7 @@ test("a source type the gateway stops offering is a 409 naming the fix, after th
   };
   const offered = gateway.listSourceTypes;
   const withdrawType = (type) => {
-    gateway.listSourceTypes = async () =>
-      (await offered()).filter((entry) => entry.type !== type);
+    gateway.listSourceTypes = async () => (await offered()).filter((entry) => entry.type !== type);
   };
 
   withdrawType("registry");

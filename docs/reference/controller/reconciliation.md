@@ -211,7 +211,12 @@ the revision fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as
 `SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`, and two credential sources that share
 a placeholder variable fail it the same way with
-`CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`. See the
+`CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`. A credential source withdrawn from the
+revision, being deleted or changed since admission, or registered through a Credential
+Gateway the Installation no longer selects fails it at dispatch with
+`CREDENTIAL_WITHDRAWN`, `HARNESS_AUTH_SOURCE_UNAVAILABLE`,
+`CREDENTIAL_SOURCE_UNAVAILABLE`, or `CREDENTIAL_GATEWAY_MISMATCH`; each status
+message names the fix. See the
 [worker configuration reference](../settings/operations.md#controller-worker-environment) for
 defaults and supported overrides.
 

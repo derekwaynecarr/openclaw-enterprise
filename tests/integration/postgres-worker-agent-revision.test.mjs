@@ -7712,7 +7712,10 @@ revisionTest(
       });
       if (deleting !== undefined) {
         await fixture.state.transact((unit) =>
-          unit.credentialSources.markCredentialSourceDeleting(fixture.namespace.id, deleting(owner)),
+          unit.credentialSources.markCredentialSourceDeleting(
+            fixture.namespace.id,
+            deleting(owner),
+          ),
         );
       }
       const prepared = [];

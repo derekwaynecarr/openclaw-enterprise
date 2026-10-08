@@ -17,7 +17,7 @@ freezes the source identity in the AgentRevision, and the worker hands the live
 source record to Kubernetes Compute. This flow stops when Compute receives the
 resolved source; the
 [OpenShell Sandbox provisioning flow](openshell-sandbox-provisioning.md) covers
-attachment, provisioning, and attachment readiness.
+attachment, provisioning, and readiness.
 
 ## Entry Points
 
@@ -59,9 +59,8 @@ graph TD
 
 Registration and deletion must start outside a transaction borrowed from the
 same controller instance. OCC rejects an active or inherited stale context with
-`ResourceConflictError` before validation or effects. Each operation uses an
-initial transaction for the intermediate State record; after that transaction
-commits, OCC calls `registerSource` or `removeSource`.
+`ResourceConflictError` before validation or effects. Each first commits its
+intermediate State record, then calls `registerSource` or `removeSource`.
 
 ### 1. Admit the registration request
 
@@ -72,9 +71,10 @@ The route schema accepts `name`, `type`, optional `config`, and optional
 `secrets` keyed by lowercase field names. Inside one transaction, OCC locks the
 Namespace, authorizes `credential_source:create` on it, returns
 `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` when the Installation selects no
-Credential Gateway, and requires a `ready` Namespace. It asks the selected gateway for `listSourceTypes` and rejects an
-unknown type, an unknown field, or a missing required field with
-`ScopeViolationError` (`404`) before any Secret read or gateway write.
+Credential Gateway, and requires a `ready` Namespace. It asks the selected gateway for `listSourceTypes`. Before any Secret
+read or gateway write, it rejects a type the catalog lacks with
+`CredentialSourceTypeNotOfferedError` (`409`), and an unknown or missing field
+with `ScopeViolationError` (`404`).
 
 ### 2. Read Secret values
 
@@ -100,7 +100,7 @@ the gateway's Driver ID, and state `registering`, plus one
 `credential_source_secrets` row per field, then commits. The OpenShell provider
 name derives from that ID, so the record identifies any copy the gateway stores.
 OCC asks Compute's `resolveSandboxNamespace` for the Namespace's runtime
-placement, the same name the paired Sandbox receives, and calls `registerSource`
+placement (the paired Sandbox's name) and calls `registerSource`
 with a 30-second timeout. The OpenShell Driver ensures the Workspace's provider
 profile and creates an OCC-labeled provider whose `profile_workspace` is that
 Workspace; a retried create adopts only a provider with matching labels.
@@ -125,7 +125,7 @@ source, without a lookup (`authorizeBoundCredentialSources`), so an
 update can drop sources after a gateway change. Create and PATCH then authorize
 `operate` on each requested source; before any lookup, an Installation without
 a Credential Gateway fails with `CredentialGatewayNotConfiguredError` (`409`),
-so the answer never depends on whether the source exists. The source must be
+so source existence never changes the answer. The source must be
 `ready` in the exact Namespace and owned by the selected gateway. The generated
 `agents.harness_auth_credential_source_id` column references the source, so the
 database rejects deleting a source an Agent draft still uses.
@@ -206,7 +206,8 @@ append fails, the record stays `deleting`. Namespace deletion returns
 `apps/controller/src/drivers/credential-gateway/openshell.ts:updateSource`
 
 One transaction locks the Namespace and source, authorizes
-`credential_source:update`, and requires a `ready` source. It validates any
+`credential_source:update`, and requires a `ready` source of a type the
+catalog offers (`409` otherwise). It validates any
 replacement references against the catalog's Secret fields, authorizes
 `secret:operate` on each Secret it reads, and reads the values with
 `withValue`. It calls `updateSource` with Compute's placement while holding the
@@ -214,8 +215,7 @@ source lock; the OpenShell Driver requires the OCC-owned provider and calls
 `UpdateProvider`. It then replaces the Secret references, and the handler
 appends the audit event in the same transaction. The gateway is updated before
 that transaction commits: a gateway failure rolls back the references, and a
-failure after the gateway accepted the values leaves the gateway newer than OCC,
-which repeating the same request converges. An `absent` or `failed` gateway
+later failure leaves the gateway newer than OCC until the request is repeated. An `absent` or `failed` gateway
 status returns `503`. The OpenShell Driver rejects empty values because
 `UpdateProvider` merges them into the existing provider. OpenShell gives the new
 value only to processes started after the update.
@@ -275,9 +275,8 @@ attach again, so removing their grants cannot end maintenance.
 ## Debugging and Verification
 
 - `node --test tests/conformance/credential-source-occ.test.mjs` covers catalog
-  validation, Secret `operate`, registration compensation, uncertain-registration
-  recovery, audit with the final state change, deletion refusal and retry, Namespace gating, admission snapshots, and rejection of Secret-backed
-  methods with a gateway selected. It uses an in-process gateway double, not
+  validation, grants, registration compensation and recovery, audit, deletion,
+  Namespace gating, admission snapshots, and Secret-backed method rejection. It uses an in-process gateway double, not
   OpenShell.
 - `node --test tests/conformance/openshell-gateway-wire.test.mjs` checks the
   provider, profile, update, and detach RPC encoding against the pinned `v0.1.3-pre.2`
@@ -320,6 +319,7 @@ attach again, so removing their grants cannot end maintenance.
 
 ## Changelog
 
+- 2026-10-08 14:00: An unoffered source type is a `409` naming the fix, not `404`; worker credential codes have their own status messages. (fix-821-824)
 - 2026-10-08 12:00: A withdrawal also covers later revisions admitted with the source. (fix-810)
 - 2026-10-08 11:45: DELETE checks gateway ownership before `deleting`. (fix-811-812 - e461e1621)
 - 2026-10-08 10:00: Replays take over stranded withdrawals; withdrawn sources skip the grant recheck. (fix-787-788)

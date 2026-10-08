@@ -44,8 +44,9 @@ includes the gateway's `status` but never a credential value.
 The request fields are:
 
 - `name`: required; unique within the Namespace.
-- `type`: required; a type from the gateway catalog. Unknown types fail with
-  `404` before any gateway call.
+- `type`: required; a type from the gateway catalog. A type the selected gateway
+  does not offer fails with `409 RESOURCE_CONFLICT` and a message naming the
+  fix, before any gateway call.
 - `config`: optional nonsecret strings keyed by catalog field name.
 - `secrets`: Secret references keyed by catalog field name. Each Secret must
   belong to the same Namespace: a reference to another Namespace fails with
@@ -106,12 +107,13 @@ service principal to have `operate` on each source; grant it with a
 underlying Secret. The worker rechecks both grants before it
 provisions the revision. On an Installation with no Credential Gateway, binding
 any source fails with `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, as registration
-does, once the caller holds `operate` on it. Deploying an Agent that lists any
-source also needs a selected Sandbox Driver, because the paired Sandbox applies
-the sources; without one, deployment fails with `409 RESOURCE_CONFLICT` "Agent
-credential sources require a selected Sandbox Driver." (or, when `harnessAuth`
-names a source, "Credential-source Harness authentication requires a selected
-Sandbox Driver."). See [Harness execution](harness-execution.md#harness-authentication)
+does, once the caller holds `operate` on it. The paired Sandbox applies the
+sources, and a Credential Gateway requires a Sandbox Driver, so on an
+Installation without one, deploying an Agent that binds a source normally fails
+with that `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`. Only an Agent whose
+`harnessAuth` names no source, but whose list kept sources from an earlier
+configuration, fails first with `409 RESOURCE_CONFLICT` "Agent credential
+sources require a selected Sandbox Driver." See [Harness execution](harness-execution.md#harness-authentication)
 for the supported topology.
 
 While a Credential Gateway is selected, deployment rejects `api_key` and
@@ -250,15 +252,15 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 ## Errors
 
-| Status                                  | Meaning                                                                                                                                                                                  |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `400 INVALID_REQUEST`                   | The body or a field name is malformed, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                   |
-| `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                        |
-| `404 NOT_FOUND`                         | The source, Secret, or type is not in the exact Namespace or catalog, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it. |
-| `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                            |
-| `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update, or changed during the request; the Agent has no active revision to withdraw from; or sources need a Sandbox Driver.           |
-| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, update, deletion, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                         |
-| `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway or the Secret Driver is unavailable, the gateway call failed, or the source was registered through a previously selected gateway.                        |
+| Status                                  | Meaning                                                                                                                                                                                                             |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400 INVALID_REQUEST`                   | The body or a field name is malformed, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                                              |
+| `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                                                   |
+| `404 NOT_FOUND`                         | The source or Secret is not in the exact Namespace, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it.                                              |
+| `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                                                       |
+| `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update, or changed during the request; the gateway does not offer its type; the Agent has no active revision to withdraw from; or sources need a Sandbox Driver. |
+| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, update, deletion, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                                                    |
+| `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway or the Secret Driver is unavailable, the gateway call failed, or the source was registered through a previously selected gateway.                                                   |
 
 ## Related
 
