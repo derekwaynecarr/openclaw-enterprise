@@ -953,3 +953,37 @@ test("a nullable union of a referenced schema attributes the reference's problem
     "The request does not match the operation contract: body /a has the wrong type (expected one of string, number, null).",
   );
 });
+
+// A reference that two branches make could be either branch's, so it is attributed to neither
+// and each problem keeps naming what its field accepts. Entries as Ajv (verbose) reports
+// `{ a: { x: [1, 1] } }` for `{ anyOf: [{ $ref: "List" }, { type: "object", properties:
+// { x: { $ref: "List" } } }] }`, where List is a uniqueItems array.
+test("a reference that two union branches make is attributed to neither", () => {
+  const validation = [
+    { keyword: "type", instancePath: "/a", schemaPath: "List/type", params: { type: "array" } },
+    {
+      keyword: "uniqueItems",
+      instancePath: "/a/x",
+      schemaPath: "List/uniqueItems",
+      params: { i: 1, j: 0 },
+    },
+    {
+      keyword: "anyOf",
+      instancePath: "/a",
+      schemaPath: "#/properties/a/anyOf",
+      params: {},
+      schema: [{ $ref: "List" }, { type: "object", properties: { x: { $ref: "List" } } }],
+    },
+  ];
+  const failure = requestFailure(
+    Object.assign(new Error("body/a is invalid"), {
+      statusCode: 400,
+      validationContext: "body",
+      validation,
+    }),
+  );
+  assert.equal(
+    failure.message,
+    "The request does not match the operation contract: body /a has the wrong type (expected array); body /a/x has an unsupported value (expected no duplicate items); body /a has an unsupported value.",
+  );
+});
