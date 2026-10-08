@@ -8,6 +8,7 @@ import {
   ConfigurationHarnessError,
   NativeWorkerSupportError,
   PostgresPlatformState,
+  ProvisioningSecretDriverError,
 } from "../../packages/occ/src/index.ts";
 import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -1874,6 +1875,138 @@ test(
     const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
     assert.equal(retried.status, 400, JSON.stringify(retried.body));
     assert.equal(retried.body.error.message, new NativeWorkerSupportError().message);
+  },
+);
+
+test(
+  "a Secret Driver switch before the worker runs rejects the provisioning work with the fixed message",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const computeDriver = createRuntimeComputeDriver();
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-provisioning-secret-switch",
+    });
+    const fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver,
+      secretDriver: createTestSecretDriver({ id: "secret-provisioning" }),
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    // The Installation now selects another Secret Driver, which does not own the Secrets the
+    // accepted work binds. Every attempt would refuse them the same way, so the worker fails the
+    // work on the first one with the fixed message that names the fix, as status and retry do.
+    const replacementSecretDriver = createTestSecretDriver({ id: "secret-provisioning-replaced" });
+    const switched = await createFixture(context, {
+      computeDriver,
+      configurationDriver,
+      secretDriver: replacementSecretDriver,
+    });
+    await switched.startWorker();
+    const failed = await waitFor(
+      "the switched worker to refuse the provisioning work",
+      async () => {
+        const row = await provisioningRow(switched.pool, namespace.id, body.requestId);
+        return row.progress.error === undefined ? undefined : row;
+      },
+    );
+    await switched.stopWorker();
+    const message = new ProvisioningSecretDriverError().message;
+    assert.equal(failed.status, "failed");
+    assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message });
+    assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
+    const work = await switched.pool.query(
+      "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [admitted.data.provisioning.workId],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 1 },
+    ]);
+    const audit = await switched.pool.query(
+      `SELECT kind, outcome, details->>'code' AS code
+       FROM occ.audit_events
+       WHERE namespace_id = $1
+         AND action = 'openclaw.agents.provision.failure'
+         AND details->>'workId' = $2`,
+      [namespace.id, admitted.data.provisioning.workId],
+    );
+    assert.deepEqual(audit.rows, [
+      { kind: "mutation", outcome: "failure", code: "PROVISIONING_REJECTED" },
+    ]);
+    assert.deepEqual(
+      replacementSecretDriver.calls,
+      [],
+      "the replacement driver never serves a Secret it does not own",
+    );
+
+    // Status and retry answer the same fixed message, so Console says the same thing either way.
+    const status = await switched.request("GET", admitted.data.provisioning.url);
+    assert.equal(status.status, 503, JSON.stringify(status.body));
+    assert.equal(status.body.error.message, message);
+    const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
+    assert.equal(retried.status, 503, JSON.stringify(retried.body));
+    assert.equal(retried.body.error.message, message);
+  },
+);
+
+test(
+  "an unusable Secret Driver leaves the provisioning work retryable",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const secretDriver = createTestSecretDriver({ id: "secret-provisioning" });
+    const implementation = secretDriver.implementation;
+    let breakSecretDriver = false;
+    const completed = [];
+    const fixture = await createFixture(context, {
+      configurationDriver: createProvisioningConfigurationDriver({
+        id: "configuration-provisioning-secret-outage",
+      }),
+      secretDriver,
+      // The worker registers its Drivers at start; changing the selected Secret Driver's
+      // identity afterwards makes it unusable to the worker, as an outage would.
+      onWorkerEvent: (event) => {
+        if (breakSecretDriver && event.event === "worker.started") {
+          secretDriver.implementation = `${implementation}-unavailable`;
+        }
+        if (breakSecretDriver && event.event === "worker.completed") {
+          completed.push(event);
+        }
+      },
+    });
+    context.after(() => {
+      secretDriver.implementation = implementation;
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    // No usable Secret Driver is an outage, not an ownership refusal: the worker keeps the
+    // generic message and retries the work.
+    breakSecretDriver = true;
+    await fixture.startWorker();
+    const first = await waitFor("the worker to finish its first provisioning attempt", async () =>
+      completed.find(({ workId }) => workId === admitted.data.provisioning.workId),
+    );
+    await fixture.stopWorker();
+    assert.deepEqual(
+      { attempt: first.attempt, outcome: first.outcome, code: first.code },
+      { attempt: 1, outcome: "retry", code: "PROVISIONING_DEPENDENCY_UNAVAILABLE" },
+    );
+    const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+    assert.deepEqual(row.progress.error, {
+      code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+      message: "Agent provisioning could not complete.",
+    });
   },
 );
 
