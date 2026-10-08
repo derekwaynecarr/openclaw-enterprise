@@ -285,7 +285,8 @@ if (command === "docker" || command === "podman") {
   if (equals(args, expectedSave)) {
     if (scenario === "save-failed-late-exit") {
       // The truncated stream ends before the export's exit is seen. A busy runner can
-      // observe an ordinary exit that late; closing the output first makes it certain.
+      // observe an ordinary exit that late; closing the output a second early
+      // reproduces that order.
       writeSync(1, "synthetic image");
       writeSync(2, "synthetic export failure\n");
       closeSync(1);
