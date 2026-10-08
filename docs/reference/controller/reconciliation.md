@@ -217,7 +217,12 @@ the Harness credential source was withdrawn from the revision
 listed credential source, is missing or changed since admission
 (`HARNESS_AUTH_SOURCE_UNAVAILABLE`, `CREDENTIAL_SOURCE_UNAVAILABLE`), or when the
 Installation no longer selects the revision's Credential Gateway
-(`CREDENTIAL_GATEWAY_MISMATCH`); each status message names the fix. See the
+(`CREDENTIAL_GATEWAY_MISMATCH`) or Secret Driver (`SECRET_DRIVER_MISMATCH`). A
+revision pinned to a Compute Driver or Harness version the controller no longer
+selects or approves fails with `COMPUTE_DRIVER_MISMATCH` or
+`HARNESS_DESCRIPTOR_MISMATCH`, and a ServiceAccount whose Backend binding or
+credential issuance changed since admission with
+`SERVICE_ACCOUNT_BACKEND_MISMATCH`. Each status message names the fix. See the
 [worker configuration reference](../settings/operations.md#controller-worker-environment) for
 defaults and supported overrides.
 

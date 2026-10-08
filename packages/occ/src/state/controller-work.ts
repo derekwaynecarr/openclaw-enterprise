@@ -524,6 +524,14 @@ function deploymentErrorMessage(code: string): string {
       return "The Harness authentication source this revision was admitted with is missing, being deleted, or changed since admission. Bind an available source, then deploy again.";
     case "CREDENTIAL_SOURCE_UNAVAILABLE":
       return "A credential source this revision lists is missing, being deleted, or changed since admission. Bind available sources, then deploy again.";
+    case "SECRET_DRIVER_MISMATCH":
+      return "The Installation no longer selects the Secret Driver this revision was admitted with. Bind Secrets created through the selected Secret Driver, then deploy again.";
+    case "COMPUTE_DRIVER_MISMATCH":
+      return "The Installation no longer selects the Compute Driver this revision was admitted with. Deploy again to admit a revision for the selected driver.";
+    case "HARNESS_DESCRIPTOR_MISMATCH":
+      return "This revision's Harness version is no longer approved, for example after a controller upgrade. Deploy again to admit a revision with the approved version.";
+    case "SERVICE_ACCOUNT_BACKEND_MISMATCH":
+      return "The ServiceAccount's Backend binding or credential issuance changed since this revision was admitted. Issue the account's credential again if it was revoked, then deploy again.";
     case "SANDBOX_ADMISSION_LIMIT_REACHED":
       return "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.";
     default:
