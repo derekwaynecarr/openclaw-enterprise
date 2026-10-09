@@ -459,7 +459,7 @@ function nodeSelector(source, path, diagnostics) {
 }
 
 // NetworkPolicy peer selectors (DNS, API clients, metrics scrapers). Compute's validatePeer
-// applies this rule to the DNS peer at startup, and Kubernetes to every NetworkPolicy: empty
+// applies this rule to every peer at startup, and Kubernetes to every NetworkPolicy: empty
 // values are allowed and the key prefix is a DNS subdomain of at most 253 characters.
 function peerSelector(source, path, diagnostics) {
   const labels = labelMap(source, path, diagnostics);

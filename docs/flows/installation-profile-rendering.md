@@ -137,9 +137,10 @@ Invalid placement labels fail preflight without deployment files; legal YAML
 lookalike values remain strings. `peerSelector` applies Compute's
 `validatePeer` rule to the DNS, API client and metrics scraper selectors: the
 same key and value rules, empty values allowed, and a key prefix that is any DNS
-subdomain of at most 253 characters. The chart checks only that each is nonempty. The bootstrap password claim name must be a DNS
-subdomain, and a repository Backend ID must follow the Backend ID rule within
-200 UTF-16 code units, as in the chart.
+subdomain of at most 253 characters. The chart checks only that each is
+nonempty. The bootstrap password claim name must be a DNS subdomain, and a
+repository Backend ID must follow the Backend ID rule within 200 UTF-16 code
+units, as in the chart.
 
 ### 4. Build Helm values
 
