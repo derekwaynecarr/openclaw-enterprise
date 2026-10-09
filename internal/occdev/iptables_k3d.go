@@ -12,18 +12,21 @@ import (
 )
 
 // Both local k3d profiles start the node with IPTABLES_MODE=legacy, so
-// kube-proxy needs the host kernel's legacy iptables nat table. Most hosts
-// load iptable_nat on demand when the node first uses it (the hosted CI
-// runners do), but some cannot: there kube-proxy exits, K3s shuts down, and
-// k3d reports only a failure when its startup timeout expires. Host files
-// cannot tell those apart, so the preflight below fails only for a kernel that
-// ships no legacy nat table, warns when the module is not loaded or the host
-// cannot be read, and names the module again if k3d then fails.
+// kube-proxy needs the host kernel's legacy iptables nat table. Once ip_tables
+// is loaded (or built in), the kernel loads iptable_nat on demand when the
+// node first asks for the nat table. The node cannot load ip_tables itself:
+// without it there is no legacy iptables socket option for the kernel to
+// answer, and the node's own modprobe has no host modules. kube-proxy then
+// exits, K3s shuts down, and k3d reports only a failure when its startup
+// timeout expires. The preflight below fails fast in that state and for a
+// kernel without a legacy nat table, and only warns when it cannot decide.
 
 // hostFilesystem is the host root, replaced in tests.
 var hostFilesystem fs.FS = os.DirFS("/")
 
 const legacyNATModule = "iptable_nat"
+
+const legacyIPTablesModule = "ip_tables"
 
 const legacyNATRemedy = "sudo modprobe --all iptable_nat iptable_filter iptable_mangle br_netfilter"
 
@@ -32,10 +35,12 @@ const legacyNATTroubleshooting = `See "Local K3s cannot load the legacy iptables
 type legacyNATState int
 
 const (
-	// legacyNATAvailable: the module is loaded or built into the kernel.
+	// legacyNATAvailable: the nat table is loaded, built in, or loadable on
+	// demand because ip_tables is present.
 	legacyNATAvailable legacyNATState = iota
-	// legacyNATUnloaded: the kernel ships the module, but it is not loaded.
-	legacyNATUnloaded
+	// legacyNATUnloadable: the kernel ships the modules, but the node cannot
+	// load them (ip_tables is absent, or module loading is disabled).
+	legacyNATUnloadable
 	// legacyNATMissing: the kernel ships no legacy nat table at all.
 	legacyNATMissing
 	// legacyNATUnknown: the host does not expose enough to decide.
@@ -45,18 +50,24 @@ const (
 // legacyNATTableState reads only world-readable kernel state. A loaded module
 // appears in /sys/module and /proc/modules; a built-in one appears in neither
 // /proc/modules nor, without parameters, /sys/module, so modules.builtin
-// decides that case.
+// decides that case. /proc/net/ip_tables_names exists only while ip_tables is
+// present.
 func legacyNATTableState(fsys fs.FS, release string) legacyNATState {
-	if _, err := fs.Stat(fsys, "sys/module/"+legacyNATModule); err == nil {
+	modules, _ := fs.ReadFile(fsys, "proc/modules")
+	loaded := func(module string) bool {
+		if _, err := fs.Stat(fsys, "sys/module/"+module); err == nil {
+			return true
+		}
+		return anyLine(modules, func(line string) bool {
+			name, _, _ := strings.Cut(line, " ")
+			return name == module
+		})
+	}
+	if loaded(legacyNATModule) {
 		return legacyNATAvailable
 	}
-	if data, err := fs.ReadFile(fsys, "proc/modules"); err == nil && anyLine(data, func(line string) bool {
-		name, _, _ := strings.Cut(line, " ")
-		return name == legacyNATModule
-	}) {
-		return legacyNATAvailable
-	}
-	if data, err := fs.ReadFile(fsys, "proc/net/ip_tables_names"); err == nil && anyLine(data, func(line string) bool {
+	tables, tablesErr := fs.ReadFile(fsys, "proc/net/ip_tables_names")
+	if tablesErr == nil && anyLine(tables, func(line string) bool {
 		return strings.TrimSpace(line) == "nat"
 	}) {
 		return legacyNATAvailable
@@ -73,13 +84,19 @@ func legacyNATTableState(fsys fs.FS, release string) legacyNATState {
 	if err != nil {
 		return legacyNATUnknown
 	}
-	if listsKernelModule(dependencies, legacyNATModule) {
-		return legacyNATUnloaded
+	if !listsKernelModule(dependencies, legacyNATModule) {
+		if builtinErr != nil {
+			return legacyNATUnknown
+		}
+		return legacyNATMissing
 	}
-	if builtinErr != nil {
-		return legacyNATUnknown
+	if disabled, err := fs.ReadFile(fsys, "proc/sys/kernel/modules_disabled"); err == nil && strings.TrimSpace(string(disabled)) == "1" {
+		return legacyNATUnloadable
 	}
-	return legacyNATMissing
+	if tablesErr == nil || loaded(legacyIPTablesModule) || (builtinErr == nil && listsKernelModule(builtin, legacyIPTablesModule)) {
+		return legacyNATAvailable
+	}
+	return legacyNATUnloadable
 }
 
 // listsKernelModule matches the first path of each modules.builtin or
@@ -105,40 +122,44 @@ func anyLine(data []byte, match func(string) bool) bool {
 
 // checkLegacyNATTable runs before k3d creates the node. Host files describe
 // the node's kernel only when the engine runs on this kernel, so the check
-// applies only on Linux and only when the engine reports the host's kernel
-// release; Docker Desktop, Podman machines, and other VM-backed engines are
-// skipped.
+// applies only on Linux and only when the engine reports this host's kernel
+// release and hostname; Docker Desktop, Podman machines, remote engines, and
+// engines seen from inside a container are skipped.
 func (r *runner) checkLegacyNATTable(ctx context.Context) error {
 	if developmentHostOS != "linux" {
 		return nil
 	}
-	data, err := fs.ReadFile(hostFilesystem, "proc/sys/kernel/osrelease")
-	if err != nil {
+	release := hostKernelValue("osrelease")
+	hostname := hostKernelValue("hostname")
+	if release == "" || hostname == "" {
 		return nil
 	}
-	release := strings.TrimSpace(string(data))
-	if release == "" {
-		return nil
-	}
-	format := "{{.KernelVersion}}"
+	format := "{{.KernelVersion}} {{.Name}}"
 	if r.engine == "podman" {
-		format = "{{.Host.Kernel}}"
+		format = "{{.Host.Kernel}} {{.Host.Hostname}}"
 	}
-	engineKernel, err := r.output(ctx, r.engine, "info", "--format", format)
-	if err != nil || string(engineKernel) != release {
+	engineHost, err := r.output(ctx, r.engine, "info", "--format", format)
+	if err != nil || string(engineHost) != release+" "+hostname {
 		return nil
 	}
 	switch legacyNATTableState(hostFilesystem, release) {
+	case legacyNATUnloadable:
+		return fmt.Errorf("the host kernel has not loaded the legacy iptables modules (%s, %s) that the local k3d node needs because it runs K3s with IPTABLES_MODE=legacy. The node cannot load them itself, so cluster creation would stall until its startup timeout. Load the modules on the host, then start again:\n  %s\n%s", legacyIPTablesModule, legacyNATModule, legacyNATRemedy, legacyNATTroubleshooting)
 	case legacyNATMissing:
 		return fmt.Errorf("the host kernel %s provides no legacy iptables nat table (%s), which the local k3d node needs because it runs K3s with IPTABLES_MODE=legacy. Use a kernel that ships the module. %s", release, legacyNATModule, legacyNATTroubleshooting)
-	case legacyNATUnloaded:
-		r.legacyNATUnconfirmed = true
-		fmt.Fprintf(r.opts.Err, "Warning: the host kernel has not loaded the legacy iptables nat table (%s) that the k3d node uses; continuing, because most hosts load it on demand. If cluster creation stalls, run `%s` on the host. %s\n", legacyNATModule, legacyNATRemedy, legacyNATTroubleshooting)
 	case legacyNATUnknown:
 		r.legacyNATUnconfirmed = true
 		fmt.Fprintf(r.opts.Err, "Warning: could not confirm that the host kernel provides the legacy iptables nat table (%s) that the k3d node uses; continuing. If cluster creation stalls, run `%s` on the host. %s\n", legacyNATModule, legacyNATRemedy, legacyNATTroubleshooting)
 	}
 	return nil
+}
+
+func hostKernelValue(name string) string {
+	data, err := fs.ReadFile(hostFilesystem, "proc/sys/kernel/"+name)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // legacyNATFailureHint names the unconfirmed nat table when k3d fails, since

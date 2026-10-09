@@ -14,22 +14,46 @@ import (
 	"testing/fstest"
 )
 
-const legacyNATTestRelease = "6.8.0-41-generic"
+const (
+	legacyNATTestRelease  = "6.8.0-41-generic"
+	legacyNATTestHostname = "devhost"
+	legacyNATTestModules  = "lib/modules/" + legacyNATTestRelease + "/"
+	legacyNATTestDep      = "kernel/net/ipv4/netfilter/ip_tables.ko.zst: kernel/net/netfilter/x_tables.ko.zst\n" +
+		"kernel/net/ipv4/netfilter/iptable_nat.ko.zst: kernel/net/netfilter/nf_nat.ko.zst kernel/net/ipv4/netfilter/ip_tables.ko.zst\n"
+	legacyNATTestBuiltin = "kernel/net/netfilter/x_tables.ko\n"
+	// An nftables host: x_tables is loaded through nft_compat, ip_tables is not.
+	legacyNATTestNFTModules = "nft_compat 20480 4 - Live 0x0\nx_tables 65536 6 nft_compat, Live 0x0\nnf_nat 65536 1 - Live 0x0\n"
+)
 
 func legacyNATTestFiles(files map[string]string) fstest.MapFS {
-	fsys := fstest.MapFS{"proc/sys/kernel/osrelease": {Data: []byte(legacyNATTestRelease + "\n")}}
+	fsys := fstest.MapFS{
+		"proc/sys/kernel/osrelease": {Data: []byte(legacyNATTestRelease + "\n")},
+		"proc/sys/kernel/hostname":  {Data: []byte(legacyNATTestHostname + "\n")},
+	}
 	for name, data := range files {
 		fsys[name] = &fstest.MapFile{Data: []byte(data)}
 	}
 	return fsys
 }
 
-const (
-	legacyNATTestModules = "lib/modules/" + legacyNATTestRelease + "/"
-	legacyNATTestDep     = "kernel/net/ipv4/netfilter/ip_tables.ko.zst: kernel/net/netfilter/x_tables.ko.zst\n" +
-		"kernel/net/ipv4/netfilter/iptable_nat.ko.zst: kernel/net/netfilter/nf_nat.ko.zst kernel/net/ipv4/netfilter/ip_tables.ko.zst\n"
-	legacyNATTestBuiltin = "kernel/net/netfilter/x_tables.ko\n"
-)
+// legacyNATUnloadableHost is the reported failure: the kernel ships the
+// legacy modules, but nothing loaded ip_tables, so the node cannot reach them.
+var legacyNATUnloadableHost = map[string]string{
+	"proc/modules":                           legacyNATTestNFTModules,
+	legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin,
+	legacyNATTestModules + "modules.dep":     legacyNATTestDep,
+}
+
+func withLegacyNATFiles(base map[string]string, extra map[string]string) map[string]string {
+	files := make(map[string]string, len(base)+len(extra))
+	for name, data := range base {
+		files[name] = data
+	}
+	for name, data := range extra {
+		files[name] = data
+	}
+	return files
+}
 
 func TestLegacyNATTableState(t *testing.T) {
 	for _, test := range []struct {
@@ -38,38 +62,50 @@ func TestLegacyNATTableState(t *testing.T) {
 		release string
 		want    legacyNATState
 	}{
-		{"loaded module in sysfs", map[string]string{"sys/module/iptable_nat/refcnt": "1\n"}, legacyNATTestRelease, legacyNATAvailable},
-		{"loaded module in proc", map[string]string{"proc/modules": "nf_nat 65536 1 - Live 0x0\niptable_nat 12288 0 - Live 0x0\n"}, legacyNATTestRelease, legacyNATAvailable},
+		{"nat module in sysfs", map[string]string{"sys/module/iptable_nat/refcnt": "1\n"}, legacyNATTestRelease, legacyNATAvailable},
+		{"nat module in proc", map[string]string{"proc/modules": "nf_nat 65536 1 - Live 0x0\niptable_nat 12288 0 - Live 0x0\n"}, legacyNATTestRelease, legacyNATAvailable},
 		{"nat table registered", map[string]string{"proc/net/ip_tables_names": "filter\nnat\n"}, legacyNATTestRelease, legacyNATAvailable},
 		// Built-in modules appear in neither /proc/modules nor, without
 		// parameters, /sys/module.
-		{"built into the kernel", map[string]string{
-			legacyNATTestModules + "modules.builtin": "kernel/net/ipv4/netfilter/iptable_nat.ko\n",
+		{"nat built into the kernel", map[string]string{
+			legacyNATTestModules + "modules.builtin": "kernel/net/ipv4/netfilter/ip_tables.ko\nkernel/net/ipv4/netfilter/iptable_nat.ko\n",
 			legacyNATTestModules + "modules.dep":     "",
 		}, legacyNATTestRelease, legacyNATAvailable},
-		// The reported failure: Docker with nftables never loads the legacy module.
-		{"shipped but not loaded", map[string]string{
-			"proc/modules":                           "nf_tables 380928 0 - Live 0x0\nnf_nat 65536 1 - Live 0x0\n",
+		// With ip_tables present, the kernel loads iptable_nat when the node
+		// first asks for the nat table (the hosted CI runners work this way).
+		{"ip_tables loaded", withLegacyNATFiles(legacyNATUnloadableHost, map[string]string{
+			"proc/modules": legacyNATTestNFTModules + "ip_tables 36864 1 iptable_filter, Live 0x0\n",
+		}), legacyNATTestRelease, legacyNATAvailable},
+		{"ip_tables in sysfs", withLegacyNATFiles(legacyNATUnloadableHost, map[string]string{
+			"sys/module/ip_tables/refcnt": "1\n",
+		}), legacyNATTestRelease, legacyNATAvailable},
+		{"filter table only", withLegacyNATFiles(legacyNATUnloadableHost, map[string]string{
+			"proc/net/ip_tables_names": "filter\n",
+		}), legacyNATTestRelease, legacyNATAvailable},
+		{"ip_tables built in", withLegacyNATFiles(legacyNATUnloadableHost, map[string]string{
+			legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin + "kernel/net/ipv4/netfilter/ip_tables.ko\n",
+		}), legacyNATTestRelease, legacyNATAvailable},
+		{"ip_tables absent", legacyNATUnloadableHost, legacyNATTestRelease, legacyNATUnloadable},
+		{"ip_tables absent, uncompressed modules", map[string]string{
+			legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin,
+			legacyNATTestModules + "modules.dep":     "kernel/net/ipv4/netfilter/iptable_nat.ko: kernel/net/netfilter/nf_nat.ko\n",
+		}, legacyNATTestRelease, legacyNATUnloadable},
+		{"module loading disabled", withLegacyNATFiles(legacyNATUnloadableHost, map[string]string{
+			"proc/modules":                     legacyNATTestNFTModules + "ip_tables 36864 1 iptable_filter, Live 0x0\n",
+			"proc/sys/kernel/modules_disabled": "1\n",
+		}), legacyNATTestRelease, legacyNATUnloadable},
+		// Similar names never count as either module.
+		{"similar names", withLegacyNATFiles(legacyNATUnloadableHost, map[string]string{
+			"proc/modules":                           "iptable_natural 12288 0 - Live 0x0\nip_tables_extra 12288 0 - Live 0x0\n",
+			legacyNATTestModules + "modules.builtin": "kernel/net/ipv4/netfilter/iptable_nat_extra.ko\nkernel/net/ipv4/netfilter/xip_tables.ko\n",
+		}), legacyNATTestRelease, legacyNATUnloadable},
+		{"kernel ships no nat module", map[string]string{
 			"proc/net/ip_tables_names":               "filter\n",
 			legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin,
-			legacyNATTestModules + "modules.dep":     legacyNATTestDep,
-		}, legacyNATTestRelease, legacyNATUnloaded},
-		{"uncompressed module not loaded", map[string]string{
-			legacyNATTestModules + "modules.dep": "kernel/net/ipv4/netfilter/iptable_nat.ko: kernel/net/netfilter/nf_nat.ko\n",
-		}, legacyNATTestRelease, legacyNATUnloaded},
-		{"kernel ships no module", map[string]string{
-			legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin,
-			legacyNATTestModules + "modules.dep":     "kernel/net/ipv4/netfilter/ip_tables.ko.zst: kernel/net/netfilter/x_tables.ko.zst\n",
-		}, legacyNATTestRelease, legacyNATMissing},
-		// Similar names never count as the nat module.
-		{"similar names", map[string]string{
-			"proc/modules":                           "iptable_natural 12288 0 - Live 0x0\n",
-			"proc/net/ip_tables_names":               "natural\n",
-			legacyNATTestModules + "modules.builtin": "kernel/net/ipv4/netfilter/iptable_nat_extra.ko\n",
-			legacyNATTestModules + "modules.dep":     "kernel/net/ipv4/netfilter/xiptable_nat.ko.zst:\n",
+			legacyNATTestModules + "modules.dep":     "kernel/net/ipv4/netfilter/ip_tables.ko.zst: kernel/net/netfilter/x_tables.ko.zst\nkernel/net/ipv4/netfilter/xiptable_nat.ko.zst:\n",
 		}, legacyNATTestRelease, legacyNATMissing},
 		// Hosts such as NixOS keep modules elsewhere; never fail on them.
-		{"no module index", map[string]string{"proc/modules": "nf_tables 380928 0 - Live 0x0\n"}, legacyNATTestRelease, legacyNATUnknown},
+		{"no module index", map[string]string{"proc/modules": legacyNATTestNFTModules}, legacyNATTestRelease, legacyNATUnknown},
 		{"no builtin list", map[string]string{
 			legacyNATTestModules + "modules.dep": "kernel/net/ipv4/netfilter/ip_tables.ko.zst:\n",
 		}, legacyNATTestRelease, legacyNATUnknown},
@@ -92,13 +128,9 @@ func legacyNATHost(t *testing.T, hostOS string, fsys fs.FS) {
 }
 
 func TestCheckLegacyNATTable(t *testing.T) {
-	unloaded := map[string]string{
-		legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin,
-		legacyNATTestModules + "modules.dep":     legacyNATTestDep,
-	}
-	dockerKernel := `"info --format {{.KernelVersion}}") echo ` + legacyNATTestRelease + ` ;;
+	dockerHost := `"info --format {{.KernelVersion}} {{.Name}}") echo '` + legacyNATTestRelease + ` ` + legacyNATTestHostname + `' ;;
 `
-	podmanKernel := `"info --format {{.Host.Kernel}}") echo ` + legacyNATTestRelease + ` ;;
+	podmanHost := `"info --format {{.Host.Kernel}} {{.Host.Hostname}}") echo '` + legacyNATTestRelease + ` ` + legacyNATTestHostname + `' ;;
 `
 	for _, test := range []struct {
 		name, hostOS, engine, script string
@@ -106,37 +138,37 @@ func TestCheckLegacyNATTable(t *testing.T) {
 		wantError, wantWarning       []string
 		wantHint                     bool
 	}{
-		// The hosted CI runners start without iptable_nat and load it on
-		// demand, so an unloaded module only warns.
 		{
-			name: "unloaded module warns", hostOS: "linux", engine: "docker", script: dockerKernel, files: unloaded,
-			wantWarning: []string{"has not loaded the legacy iptables nat table (iptable_nat)", "sudo modprobe --all iptable_nat iptable_filter iptable_mangle br_netfilter", `"Local K3s cannot load the legacy iptables nat table"`, "troubleshooting.md"},
-			wantHint:    true,
+			name: "ip_tables absent fails fast", hostOS: "linux", engine: "docker", script: dockerHost, files: legacyNATUnloadableHost,
+			wantError: []string{"has not loaded the legacy iptables modules (ip_tables, iptable_nat)", "IPTABLES_MODE=legacy", "sudo modprobe --all iptable_nat iptable_filter iptable_mangle br_netfilter", `"Local K3s cannot load the legacy iptables nat table"`, "troubleshooting.md"},
 		},
 		{
-			name: "Podman on the host kernel", hostOS: "linux", engine: "podman", script: podmanKernel, files: unloaded,
-			wantWarning: []string{"sudo modprobe --all iptable_nat"}, wantHint: true,
+			name: "Podman on this host", hostOS: "linux", engine: "podman", script: podmanHost, files: legacyNATUnloadableHost,
+			wantError: []string{"sudo modprobe --all iptable_nat"},
 		},
 		{
-			name: "kernel without the module fails fast", hostOS: "linux", engine: "docker", script: dockerKernel,
+			name: "kernel without the module fails fast", hostOS: "linux", engine: "docker", script: dockerHost,
 			files: map[string]string{
 				legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin,
 				legacyNATTestModules + "modules.dep":     "",
 			},
 			wantError: []string{"kernel " + legacyNATTestRelease + " provides no legacy iptables nat table", "IPTABLES_MODE=legacy", "troubleshooting.md"},
 		},
-		{name: "loaded module", hostOS: "linux", engine: "docker", script: dockerKernel, files: map[string]string{"sys/module/iptable_nat/refcnt": "1\n"}},
+		{name: "nat loads on demand", hostOS: "linux", engine: "docker", script: dockerHost, files: withLegacyNATFiles(legacyNATUnloadableHost, map[string]string{"sys/module/ip_tables/refcnt": "1\n"})},
 		{
-			name: "undecidable host only warns", hostOS: "linux", engine: "docker", script: dockerKernel,
+			name: "undecidable host only warns", hostOS: "linux", engine: "docker", script: dockerHost,
 			wantWarning: []string{"Warning: could not confirm", "sudo modprobe --all iptable_nat", "troubleshooting.md"},
 			wantHint:    true,
 		},
-		// Docker Desktop and Podman machines run the node on another kernel.
-		{name: "engine in a VM", hostOS: "linux", engine: "docker", script: `"info --format {{.KernelVersion}}") echo 6.10.14-linuxkit ;;
-`, files: unloaded},
-		{name: "engine kernel unavailable", hostOS: "linux", engine: "docker", script: `"info --format {{.KernelVersion}}") exit 1 ;;
-`, files: unloaded},
-		{name: "macOS host", hostOS: "darwin", engine: "docker", script: dockerKernel, files: unloaded},
+		// Docker Desktop and Podman machines run the node on another kernel;
+		// an equal release on another host is not this kernel either.
+		{name: "engine in a VM", hostOS: "linux", engine: "docker", script: `"info --format {{.KernelVersion}} {{.Name}}") echo '6.10.14-linuxkit docker-desktop' ;;
+`, files: legacyNATUnloadableHost},
+		{name: "same release on another host", hostOS: "linux", engine: "podman", script: `"info --format {{.Host.Kernel}} {{.Host.Hostname}}") echo '` + legacyNATTestRelease + ` localhost.localdomain' ;;
+`, files: legacyNATUnloadableHost},
+		{name: "engine identity unavailable", hostOS: "linux", engine: "docker", script: `"info --format {{.KernelVersion}} {{.Name}}") exit 1 ;;
+`, files: legacyNATUnloadableHost},
+		{name: "macOS host", hostOS: "darwin", engine: "docker", script: dockerHost, files: legacyNATUnloadableHost},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			legacyNATHost(t, test.hostOS, legacyNATTestFiles(test.files))
@@ -171,7 +203,7 @@ func TestCheckLegacyNATTable(t *testing.T) {
 }
 
 // The Kubernetes-only profile checks the host before it records state or
-// asks k3d for anything, so a kernel without the nat table fails at once.
+// asks k3d for anything, so the reported host fails at once.
 func TestK3dStartupChecksLegacyNATTableBeforeClusterCreation(t *testing.T) {
 	root := t.TempDir()
 	state := filepath.Join(root, "state")
@@ -189,16 +221,13 @@ func TestK3dStartupChecksLegacyNATTableBeforeClusterCreation(t *testing.T) {
 	} {
 		t.Setenv(key, value)
 	}
-	legacyNATHost(t, "linux", legacyNATTestFiles(map[string]string{
-		legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin,
-		legacyNATTestModules + "modules.dep":     "",
-	}))
+	legacyNATHost(t, "linux", legacyNATTestFiles(legacyNATUnloadableHost))
 	// PATH contains only fixtures, so no real tool can run.
 	t.Setenv("PATH", t.TempDir())
 	commands := fakeProfileCommands(t, map[string]string{
 		"docker": `"version --format {{json .Server}}") echo '{"Platform":{"Name":"Docker"}}' ;;
 "info") ;;
-"info --format {{.KernelVersion}}") echo ` + legacyNATTestRelease + ` ;;`,
+"info --format {{.KernelVersion}} {{.Name}}") echo '` + legacyNATTestRelease + ` ` + legacyNATTestHostname + `' ;;`,
 		"k3d":     "",
 		"kubectl": "",
 		"helm":    "",
@@ -206,13 +235,13 @@ func TestK3dStartupChecksLegacyNATTableBeforeClusterCreation(t *testing.T) {
 		"git":     "",
 	})
 	err := upK3d(context.Background(), Options{Repository: root}, "none")
-	if err == nil || !strings.Contains(err.Error(), "provides no legacy iptables nat table") {
-		t.Fatalf("expected the legacy nat table error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "has not loaded the legacy iptables modules") {
+		t.Fatalf("expected the legacy iptables error, got %v", err)
 	}
-	calls := commands()
-	want := []string{"docker version --format {{json .Server}}", "docker info", "docker info --format {{.KernelVersion}}"}
-	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("got commands %q, want %q", calls, want)
+	for _, call := range commands() {
+		if strings.HasPrefix(call, "k3d ") {
+			t.Fatalf("k3d ran before the preflight failed: %q", call)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(state, "state.json")); !os.IsNotExist(err) {
 		t.Fatalf("startup recorded state before the preflight: %v", err)
