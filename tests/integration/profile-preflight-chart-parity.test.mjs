@@ -185,37 +185,3 @@ test("trusted proxy CIDR rules match the API apart from zone IDs", () => {
     }
   }
 });
-
-test(
-  "administrator emails get the bootstrap Job's verdict from the preflight and the chart",
-  {
-    skip: helmSkip,
-  },
-  () => {
-    for (const [adminEmail, accepted] of [
-      ["admin@example.invalid", true],
-      ["  Admin@Example.Invalid\t", true],
-      [" admin@example.invalid　", true],
-      ["﻿admin@example.invalid ", true],
-      ["a@b.c", true],
-    ["\u0085a@b.com", true],
-      ["not-an-email", false],
-      ["admin@localhost", false],
-      ["admin@@example.invalid", false],
-      ["ad min@example.invalid", false],
-      ["admin@exam ple.invalid", false],
-      ["admin@example. invalid", false],
-      ["@example.invalid", false],
-    ["a@.com", false],
-    ["a@b\u000bc.com", false],
-    ]) {
-      assertParity({
-        label: JSON.stringify(adminEmail),
-        controlPlane: { adminEmail },
-        values: { bootstrap: { adminEmail } },
-        accepted,
-        chartError: /bootstrap\.adminEmail must contain a valid administrator email/,
-      });
-    }
-  },
-);

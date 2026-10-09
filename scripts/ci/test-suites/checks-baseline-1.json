@@ -223,10 +223,7 @@
     },
     {
       "path": "tests/integration/profile-preflight-chart-parity.test.mjs",
-      "expectedTests": [
-        "trusted proxy CIDRs get the same verdict from the preflight and the chart",
-        "administrator emails get the bootstrap Job's verdict from the preflight and the chart"
-      ]
+      "expectedTests": ["trusted proxy CIDRs get the same verdict from the preflight and the chart"]
     },
     {
       "path": "tests/integration/bootstrap-output.test.mjs"

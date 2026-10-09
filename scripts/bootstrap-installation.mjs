@@ -1,7 +1,6 @@
 import { dirname } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { betterAuthIssuer, validHttpBaseURL } from "../apps/controller/src/auth/configuration.ts";
-import { normalizeBootstrapAdminEmail } from "../apps/controller/src/composition/bootstrap-admin-email.ts";
 import {
   bootstrapOutputPath,
   writeProtectedBootstrapFile,
@@ -60,8 +59,8 @@ function installationName(value, name) {
 }
 
 function normalizeEmail(raw, name) {
-  const email = normalizeBootstrapAdminEmail(raw);
-  if (email === undefined) {
+  const email = raw.trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
     throw new Error(`${name} must contain a valid administrator email.`);
   }
   return email;

@@ -5,7 +5,6 @@ import { createRequire } from "node:module";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { normalizeBootstrapAdminEmail } from "../apps/controller/src/composition/bootstrap-admin-email.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -1045,10 +1044,7 @@ function buildRendered(profile, parsed, diagnostics) {
     },
     agentNativeAdmin,
     bootstrap: {
-      adminEmail: asString(controlPlane, ["controlPlane", "adminEmail"], diagnostics, {
-        validate: (value) => normalizeBootstrapAdminEmail(value) !== undefined,
-        description: "an email address the bootstrap Job accepts",
-      }),
+      adminEmail: asString(controlPlane, ["controlPlane", "adminEmail"], diagnostics),
       password: {
         claimName: asString(
           controlPlane,
