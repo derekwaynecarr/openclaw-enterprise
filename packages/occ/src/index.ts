@@ -154,6 +154,7 @@ import {
   CredentialGatewayNotConfiguredError,
   CredentialSourceDriverError,
   CredentialSourceTypeNotOfferedError,
+  CredentialWithdrawalInProgressError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
@@ -282,6 +283,7 @@ export {
   CredentialSourceDriverError,
   CredentialSourceRevisionError,
   CredentialSourceTypeNotOfferedError,
+  CredentialWithdrawalInProgressError,
   CredentialWithdrawalRefusedError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
@@ -4201,10 +4203,15 @@ export class OpenClawController {
           "The credential source does not belong to the exact Namespace.",
         );
       }
-      if (await state.credentialSources.hasReferences(locked.id, found.id)) {
+      const blocking = await state.credentialSources.findBlockingReference(locked.id, found.id);
+      if (blocking === "reference") {
         throw new ResourceStateConflictError(
           "An Agent, active revision, or pending deployment still references the credential source. Delete those Agents, or deploy them without it, first.",
         );
+      }
+      if (blocking === "withdrawal_work") {
+        // A redeploy has already dropped the source, so only waiting or Agent deletion helps.
+        throw new CredentialWithdrawalInProgressError();
       }
       const owner = this.ownedCredentialGatewayDriver(found.driverId);
       const deleting =

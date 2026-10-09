@@ -15,6 +15,7 @@ import {
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   PostgresMetricsSnapshot,
+  ResourceStateConflictError,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
@@ -639,6 +640,111 @@ test(
         { outcome: "success", reason_code: "CREDENTIALS_WITHDRAWN" },
       ],
     );
+  },
+);
+
+test(
+  "a source that only a queued withdrawal series blocks is refused with its own 409, not the redeploy advice",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const owner = await fixture.agent("withdraw-delete", {
+      auth: "credential_source",
+      nonModelSources: 1,
+    });
+    const [tool] = toolSources(owner).map(({ sourceId }) => sourceId);
+    let gatewayDown = true;
+    const compute = {
+      ...fixture.compute,
+      async withdrawCredentialSource(_revision, source) {
+        if (gatewayDown) {
+          throw new DependencyUnavailableError("The OpenShell gateway is unreachable.");
+        }
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    const first = await fixture.revision(owner, 1);
+    await fixture.start(compute, {
+      convergenceTimeoutMs: 50,
+      transformDrivers: withCredentialGateway,
+    });
+    await fixture.work(first, "succeeded");
+    await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      withdrawalRequest(fixture, owner, tool),
+    );
+    const [attempt] = await withdrawalAttempts(fixture, first);
+    await fixture.work(attempt, "failed_permanent");
+
+    // Redeploy without the tool source. Its withdrawal series stays queued for the first revision.
+    const withoutTool = await fixture.state.transact(async (unit) => {
+      await unit.namespaces.lockNamespace(fixture.namespace.id);
+      await unit.agents.lockAgent(fixture.namespace.id, owner.id);
+      return unit.agents.updateConfiguration(
+        fixture.namespace.id,
+        owner.id,
+        owner.configurationId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [{ sourceId: owner.harnessAuth.sourceId }],
+      );
+    });
+    const second = await fixture.revision(withoutTool, 2);
+    await fixture.work(second, "succeeded");
+    await fixture.stop();
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, second.id);
+    const retry = await queuedWithdrawal(fixture, first);
+
+    const gateway = withCredentialGateway({
+      installation: { drivers: {} },
+    }).credentialGatewayDriver;
+    fixture.controller.registerDriver(gateway);
+    fixture.controller.selectDriver("credential_gateway", gateway.id);
+    const deleteSource = (sourceId) =>
+      fixture.controller.deleteCredentialSource(fixture.actor.id, fixture.namespace.id, sourceId);
+    // Redeploying again cannot help, so the refusal names the wait and Agent deletion instead.
+    await assert.rejects(deleteSource(tool), (error) => {
+      assert.ok(error instanceof ResourceStateConflictError);
+      assert.equal(error.name, "CredentialWithdrawalInProgressError");
+      assert.match(error.message, /^A credential withdrawal is still queued or running/);
+      return true;
+    });
+    // The Harness source the active revision still uses keeps the reference refusal.
+    await assert.rejects(deleteSource(owner.harnessAuth.sourceId), (error) => {
+      assert.equal(error.name, "ResourceStateConflictError");
+      assert.match(error.message, /^An Agent, active revision, or pending deployment/);
+      return true;
+    });
+    const blocking = (sourceId) =>
+      fixture.state.transact((unit) =>
+        unit.credentialSources.findBlockingReference(fixture.namespace.id, sourceId),
+      );
+    assert.equal(await blocking(tool), "withdrawal_work");
+    assert.equal(
+      (
+        await fixture.state.read((view) =>
+          view.credentialSources.findCredentialSource(fixture.namespace.id, tool),
+        )
+      )?.state,
+      "ready",
+      "a refused deletion leaves the source as it was",
+    );
+
+    // Once the series confirms, nothing blocks the deletion.
+    gatewayDown = false;
+    await fixture.start(compute, {
+      convergenceTimeoutMs: 50,
+      transformDrivers: withCredentialGateway,
+    });
+    await runScheduledRetryNow(fixture, retry);
+    await fixture.work(retry, "succeeded");
+    await fixture.stop();
+    assert.equal(await blocking(tool), undefined);
   },
 );
 
