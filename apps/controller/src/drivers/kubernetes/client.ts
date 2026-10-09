@@ -120,9 +120,11 @@ type KubeConfigDispatcherFactory = {
  * a TLS handshake for each call (finding 890). This keeps one dispatcher per
  * KubeConfig and reuses it while the TLS material is unchanged. When that
  * material changes (a rotated client certificate or CA), it builds a new
- * dispatcher and closes the old one once its in-flight requests finish.
+ * dispatcher and closes the old one a few seconds later, once requests that
+ * already picked it up have dispatched and finished.
  * Requests use HTTP/1.1, as before 2.0.0: undici would otherwise negotiate
- * HTTP/2 and multiplex every call over one shared connection.
+ * HTTP/2 and multiplex every call over one shared connection, and its close
+ * does not drain HTTP/2 streams gracefully.
  */
 export function reuseRequestDispatcher(configuration: KubeConfig): void {
   const factory = configuration as unknown as KubeConfigDispatcherFactory;
@@ -136,7 +138,7 @@ export function reuseRequestDispatcher(configuration: KubeConfig): void {
     if (options.type === "none") {
       return undefined;
     }
-    const fingerprint = createHash("sha256").update(JSON.stringify(options)).digest("hex");
+    const fingerprint = dispatcherFingerprint(options);
     if (current?.fingerprint === fingerprint) {
       return current.dispatcher;
     }
@@ -154,9 +156,38 @@ export function reuseRequestDispatcher(configuration: KubeConfig): void {
     }
     const previous = current?.dispatcher;
     current = { fingerprint, dispatcher };
-    previous?.close().catch(() => undefined);
+    if (previous !== undefined) {
+      // A concurrent request may hold the old dispatcher without having
+      // dispatched yet; closing it now would fail that request. close() then
+      // waits for in-flight requests.
+      setTimeout(() => void previous.close().catch(() => undefined), 5_000).unref();
+    }
     return dispatcher;
   };
+}
+
+/** Hashes dispatcher options, TLS material included, without copying it into a string. */
+function dispatcherFingerprint(options: unknown): string {
+  const hash = createHash("sha256");
+  const visit = (value: unknown): void => {
+    if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+      hash.update(`b${value.byteLength}:`).update(value);
+    } else if (Array.isArray(value)) {
+      hash.update(`a${value.length}:`);
+      value.forEach(visit);
+    } else if (typeof value === "object" && value !== null) {
+      for (const [key, entry] of Object.entries(value)) {
+        hash.update(`k${key.length}:${key}`);
+        visit(entry);
+      }
+      hash.update("}");
+    } else {
+      const text = String(value);
+      hash.update(`${typeof value}${text.length}:`).update(text);
+    }
+  };
+  visit(options);
+  return hash.digest("hex");
 }
 
 /**
