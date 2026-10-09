@@ -15985,6 +15985,35 @@ test("Kubernetes runtime log reads are bounded, timestamped and re-check the Pod
   assert.equal(fixture.calls.filter(({ call }) => call === "readNamespacedPodLog").length, before);
 });
 
+test("Kubernetes runtime log reads normalize RFC3339 offsets without losing nanoseconds", async () => {
+  const fixture = runtimeLogDriverFixture();
+  const lines = [
+    ["2026-09-30T12:00:00Z", "2026-09-30T12:00:00Z"],
+    ["2026-09-30T12:00:00.123456789Z", "2026-09-30T12:00:00.123456789Z"],
+    ["2026-10-01T00:00:00.123456789+08:00", "2026-09-30T16:00:00.123456789Z"],
+    ["2026-09-30T23:00:00.987654321-07:30", "2026-10-01T06:30:00.987654321Z"],
+    ["2026-09-30T12:00:00.12+00:00", "2026-09-30T12:00:00.12Z"],
+    ["2026-09-30T12:00:00+05:45", "2026-09-30T06:15:00Z"],
+  ];
+  const unknown = [
+    "plain diagnostic",
+    "2026-09-30T12:00:00+8:00 malformed offset",
+    "2026-09-30T12:00:00+24:00 invalid offset",
+    "2026-09-30T12:00:00+08:60 invalid minute",
+    "2026-02-30T12:00:00+08:00 invalid date",
+  ];
+  fixture.state.logs.gateway =
+    [...lines.map(([time]) => `${time} ready`), ...unknown].join("\n") + "\n";
+  const chunk = await fixture.driver.readAgentRuntimeLogs(
+    fixture.binding,
+    fixture.request("gateway"),
+  );
+  assert.deepEqual(chunk.lines, [
+    ...lines.map(([, time]) => ({ time, raw: "ready" })),
+    ...unknown.map((raw) => ({ time: null, raw })),
+  ]);
+});
+
 test("Kubernetes runtime log and Event 403s become the typed cluster RBAC error", async () => {
   const { RuntimeLogsForbiddenByClusterError } = await import("../../packages/occ/src/index.ts");
   const forbidden = () =>

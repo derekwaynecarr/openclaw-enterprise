@@ -1695,6 +1695,33 @@ export function kubernetesNamespaceName(namespaceId: string): string {
 const KUBELET_LOG_UNAVAILABLE =
   /^unable to retrieve container logs for [a-z][a-z0-9+.-]{0,31}:\/\/[0-9a-f]{1,128}\r?\n?$/;
 
+function kubernetesRuntimeLogLine(line: string): AgentRuntimeLogChunk["lines"][number] {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d{1,9})?(Z|[+-]\d{2}:\d{2}) (.*)$/s.exec(
+    line,
+  );
+  if (match === null) {
+    return { time: null, raw: line };
+  }
+  const date = match[1]!;
+  const fraction = match[2] ?? "";
+  const zone = match[3]!;
+  const raw = match[4]!;
+  if (zone === "Z") {
+    return { time: `${date}${fraction}Z`, raw };
+  }
+  const parsed = Date.parse(`${date}${zone}`);
+  if (!Number.isFinite(parsed) || new Date(`${date}Z`).toISOString().slice(0, 19) !== date) {
+    return { time: null, raw: line };
+  }
+  const utc = new Date(parsed).toISOString();
+  // The existing UTC cursor format accepts four-digit years only.
+  if (utc.length !== 24) {
+    return { time: null, raw: line };
+  }
+  // Offset conversion changes whole seconds; retain the original nanosecond fraction.
+  return { time: `${utc.slice(0, 19)}${fraction}Z`, raw };
+}
+
 function previousKubernetesNamespaceName(namespaceId: string): string {
   const id = required(namespaceId, "Platform Namespace ID");
   const slug =
@@ -3566,10 +3593,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           0,
       },
       observedAt: new Date().toISOString(),
-      lines: lines.map((line) => {
-        const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z) (.*)$/s.exec(line);
-        return match === null ? { time: null, raw: line } : { time: match[1]!, raw: match[2]! };
-      }),
+      lines: lines.map(kubernetesRuntimeLogLine),
       truncated,
     };
   }
