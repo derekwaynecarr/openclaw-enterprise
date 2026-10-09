@@ -115,10 +115,10 @@ under `failures`, for the first 8 failed files (`omittedFailureFiles` counts the
 redaction, and lines naming a credential are dropped whole. Test output reaches an
 artifact only here; a runtime-minted value without a known shape is not redacted,
 so tests must not print secrets. Each record has a `reason`. A file stopped at the
-runner timeout gets `timeout` with its elapsed time, the tests still running and the
-output tail so far; Node exits soon after, so a long tail can lose its oldest lines
-(`omittedLines` counts them). One that fails preparation gets `prepare` with the redacted
-error message and stack; a failed command's message can quote its stderr or stdout.
+runner timeout gets `timeout`, its elapsed time, the running tests and the output tail
+so far (a long tail can lose its oldest lines; `omittedLines` counts them). A
+preparation failure gets `prepare` with the redacted error message, which can quote a
+command's output, and stack.
 
 The `k3d-model`, `gateway-routing`, `slack`, `openshell`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable Node 24 `NODE_BASE_IMAGE`; gateway-routing, Slack and OpenShell CI use the repository variable `CONTAINER_NODE_BASE_IMAGE`. Preparation supplies the imported controller digest and private routing CA paths; Slack still requires approved runtime images and credentials.
 
