@@ -137,7 +137,7 @@ test("earliest expiry during first creation prevents the next creation and leave
   assert.equal(fake.objects.size, 0);
 });
 
-// Creates material for one session that expires a second from now and returns
+// Creates material for one session that expires a second after `now` and returns
 // the spec that retains it.
 async function retainedSession() {
   const input = binding("project", "session_one", now + 1000);
