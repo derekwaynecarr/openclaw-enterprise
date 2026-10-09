@@ -610,6 +610,12 @@ function signInProvider(source, name, diagnostics) {
       rendered[key] = value;
     }
   }
+  // Omitted keys retain these chart defaults; a one-key override can collide too.
+  if ((rendered.clientIdKey ?? "client-id") === (rendered.clientSecretKey ?? "client-secret")) {
+    diagnostics.errors.push(
+      `controlPlane.${name} client ID and client secret must use different Secret keys.`,
+    );
+  }
   if (source.allowedDomains !== undefined) {
     rendered.allowedDomains = stringArray(source, [...path, "allowedDomains"], diagnostics, {
       validate: (value) => googleHostedDomain.test(value),

@@ -105,6 +105,11 @@ last label starting with a letter), repository Service names, and paired metrics
 scraper selectors. Invalid values therefore fail before `values.yaml` or
 `installation.yaml` is written.
 
+`scripts/render-installation-profile.mjs:signInProvider` refuses equal client-ID
+and client-secret Secret keys for GitHub, Google and OIDC. It considers the chart's
+`client-id` and `client-secret` defaults when only one key is overridden, so those
+collisions also fail before deployment files are written.
+
 `scripts/render-installation-profile.mjs:controlPlaneNodeSelector` checks
 `controlPlane.nodeSelector` against the chart and bootstrap-volume helper's
 Kubernetes label-key and label-value rules (values may be empty). Invalid placement labels
@@ -225,6 +230,8 @@ activation, and repository registry creation need separate evidence.
 ## Changelog
 
 - 2026-10-09 20:43: Preserve Google hosted-domain and repository Service-name checks after the main merge. (01a12099-b8bf-7523-b52e-c7a160e191ec - 31a682eba8a8e4e0e0b80fe48cb71ab86db7e985)
+
+- 2026-10-09 19:54: Reject external sign-in credential-key collisions during profile preflight. (authoring-run/d628d0ae-29d8-405c-b812-0534f00d5821 - 60a837dfd798e8fac90b53c47436c4bc7a36e8e4)
 
 - 2026-10-09: Accept empty control-plane placement label values, as Kubernetes does.
 
