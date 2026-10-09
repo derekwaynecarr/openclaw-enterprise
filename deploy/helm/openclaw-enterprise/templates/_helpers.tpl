@@ -19,26 +19,37 @@
 {{- /* The host parser maps compatibility characters (UTS #46, close to NFKC) before it checks them, and refuses those that map to a forbidden host code point (full-width ? # / : @, spacing accents that map to a space) or that UTS #46 disallows (dotted numbers such as U+2488, ideographic description characters, U+FFFC, U+FFFD). Go's URL parser keeps them all. The list is generated from Node; sign-in-chart-parity.test.mjs re-derives it. */ -}}
 {{- $baseUrlHostRefused := "[\\x{00A8}\\x{00AF}\\x{00B4}\\x{00B8}\\x{02D8}-\\x{02DD}\\x{037A}\\x{0384}\\x{0385}\\x{1FBD}\\x{1FBF}-\\x{1FC1}\\x{1FCD}-\\x{1FCF}\\x{1FDD}-\\x{1FDF}\\x{1FED}\\x{1FEE}\\x{1FFD}\\x{1FFE}\\x{2017}\\x{2024}-\\x{2026}\\x{203E}\\x{2047}-\\x{2049}\\x{2100}\\x{2101}\\x{2105}\\x{2106}\\x{2488}-\\x{249B}\\x{2A74}\\x{2FF0}-\\x{2FFF}\\x{309B}\\x{309C}\\x{31EF}\\x{33C2}\\x{33C7}\\x{33D8}\\x{FC5E}-\\x{FC63}\\x{FDFA}\\x{FDFB}\\x{FE12}\\x{FE13}\\x{FE16}\\x{FE19}\\x{FE30}\\x{FE47}-\\x{FE4C}\\x{FE52}\\x{FE55}\\x{FE56}\\x{FE5F}\\x{FE64}\\x{FE65}\\x{FE68}\\x{FE6A}\\x{FE6B}\\x{FE70}\\x{FE72}\\x{FE74}\\x{FE76}\\x{FE78}\\x{FE7A}\\x{FE7C}\\x{FE7E}\\x{FF03}\\x{FF05}\\x{FF0F}\\x{FF1A}\\x{FF1C}\\x{FF1E}-\\x{FF20}\\x{FF3B}-\\x{FF3E}\\x{FF5C}\\x{FFE3}\\x{FFFC}\\x{FFFD}\\x{1F100}]" -}}
 {{- if regexMatch $baseUrlHostRefused $baseUrlText -}}{{- fail "auth.baseUrl must not contain compatibility characters such as full-width ? # / : @ or dotted numbers; the API's URL parser refuses them" -}}{{- end -}}
-{{- /* The API and the bootstrap Job accept only an absolute HTTP(S) origin (validHttpBaseURL). They also refuse a bare ? or #, which urlParse reads as an empty query or fragment. */ -}}
+{{- /* The API and the bootstrap Job accept only an absolute HTTP(S) origin (validHttpBaseURL). They also refuse a bare ? or #, which urlParse reads as an empty query or fragment. Go keeps an extra port colon in the host name and accepts an IPv6 zone ID; Node refuses both. */ -}}
 {{- $baseUrl := urlParse $baseUrlText -}}
 {{- $baseUrlPort := trimPrefix ":" (regexFind ":[0-9]+$" $baseUrl.host) -}}
-{{- if or (not (has $baseUrl.scheme (list "http" "https"))) (not $baseUrl.hostname) $baseUrl.userinfo (not (has $baseUrl.path (list "" "/"))) $baseUrl.query $baseUrl.fragment (regexMatch "[?#]" $baseUrlText) (and $baseUrlPort (gt (atoi $baseUrlPort) 65535)) -}}
+{{- if or (not (has $baseUrl.scheme (list "http" "https"))) (not $baseUrl.hostname) (and (contains ":" $baseUrl.hostname) (or (not (hasPrefix "[" $baseUrl.host)) (contains "%" $baseUrl.hostname))) $baseUrl.userinfo (not (has $baseUrl.path (list "" "/"))) $baseUrl.query $baseUrl.fragment (regexMatch "[?#]" $baseUrlText) (and $baseUrlPort (gt (atoi $baseUrlPort) 65535)) -}}
 {{- fail "auth.baseUrl must be an absolute HTTP(S) origin such as https://console.example.com, without a path, query, fragment or user info" -}}
 {{- end -}}
-{{- /* Go's URL parser keeps the written host. Node reads a leading zero as octal and also accepts hex (a bare 0x is 0), shorthand, a single integer and a trailing dot, then publishes that other address. Before that check it maps full-width digits U+FF10–U+FF19 and the dots U+3002, U+FF0E and U+FF61, so a host that is otherwise numeric publishes an IPv4 address too. A DNS name that only borrows those characters is left alone. */ -}}
+{{- /* Both parsers percent-decode the host, so the character checks above also run on the decoded host name (https://ex%C2%A0ample.com), with the same deliberate strictness for the invisible characters the API drops. */ -}}
+{{- if regexMatch "[^\\pL\\pM\\pN\\pP\\pS\\x{200C}\\x{200D}]|[<>]" $baseUrl.hostname -}}{{- fail "auth.baseUrl must not contain spaces, invisible characters, < or >; the API's URL parser refuses or drops them in a host" -}}{{- end -}}
+{{- if regexMatch $baseUrlHostRefused $baseUrl.hostname -}}{{- fail "auth.baseUrl must not contain compatibility characters such as full-width ? # / : @ or dotted numbers; the API's URL parser refuses them" -}}{{- end -}}
+{{- /* Go's URL parser keeps the written host. Node treats a host whose last label (after one trailing dot) is a number, decimal or 0x hex, as IPv4: it reads a leading zero as octal and also accepts hex (a bare 0x is 0), shorthand, a single integer and a trailing dot, then publishes that other address, and refuses a host such as example.123 or foo.1.0.0.1 that is not one. Before that check it maps compatibility characters (UTS #46): it drops variation selectors and Hangul fillers, maps the dots U+3002, U+FF0E and U+FF61, and maps digits such as １, ①, ⑩, 𝟏 and ¹ and letters such as ｘ, Ａ, ⓕ and ㏈ to ASCII. The chart maps the same characters, enough to decide whether the last label is a number; such a host must then be written as four ASCII decimal octets. A DNS name that only borrows those characters elsewhere is left alone. The lists are generated from Node; sign-in-chart-parity.test.mjs re-derives them. */ -}}
+{{- $ipv4Ignored := "[\\x{034F}\\x{115F}\\x{1160}\\x{17B4}\\x{17B5}\\x{180B}-\\x{180D}\\x{180F}\\x{3164}\\x{FE00}-\\x{FE0F}\\x{FFA0}\\x{E0100}-\\x{E01EF}]" -}}
+{{- $ipv4Dots := "[\\x{3002}\\x{FF0E}\\x{FF61}]" -}}
+{{- $ipv4Zeros := "[\\x{2070}\\x{2080}\\x{24EA}\\x{FF10}\\x{1CCF0}\\x{1D7CE}\\x{1D7D8}\\x{1D7E2}\\x{1D7EC}\\x{1D7F6}\\x{1FBF0}]" -}}
+{{- $ipv4Digits := "[\\x{00B2}\\x{00B3}\\x{00B9}\\x{2074}-\\x{2079}\\x{2081}-\\x{2089}\\x{2460}-\\x{2473}\\x{3251}-\\x{325F}\\x{32B1}-\\x{32BF}\\x{FF11}-\\x{FF19}\\x{1CCF1}-\\x{1CCF9}\\x{1D7CF}-\\x{1D7D7}\\x{1D7D9}-\\x{1D7E1}\\x{1D7E3}-\\x{1D7EB}\\x{1D7ED}-\\x{1D7F5}\\x{1D7F7}-\\x{1D7FF}\\x{1FBF1}-\\x{1FBF9}]" -}}
+{{- $ipv4X := "[\\x{02E3}\\x{2093}\\x{2169}\\x{2179}\\x{24CD}\\x{24E7}\\x{FF38}\\x{FF58}\\x{1CCED}\\x{1D417}\\x{1D431}\\x{1D44B}\\x{1D465}\\x{1D47F}\\x{1D499}\\x{1D4B3}\\x{1D4CD}\\x{1D4E7}\\x{1D501}\\x{1D51B}\\x{1D535}\\x{1D54F}\\x{1D569}\\x{1D583}\\x{1D59D}\\x{1D5B7}\\x{1D5D1}\\x{1D5EB}\\x{1D605}\\x{1D61F}\\x{1D639}\\x{1D653}\\x{1D66D}\\x{1D687}\\x{1D6A1}\\x{1F147}]" -}}
+{{- $ipv4Hex := "[\\x{00AA}\\x{1D2C}\\x{1D2E}\\x{1D30}\\x{1D31}\\x{1D43}\\x{1D47}-\\x{1D49}\\x{1D9C}\\x{1DA0}\\x{2090}\\x{2091}\\x{2102}\\x{212C}\\x{212D}\\x{212F}-\\x{2131}\\x{2145}-\\x{2147}\\x{216D}\\x{216E}\\x{217D}\\x{217E}\\x{24B6}-\\x{24BB}\\x{24D0}-\\x{24D5}\\x{3372}\\x{33C4}\\x{33C5}\\x{33C8}\\x{A7F2}\\x{A7F3}\\x{FB00}\\x{FF21}-\\x{FF26}\\x{FF41}-\\x{FF46}\\x{1CCD6}-\\x{1CCDB}\\x{1D400}-\\x{1D405}\\x{1D41A}-\\x{1D41F}\\x{1D434}-\\x{1D439}\\x{1D44E}-\\x{1D453}\\x{1D468}-\\x{1D46D}\\x{1D482}-\\x{1D487}\\x{1D49C}\\x{1D49E}\\x{1D49F}\\x{1D4B6}-\\x{1D4B9}\\x{1D4BB}\\x{1D4D0}-\\x{1D4D5}\\x{1D4EA}-\\x{1D4EF}\\x{1D504}\\x{1D505}\\x{1D507}-\\x{1D509}\\x{1D51E}-\\x{1D523}\\x{1D538}\\x{1D539}\\x{1D53B}-\\x{1D53D}\\x{1D552}-\\x{1D557}\\x{1D56C}-\\x{1D571}\\x{1D586}-\\x{1D58B}\\x{1D5A0}-\\x{1D5A5}\\x{1D5BA}-\\x{1D5BF}\\x{1D5D4}-\\x{1D5D9}\\x{1D5EE}-\\x{1D5F3}\\x{1D608}-\\x{1D60D}\\x{1D622}-\\x{1D627}\\x{1D63C}-\\x{1D641}\\x{1D656}-\\x{1D65B}\\x{1D670}-\\x{1D675}\\x{1D68A}-\\x{1D68F}\\x{1F12B}\\x{1F12D}\\x{1F130}-\\x{1F135}]" -}}
 {{- $ipv4Written := $baseUrl.hostname -}}
-{{- $ipv4Mapped := $ipv4Written -}}
-{{- range $digit := list (list "\\x{FF10}" "0") (list "\\x{FF11}" "1") (list "\\x{FF12}" "2") (list "\\x{FF13}" "3") (list "\\x{FF14}" "4") (list "\\x{FF15}" "5") (list "\\x{FF16}" "6") (list "\\x{FF17}" "7") (list "\\x{FF18}" "8") (list "\\x{FF19}" "9") -}}
-{{- $ipv4Mapped = regexReplaceAll (index $digit 0) $ipv4Mapped (index $digit 1) -}}
+{{- /* Digits and digit runs other than a lone zero become 1 and hex letter runs become a: only whether the label is a number matters here. */ -}}
+{{- $ipv4Mapped := regexReplaceAll $ipv4Ignored $ipv4Written "" -}}
+{{- range $map := list (list $ipv4Dots ".") (list $ipv4Zeros "0") (list $ipv4Digits "1") (list $ipv4X "x") (list $ipv4Hex "a") -}}
+{{- $ipv4Mapped = regexReplaceAll (index $map 0) $ipv4Mapped (index $map 1) -}}
 {{- end -}}
-{{- $ipv4Mapped = regexReplaceAll "[\\x{3002}\\x{FF0E}\\x{FF61}]" $ipv4Mapped "." -}}
-{{- if regexMatch "^(?i)(?:[0-9]+|0x[0-9a-f]*)(?:\\.(?:[0-9]+|0x[0-9a-f]*))*\\.?$" $ipv4Mapped -}}
+{{- $ipv4Labels := splitList "." $ipv4Mapped -}}
+{{- if and (gt (len $ipv4Labels) 1) (eq (last $ipv4Labels) "") -}}{{- $ipv4Labels = initial $ipv4Labels -}}{{- end -}}
+{{- if and (not (contains ":" $ipv4Written)) (regexMatch "^(?i)(?:[0-9]+|0x[0-9a-f]*)$" (last $ipv4Labels)) -}}
 {{- if not (regexMatch "^(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $ipv4Written) -}}
-{{- fail "auth.baseUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; the API's URL parser rewrites other spellings to a different address" -}}
+{{- fail "auth.baseUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros, and a DNS name must not end in a number; the API's URL parser rewrites or refuses other spellings" -}}
 {{- end -}}
 {{- range $octet := splitList "." $ipv4Written -}}
 {{- if gt (atoi $octet) 255 -}}
-{{- fail "auth.baseUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; the API's URL parser rewrites other spellings to a different address" -}}
+{{- fail "auth.baseUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros, and a DNS name must not end in a number; the API's URL parser rewrites or refuses other spellings" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -54,7 +65,7 @@
 {{- $passwordSignIn := toString (default "all" .Values.auth.passwordSignIn) -}}
 {{- if not (has $passwordSignIn (list "all" "recovery-only")) -}}{{- fail "auth.passwordSignIn must be all or recovery-only" -}}{{- end -}}
 {{- if and (eq $passwordSignIn "recovery-only") (not $external) -}}{{- fail "auth.passwordSignIn: recovery-only requires auth.github.enabled, auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
-{{- /* JavaScript's trim for the allowlists below and the OIDC URLs: ASCII whitespace, Unicode Zs, U+2028, U+2029 and U+FEFF. Go's TrimSpace also drops U+0085, which the API keeps and then rejects, and keeps U+FEFF, which the API trims. The rendered env keeps the value as written. */ -}}
+{{- /* JavaScript's trim for the allowlists below and the OIDC URLs: ASCII whitespace, Unicode Zs, U+2028, U+2029 and U+FEFF. Go's TrimSpace also drops U+0085, which the API keeps and then rejects, and keeps U+FEFF, which the API trims. The rendered env keeps the value as written. Go's lower maps U+0130 (İ) to i, but JavaScript's toLowerCase maps it to i and U+0307, which the API then refuses, so the allowlists below map it that way first. */ -}}
 {{- $jsTrim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
 {{- /* Allowlists are checked whether or not their provider is enabled, as the API does, and
 an allowlist without its provider is refused: the API treats it as a startup error. */ -}}
@@ -62,17 +73,17 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $googleLists := default dict $google -}}
 {{- if not (or (kindIs "invalid" $githubLists.allowedOrgs) (kindIs "slice" $githubLists.allowedOrgs)) -}}{{- fail "auth.github.allowedOrgs must be a list of GitHub organization logins" -}}{{- end -}}
 {{- range $org := $githubLists.allowedOrgs -}}
-{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}$" (lower (regexReplaceAll $jsTrim (toString $org) ""))) -}}{{- fail "auth.github.allowedOrgs requires GitHub organization logins such as acme" -}}{{- end -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}$" (lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $org) "") "i\u0307"))) -}}{{- fail "auth.github.allowedOrgs requires GitHub organization logins such as acme" -}}{{- end -}}
 {{- end -}}
 {{- if not (or (kindIs "invalid" $githubLists.allowedTeams) (kindIs "slice" $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedTeams must be a list of org/team-slug entries" -}}{{- end -}}
 {{- range $team := $githubLists.allowedTeams -}}
-{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}/[a-z0-9][a-z0-9_-]{0,99}$" (lower (regexReplaceAll $jsTrim (toString $team) ""))) -}}{{- fail "auth.github.allowedTeams requires org/team-slug entries such as acme/platform" -}}{{- end -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}/[a-z0-9][a-z0-9_-]{0,99}$" (lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $team) "") "i\u0307"))) -}}{{- fail "auth.github.allowedTeams requires org/team-slug entries such as acme/platform" -}}{{- end -}}
 {{- end -}}
 {{- if gt (add (len (default list $githubLists.allowedOrgs)) (len (default list $githubLists.allowedTeams))) 10 -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams list at most 10 entries together" -}}{{- end -}}
 {{- if and (not (and $github $github.enabled)) (or (default list $githubLists.allowedOrgs) (default list $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams require auth.github.enabled: true; they limit GitHub sign-in only" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $googleLists.allowedDomains) (kindIs "slice" $googleLists.allowedDomains)) -}}{{- fail "auth.google.allowedDomains must be a list of DNS domain names" -}}{{- end -}}
 {{- range $domain := $googleLists.allowedDomains -}}
-{{- $name := lower (regexReplaceAll $jsTrim (toString $domain) "") -}}
+{{- $name := lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $domain) "") "i\u0307") -}}
 {{- if or (gt (len $name) 253) (not (regexMatch "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$" $name)) -}}{{- fail "auth.google.allowedDomains requires DNS domain names such as example.com" -}}{{- end -}}
 {{- end -}}
 {{- if and (not (and $google $google.enabled)) (default list $googleLists.allowedDomains) -}}{{- fail "auth.google.allowedDomains requires auth.google.enabled: true; it limits Google sign-in only" -}}{{- end -}}
@@ -144,7 +155,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (regexMatch $endpoint $url)) (ne (lower (regexReplaceAll $endpoint $url "${1}")) $host) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 on the issuer's host, with no query or fragment" $key) -}}{{- end -}}
 {{- end -}}
 {{- if not (has (toString (default "client_secret_post" $oidc.tokenAuth)) (list "client_secret_post" "client_secret_basic")) -}}{{- fail "auth.oidc.tokenAuth must be client_secret_post or client_secret_basic" -}}{{- end -}}
-{{- if and $oidc.displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" (regexReplaceAll $jsTrim (toString $oidc.displayName) ""))) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
+{{- /* The API trims the display name and uses its default when nothing is left. RE2's \p{C} has no unassigned code points, which the API refuses at startup; a positive class would instead refuse characters newer than Helm's Unicode tables that the API accepts, such as new emoji. */ -}}
+{{- $displayName := regexReplaceAll $jsTrim (toString (default "" $oidc.displayName)) "" -}}
+{{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $oidc.egressCidrs) (kindIs "slice" $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $oidc.egressCidrs -}}
 {{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.oidc.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
