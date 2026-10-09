@@ -4232,7 +4232,7 @@ test("execution chart refuses a harness hostname Compute refuses", tooling, asyn
   for (const hostname of ["123", "true"]) {
     await assert.rejects(
       template("--set", `routing.hostname=${hostname}`),
-      /routing\.hostname must be a string; use --set-string/,
+      /routing\.hostname must be a string: quote a hostname YAML reads as a number or boolean, or pass it with --set-string/,
       hostname,
     );
   }
@@ -4293,7 +4293,9 @@ test(
       );
     }
     const namespace = "a".repeat(63);
-    const policy = await proxyPolicy((await template("--set-string", `dns.namespace=${namespace}`)).stdout);
+    const policy = await proxyPolicy(
+      (await template("--set-string", `dns.namespace=${namespace}`)).stdout,
+    );
     assert.equal(
       policy?.spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
       namespace,

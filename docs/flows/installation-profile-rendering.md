@@ -92,7 +92,10 @@ syntax and 53-character maximum. It also requires `controlPlane.namespace` and,
 when set, `controlPlane.envoyNamespace` to be Kubernetes namespace names: DNS
 labels of at most 63 characters, with no dots. The Compute driver applies the
 same rule to `gatewayNamespace` and `envoyNamespace`, and the chart to
-`gatewayRouting.envoyNamespace`. A dot, a slash, an uppercase letter, or a longer
+`gatewayRouting.envoyNamespace`. `controlPlane.apiClients[].namespace` and
+`controlPlane.dns.namespace` follow the same rule, as the chart does for
+`api.clients` and `dns`: NetworkPolicies select those peers by
+`kubernetes.io/metadata.name`, which only holds Namespace names. A dot, a slash, an uppercase letter, or a longer
 name fails before any deployable file is written. The shared `digestImage` check in `buildRendered`
 requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters for
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`.
@@ -237,6 +240,8 @@ activation, and repository registry creation need separate evidence.
 - 2026-10-09 20:43: Preserve Google hosted-domain and repository Service-name checks after the main merge. (01a12099-b8bf-7523-b52e-c7a160e191ec - 31a682eba8a8e4e0e0b80fe48cb71ab86db7e985)
 
 - 2026-10-09 19:54: Reject external sign-in credential-key collisions during profile preflight. (authoring-run/d628d0ae-29d8-405c-b812-0534f00d5821 - 60a837dfd798e8fac90b53c47436c4bc7a36e8e4)
+
+- 2026-10-09: Check API client and DNS peer namespaces as DNS labels of at most 63 characters.
 
 - 2026-10-09: Check gateway and Envoy namespaces as DNS labels of at most 63 characters.
 
