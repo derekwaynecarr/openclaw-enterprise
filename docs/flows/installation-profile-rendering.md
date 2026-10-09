@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-09
-last_updated_session: authoring-run/9a3fd823-79af-431c-b422-44c0ba255013
+last_updated_session: authoring-run/19832129-1f67-41f2-8961-d10c648012fd
 ---
 
 # Installation Profile Rendering Flow
@@ -260,6 +260,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 23:58: Reject database CA mount collisions with the active mounts selected by installation profiles. (authoring-run/19832129-1f67-41f2-8961-d10c648012fd - e6d0571907da6bc6d40eed3e1f8125f7dd332e99)
 
 - 2026-10-09 21:03: Validate controller image references before emitting profile files. (authoring-run/9a3fd823-79af-431c-b422-44c0ba255013 - b62cf404ed354079e1c51b64a1e664b3c66c0262)
 
