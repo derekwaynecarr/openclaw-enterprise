@@ -12,7 +12,7 @@ Collector owners must establish equivalent scope. Stop and reconcile uncertain o
 changed scope or ownership. A namespace, kubeconfig or disposable name does not
 prove dedication; demo NetworkPolicy selects Collectors, not records.
 
-From the repository root, use Helm 3, `kubectl`, `yq` v4, Python 3, `openssl`,
+From the repository root, use Helm 3, `kubectl`, `yq` v4, `jq`, Python 3, `openssl`,
 `sha256sum`, `cmp`, an explicit kubeconfig/context and enforcing NetworkPolicy.
 Obtain read access to Helm release Secrets, ConfigMaps and the `kube-system` UID;
 permission to create the demo namespace and OCC Pod-discovery Role/RoleBinding; and
