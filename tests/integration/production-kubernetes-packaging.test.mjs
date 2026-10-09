@@ -615,6 +615,29 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   assert.equal(bootstrapClaim.spec.resources.requests.storage, "1Gi");
 });
 
+test("execution chart refuses a harness hostname Compute refuses", tooling, async () => {
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-execution",
+        "--set",
+        "routing.hostname=Bad_Host",
+        "--set",
+        "routing.gatewayClassName=private-envoy-gateway",
+        "--set",
+        "routing.tlsSecretName=agents-tls",
+        "--set-json",
+        'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+      ],
+      { cwd: repository },
+    ),
+    /routing\.hostname must be a DNS hostname without a port or path/,
+  );
+});
+
 test("production Helm values example renders the backendless default chart", tooling, async () => {
   const { stdout } = await execute(
     helm,
