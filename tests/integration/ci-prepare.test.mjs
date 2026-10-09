@@ -1445,6 +1445,8 @@ test("Images and Packaging exports the image caches only on main pushes", async 
       const role = args.includes("--target") ? "controller" : "runtime";
       const cache = `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
       assert.equal(args[args.indexOf("--cache-from") + 1], `${cache},timeout=60s`, event);
+      // A fixed epoch keeps independent builds of the same layers on one image ID.
+      assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg", event);
       assert.equal(
         args.includes("--cache-to") && args[args.indexOf("--cache-to") + 1],
         exported && `${cache},mode=max,ignore-error=true,timeout=60s`,
