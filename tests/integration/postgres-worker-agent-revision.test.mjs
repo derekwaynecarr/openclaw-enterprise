@@ -522,64 +522,302 @@ revisionTest(
   },
 );
 
+// The revision's queued withdrawal series (the request's, or a scheduled retry) and how long
+// until the worker may claim it.
+async function queuedWithdrawal(fixture, revision) {
+  const { rows } = await fixture.observerPool.query(
+    `SELECT idempotency_key,
+            EXTRACT(EPOCH FROM (available_at - clock_timestamp())) * 1000 AS delay_ms
+     FROM occ.controller_work
+     WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn' AND state = 'queued'`,
+    [revision.id],
+  );
+  assert.equal(rows.length, 1, "a revision has at most one withdrawal series queued");
+  return {
+    id: revision.id,
+    idempotencyKey: rows[0].idempotency_key,
+    delayMs: Number(rows[0].delay_ms),
+  };
+}
+
+// A scheduled retry waits `expectedMs` from the failure that queued it, never less.
+function assertRetryDelay(series, expectedMs) {
+  assert.ok(
+    series.delayMs > expectedMs - 5_000 && series.delayMs <= expectedMs + 1_000,
+    `expected a retry about ${expectedMs} ms away, got ${series.delayMs} ms`,
+  );
+}
+
+// Lets a scheduled retry run now instead of waiting out its delay. The worker still claims it.
+async function runScheduledRetryNow(fixture, series) {
+  const updated = await fixture.observerPool.query(
+    `UPDATE occ.controller_work SET available_at = clock_timestamp()
+     WHERE idempotency_key = $1 AND state = 'queued'`,
+    [series.idempotencyKey],
+  );
+  assert.equal(updated.rowCount, 1);
+}
+
+async function withdrawalAudit(fixture) {
+  const { rows } = await fixture.observerPool.query(
+    `SELECT kind, actor_id, outcome, details->>'reasonCode' AS reason_code,
+            details->'credentialSourceIds' AS sources
+     FROM occ.audit_events
+     WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.credentials_withdraw'
+     ORDER BY occurred_at, kind DESC`,
+    [fixture.namespace.id],
+  );
+  return rows;
+}
+
 test(
-  "an exhausted credential withdrawal stays pending, reports no attempt in progress, and a replay retries it",
+  "a withdrawal that outlasts its attempts in a gateway outage is retried later and revoked without a replay",
   requiresPostgres,
   async (context) => {
+    // Kubernetes Compute has no maintenance interval, and neither has this Compute double.
     const fixture = await setup(context, { maxAttempts: 2 });
-    const { owner, candidate: active } = await fixture.admitInitialRevision("withdraw-exhausted", {
+    const { owner, candidate: active } = await fixture.admitInitialRevision("withdraw-outage", {
       agent: { auth: "credential_source" },
     });
-    let revoke = false;
+    let gatewayDown = true;
+    const withdrawn = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async withdrawCredentialSource(revision, source) {
+          withdrawn.push(revision.id);
+          if (gatewayDown) {
+            throw new DependencyUnavailableError("The OpenShell gateway is unreachable.");
+          }
+          return { sourceId: source.id, state: "revoked" };
+        },
+      },
+      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
+    );
+    await fixture.work(active, "succeeded");
+    const sourceId = owner.harnessAuth.sourceId;
+    const request = withdrawalRequest(fixture, owner, sourceId);
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
+    const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
+    const [first] = await withdrawalAttempts(fixture, active);
+    await fixture.work(first, "failed_permanent");
+
+    // The outage outlasted the attempt budget. The withdrawal stays pending with its reason, and
+    // the failing pass already queued a retry for 30 s later, so the read still reports an
+    // attempt coming rather than asking for a replay.
+    const waiting = await read();
+    assert.equal(waiting.state, "pending");
+    assert.equal(waiting.lastReason, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(waiting.withdrawalInProgress, true);
+    const retry = await queuedWithdrawal(fixture, active);
+    assert.equal(retry.idempotencyKey, `${first.idempotencyKey}:recovery:1`);
+    assertRetryDelay(retry, 30_000);
+    assert.equal(withdrawn.length, 2);
+
+    // The gateway is back. Nobody replays: the scheduled retry revokes the source.
+    gatewayDown = false;
+    await runScheduledRetryNow(fixture, retry);
+    await fixture.work(retry, "succeeded");
+    const revoked = await read();
+    assert.equal(revoked.state, "revoked");
+    assert.equal(revoked.lastReason, "CREDENTIALS_WITHDRAWN");
+    assert.equal(revoked.withdrawalInProgress, false);
+    assert.equal(withdrawn.length, 3);
+    assert.deepEqual(
+      (await withdrawalAttempts(fixture, active)).map(({ state }) => state),
+      ["failed_permanent", "succeeded"],
+    );
+    // The audit shows the failed series and the revocation that followed it.
+    assert.deepEqual(
+      (await withdrawalAudit(fixture)).map(({ outcome, reason_code }) => ({
+        outcome,
+        reason_code,
+      })),
+      [
+        { outcome: "failure", reason_code: "DEPENDENCY_UNAVAILABLE" },
+        { outcome: "success", reason_code: "CREDENTIALS_WITHDRAWN" },
+      ],
+    );
+  },
+);
+
+test(
+  "a withdrawal in a long outage backs off to 5 minutes, stops after its last retry, and a replay starts again",
+  requiresPostgres,
+  async (context) => {
+    // One attempt per series, so each series is one gateway call.
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const { owner, candidate: active } = await fixture.admitInitialRevision(
+      "withdraw-long-outage",
+      {
+        agent: { auth: "credential_source" },
+      },
+    );
+    let gatewayDown = true;
+    let calls = 0;
     await fixture.start(
       {
         ...fixture.compute,
         async withdrawCredentialSource(_revision, source) {
-          // A Sandbox without a running process never reports REVOKED.
-          return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
+          calls += 1;
+          if (gatewayDown) {
+            throw new DependencyUnavailableError("The OpenShell gateway is unreachable.");
+          }
+          return { sourceId: source.id, state: "revoked" };
         },
       },
       { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
     );
     await fixture.work(active, "succeeded");
     const request = withdrawalRequest(fixture, owner, owner.harnessAuth.sourceId);
-    const requested = await fixture.controller.withdrawAgentCredentialSource(
-      fixture.actor.id,
-      request,
-    );
-    assert.equal(requested.withdrawalInProgress, true);
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
     const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
-    assert.equal((await read()).withdrawalInProgress, true);
     const [first] = await withdrawalAttempts(fixture, active);
     await fixture.work(first, "failed_permanent");
 
-    // Exhausting attempts leaves the withdrawal pending, and the row says why. Nothing retries
-    // it (this revision has no maintenance), so the read must not suggest an attempt is coming.
+    // A scheduled retry does not run before it is due, so a gateway that stays down is not
+    // called in a loop.
+    await delay(1_000);
+    assert.equal(calls, 1);
+    // Each retry waits twice as long as the one before, up to 5 minutes, about an hour in all.
+    const delays = [30_000, 60_000, 120_000, 240_000, ...Array(11).fill(300_000)];
+    for (const [index, delayMs] of delays.entries()) {
+      const retry = await queuedWithdrawal(fixture, active);
+      assert.equal(retry.idempotencyKey, `${first.idempotencyKey}:recovery:${index + 1}`);
+      assertRetryDelay(retry, delayMs);
+      assert.equal(calls, index + 1);
+      await runScheduledRetryNow(fixture, retry);
+      await fixture.work(retry, "failed_permanent");
+    }
+
+    // After the last retry nothing is queued, and the read says only a replay retries it.
+    assert.deepEqual(
+      (await withdrawalAttempts(fixture, active)).filter(
+        ({ state }) => state !== "failed_permanent",
+      ),
+      [],
+    );
     const exhausted = await read();
     assert.equal(exhausted.state, "pending");
-    assert.equal(exhausted.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
-    assert.ok(exhausted.lastAttemptAt);
+    assert.equal(exhausted.lastReason, "DEPENDENCY_UNAVAILABLE");
     assert.equal(exhausted.withdrawalInProgress, false);
-    const audit = await fixture.observerPool.query(
-      `SELECT outcome, details->>'reasonCode' AS reason_code FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.credentials_withdraw'`,
-      [fixture.namespace.id],
+    assert.equal(calls, delays.length + 1);
+    // One failure audit per series: the record shows every retry and nothing more.
+    const audit = await withdrawalAudit(fixture);
+    assert.equal(audit.length, delays.length + 1);
+    assert.ok(
+      audit.every(
+        ({ outcome, reason_code }) =>
+          outcome === "failure" && reason_code === "DEPENDENCY_UNAVAILABLE",
+      ),
     );
-    assert.deepEqual(audit.rows, [
-      { outcome: "failure", reason_code: "CREDENTIAL_WITHDRAWAL_PENDING" },
-    ]);
 
-    // With no attempt outstanding, a replay queues another one, which can then succeed.
-    revoke = true;
-    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
-    const work = await withdrawalAttempts(fixture, active);
-    assert.equal(work.length, 2);
-    assert.equal((await read()).withdrawalInProgress, true);
-    await fixture.work(work[1], "succeeded");
+    // A replay is a new request with its own retries; with the gateway back it revokes the source.
+    gatewayDown = false;
+    const replayed = await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      request,
+    );
+    assert.equal(replayed.withdrawalInProgress, true);
+    const replay = await queuedWithdrawal(fixture, active);
+    assert.ok(!replay.idempotencyKey.startsWith(first.idempotencyKey));
+    await fixture.work(replay, "succeeded");
     const revoked = await read();
     assert.equal(revoked.state, "revoked");
-    assert.equal(revoked.lastReason, "CREDENTIALS_WITHDRAWN");
     assert.equal(revoked.withdrawalInProgress, false);
+  },
+);
+
+test(
+  "a withdrawal retried after an outage leaves one denied to its requester for a replay",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const owner = await fixture.agent("withdraw-outage-denied", {
+      auth: "credential_source",
+      nonModelSources: 2,
+    });
+    const active = await fixture.revision(owner, 1);
+    const [allowed, deniedSource] = toolSources(owner).map(({ sourceId }) => sourceId);
+    let gatewayDown = true;
+    const withdrawn = [];
+    const compute = {
+      ...fixture.compute,
+      async withdrawCredentialSource(revision, source) {
+        withdrawn.push(source.id);
+        if (gatewayDown) {
+          throw new DependencyUnavailableError("The OpenShell gateway is unreachable.");
+        }
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    const startWorker = () =>
+      fixture.start(compute, { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway });
+    await startWorker();
+    await fixture.work(active, "succeeded");
+    await fixture.stop();
+
+    // The actor withdraws one tool source, and an operator who is then offboarded the other.
+    // Both share the actor's claim.
+    const offboarded = `withdraw-outage-offboarded-${randomUUID()}`;
+    await fixture.copyActorGrants(offboarded);
+    await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      withdrawalRequest(fixture, owner, allowed),
+    );
+    await fixture.controller.withdrawAgentCredentialSource(
+      offboarded,
+      withdrawalRequest(fixture, owner, deniedSource),
+    );
+    await removeAccessBindings(fixture, offboarded);
+    const [first, ...others] = await withdrawalAttempts(fixture, active);
+    assert.deepEqual(others, []);
+
+    // The authorized withdrawal runs out of attempts in the outage, so a retry is queued for it.
+    await startWorker();
+    await fixture.work(first, "failed_permanent");
+    const retry = await queuedWithdrawal(fixture, active);
+    assert.equal(retry.idempotencyKey, `${first.idempotencyKey}:recovery:1`);
+
+    // With the gateway back, the retry revokes the authorized source. The denied one still never
+    // reaches the gateway, and nothing queues it again: only an authorized replay can.
+    gatewayDown = false;
+    await runScheduledRetryNow(fixture, retry);
+    await fixture.work(retry, "failed_permanent");
+    const read = (credentialSourceId) =>
+      fixture.controller.readAgentCredentialWithdrawal(
+        fixture.actor.id,
+        withdrawalRequest(fixture, owner, credentialSourceId),
+      );
+    assert.equal((await read(allowed)).state, "revoked");
+    const denied = await read(deniedSource);
+    assert.equal(denied.state, "pending");
+    assert.equal(denied.lastReason, "AUTHORIZATION_DENIED");
+    assert.equal(denied.withdrawalInProgress, false);
+    assert.deepEqual(
+      (await withdrawalAttempts(fixture, active)).map(({ state }) => state),
+      ["failed_permanent", "failed_permanent"],
+    );
+    await fixture.stop();
+    assert.ok(withdrawn.every((sourceId) => sourceId === allowed));
+    // Each series audits the denial once; the outage failure and the revocation once each.
+    // Events of one series share a transaction, so compare them as a set.
+    const entries = (rows) => rows.map((row) => JSON.stringify(row)).sort();
+    assert.deepEqual(
+      entries(
+        (await withdrawalAudit(fixture)).map(({ outcome, actor_id, sources }) => ({
+          outcome,
+          actor_id,
+          sources,
+        })),
+      ),
+      entries([
+        { outcome: "failure", actor_id: fixture.actor.id, sources: [allowed] },
+        { outcome: "denied", actor_id: offboarded, sources: [deniedSource] },
+        { outcome: "success", actor_id: fixture.actor.id, sources: [allowed] },
+        { outcome: "denied", actor_id: offboarded, sources: [deniedSource] },
+      ]),
+    );
   },
 );
 
@@ -1125,7 +1363,7 @@ async function removeSourceGrant(fixture, owner, credentialSourceId) {
 }
 
 test(
-  "the read reports an unretired predecessor's exhausted withdrawal once the active one is revoked, and a replay retries it",
+  "the read reports an unretired predecessor's pending withdrawal once the active one is revoked, until its scheduled retry revokes it",
   requiresPostgres,
   async (context) => {
     const fixture = await setup(context, { maxAttempts: 2 });
@@ -1176,14 +1414,16 @@ test(
     await fixture.work(thirdAttempt, "succeeded");
 
     // The active revision's withdrawal is revoked, but the second revision still runs with the
-    // source and nothing will retry it, so the read says so instead of `revoked`.
-    const exhausted = await read();
-    assert.equal(exhausted.revisionId, second.id);
-    assert.equal(exhausted.state, "pending");
-    assert.equal(exhausted.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
-    assert.equal(exhausted.withdrawalInProgress, false);
+    // source, so the read reports its withdrawal instead of `revoked`, with its retry queued.
+    const waiting = await read();
+    assert.equal(waiting.revisionId, second.id);
+    assert.equal(waiting.state, "pending");
+    assert.equal(waiting.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
+    assert.equal(waiting.withdrawalInProgress, true);
+    const retry = await queuedWithdrawal(fixture, second);
+    assert.equal(retry.idempotencyKey, `${secondAttempt.idempotencyKey}:recovery:1`);
 
-    // A replay queues the predecessor's attempt again and reports it in progress.
+    // A replay while the retry is queued queues nothing more and reports it in progress.
     revoke = true;
     const replayed = await fixture.controller.withdrawAgentCredentialSource(
       fixture.actor.id,
@@ -1193,8 +1433,9 @@ test(
     assert.equal(replayed.state, "pending");
     assert.equal(replayed.withdrawalInProgress, true);
     assert.equal((await withdrawalAttempts(fixture, third)).length, 1);
-    const retried = (await withdrawalAttempts(fixture, second)).at(-1);
-    await fixture.work(retried, "succeeded");
+    assert.equal((await withdrawalAttempts(fixture, second)).length, 2);
+    await runScheduledRetryNow(fixture, retry);
+    await fixture.work(retry, "succeeded");
     await fixture.stop();
     const revoked = await read();
     assert.equal(revoked.revisionId, third.id);

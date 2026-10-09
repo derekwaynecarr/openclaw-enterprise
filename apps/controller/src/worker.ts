@@ -359,6 +359,37 @@ function credentialWithdrawalAwaitsReplay(withdrawal: Readonly<CredentialWithdra
   );
 }
 
+/**
+ * Later attempt series a withdrawal gets after its work runs out of attempts on a retryable
+ * failure: 30 s, 1, 2 and 4 min, then every 5 min, about an hour in all.
+ */
+const MAX_CREDENTIAL_WITHDRAWAL_RECOVERIES = 15;
+const CREDENTIAL_WITHDRAWAL_RECOVERY_BASE_MS = 30_000;
+const CREDENTIAL_WITHDRAWAL_RECOVERY_MAX_MS = 300_000;
+const CREDENTIAL_WITHDRAWAL_RECOVERY_SUFFIX = /:recovery:([1-9][0-9]*)$/;
+
+/**
+ * The series after the claimed one. Every series of one request shares the request's work key
+ * with its number appended, so a series is queued once and the chain stays bounded; a replay is
+ * a new request whose chain starts again.
+ */
+function nextCredentialWithdrawalRecovery(idempotencyKey: string): {
+  readonly idempotencyKey: string;
+  readonly number: number;
+} {
+  const current = CREDENTIAL_WITHDRAWAL_RECOVERY_SUFFIX.exec(idempotencyKey);
+  const requestKey = current === null ? idempotencyKey : idempotencyKey.slice(0, current.index);
+  const number = (current === null ? 0 : Number(current[1])) + 1;
+  return { idempotencyKey: `${requestKey}:recovery:${number}`, number };
+}
+
+function credentialWithdrawalRecoveryDelayMs(recovery: number): number {
+  return Math.min(
+    CREDENTIAL_WITHDRAWAL_RECOVERY_MAX_MS,
+    CREDENTIAL_WITHDRAWAL_RECOVERY_BASE_MS * 2 ** Math.min(recovery - 1, 10),
+  );
+}
+
 /** A revision's first pending withdrawal, preferring one that does not await a replay. */
 function firstPendingCredentialWithdrawal(
   withdrawals: readonly Readonly<CredentialWithdrawal>[],
@@ -2567,6 +2598,9 @@ export class ControllerWorker {
         await queue.complete(claim);
       } else if (terminalFailure) {
         await queue.fail(claim, { code: result.code });
+        if (result.outcome === "retry") {
+          await this.scheduleCredentialWithdrawalRecovery(unit, queue, claim);
+        }
       } else {
         await queue.retry(claim, { code: result.code });
       }
@@ -2584,6 +2618,59 @@ export class ControllerWorker {
       result: result.outcome,
       outcome: result.outcome,
       code: result.code,
+    });
+  }
+
+  /**
+   * Withdrawal work that ran out of attempts on a retryable failure (an unreachable gateway, or
+   * one that has not confirmed revocation yet) queues one later series of attempts for its
+   * revision, in the transaction that fails it. Compute without a maintenance interval (the
+   * Kubernetes Driver) has no pass that would re-queue it, so without this a dependency outage
+   * longer than the attempt budget would leave a token usable after the dependency recovers.
+   * The queued series keeps `withdrawalInProgress` true while it waits. Each series waits twice
+   * as long as the one before, up to five minutes, and the chain ends after
+   * MAX_CREDENTIAL_WITHDRAWAL_RECOVERIES series. Where Compute schedules maintenance, each pass
+   * re-queues the withdrawal instead (recoverPendingCredentialWithdrawals). A revision whose
+   * pending withdrawals all await a replay gets none (see credentialWithdrawalAwaitsReplay), and
+   * neither does one whose replay already queued an attempt. The Namespace and Agent are already
+   * locked here, as for any terminal failure.
+   */
+  private async scheduleCredentialWithdrawalRecovery(
+    unit: PlatformUnitOfWork,
+    queue: Pick<PostgresWorkQueue, "enqueue">,
+    claim: ClaimedWork,
+  ): Promise<void> {
+    const recovery = nextCredentialWithdrawalRecovery(claim.idempotencyKey);
+    if (
+      this.maintenanceIntervalMs !== undefined ||
+      recovery.number > MAX_CREDENTIAL_WITHDRAWAL_RECOVERIES
+    ) {
+      return;
+    }
+    const withdrawals = await unit.credentialSources.listCredentialWithdrawals(
+      claim.namespaceId,
+      claim.revisionId!,
+    );
+    if (
+      !withdrawals.some(
+        (withdrawal) =>
+          withdrawal.state === "pending" && !credentialWithdrawalAwaitsReplay(withdrawal),
+      ) ||
+      (await unit.operations.hasOutstandingCredentialWithdrawalWork(
+        claim.namespaceId,
+        claim.revisionId!,
+      ))
+    ) {
+      return;
+    }
+    await queue.enqueue({
+      idempotencyKey: recovery.idempotencyKey,
+      namespaceId: claim.namespaceId,
+      agentId: claim.agentId!,
+      revisionId: claim.revisionId!,
+      actorId: claim.actorId,
+      agentTarget: CREDENTIAL_WITHDRAWAL_TARGET,
+      availableAt: new Date(Date.now() + credentialWithdrawalRecoveryDelayMs(recovery.number)),
     });
   }
 
@@ -2732,7 +2819,8 @@ export class ControllerWorker {
    * Withdrawal work retries a bounded number of times. Maintenance of a revision that keeps
    * running re-queues any pending non-model withdrawal, its own or that of a revision that may
    * still run with a source, so a gateway outage cannot leave a token usable after the gateway
-   * recovers. Ordinary maintenance then continues.
+   * recovers. Without Compute maintenance, scheduleCredentialWithdrawalRecovery queues a bounded
+   * chain of later attempts instead. Ordinary maintenance then continues.
    */
   private async recoverPendingCredentialWithdrawals(
     claim: ClaimedWork,
