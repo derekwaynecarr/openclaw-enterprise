@@ -2788,8 +2788,10 @@ for (const slowCall of [1, 2]) {
       const releaseHealth = Promise.withResolvers();
       const releaseCompute = Promise.withResolvers();
       let healthCalls = 0;
+      // Renewals run every third of the lease. A 4.5 s lease survives a busy CI host's late
+      // renewal; a 1.2 s one expired under load (finding 870).
       const fixture = await setup(context, {
-        leaseDurationMs: 1_200,
+        leaseDurationMs: 4_500,
         async onHealthy() {
           if (++healthCalls !== slowCall) {
             return;
@@ -2820,15 +2822,41 @@ for (const slowCall of [1, 2]) {
           preparing ? true : undefined,
         );
         const original = await fixture.work(candidate, "claimed");
-        await delay(2_600);
-        const lease = await fixture.observerPool.query(
-          `SELECT claim_token, attempt_count, lease_expires_at > clock_timestamp() AS live
-           FROM occ.controller_work WHERE idempotency_key = $1`,
-          [candidate.idempotencyKey],
+        // Count renewals instead of sampling the lease once: the same claim must be renewed
+        // three times while the health update is still pending, however late each renewal
+        // runs. Preparation nests two renewal chains, and each renews once before a chain that
+        // waited on the health update would stop.
+        const lease = async () => {
+          const { rows } = await fixture.observerPool.query(
+            `SELECT claim_token, attempt_count, lease_expires_at,
+                    lease_expires_at > clock_timestamp() AS live
+             FROM occ.controller_work WHERE idempotency_key = $1`,
+            [candidate.idempotencyKey],
+          );
+          return rows[0];
+        };
+        let renewals = 0;
+        let expiresAt = (await lease()).lease_expires_at.getTime();
+        const renewed = await waitFor(
+          "three lease renewals during the pending health update",
+          async () => {
+            const current = await lease();
+            if (current.lease_expires_at.getTime() > expiresAt) {
+              renewals += 1;
+              expiresAt = current.lease_expires_at.getTime();
+            }
+            return renewals >= 3 ? current : undefined;
+          },
+          30_000,
         );
-        assert.deepEqual(lease.rows, [
+        assert.deepEqual(
+          {
+            claim_token: renewed.claim_token,
+            attempt_count: renewed.attempt_count,
+            live: renewed.live,
+          },
           { claim_token: original.claim_token, attempt_count: 1, live: true },
-        ]);
+        );
         assert.equal(healthCalls, slowCall, "health updates must not overlap");
         assert.equal(
           events.some(({ code }) => code === "CLAIM_LOST"),
@@ -4376,6 +4404,84 @@ revisionTest(
       0,
       "maintenance stops only after all withdrawals are revoked",
     );
+  },
+);
+
+test(
+  "maintenance re-queues a withdrawal past one awaiting a replay, and never beside an outstanding attempt",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const owner = await fixture.agent("withdraw-maintenance-preference", {
+      auth: "credential_source",
+      nonModelSources: 2,
+    });
+    // Withdrawals are listed by source ID, so the one that will await a replay comes first.
+    const [denied, outage] = toolSources(owner)
+      .map(({ sourceId }) => sourceId)
+      .sort();
+    let revoke = false;
+    const compute = {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      async withdrawCredentialSource(_revision, source) {
+        return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
+      },
+    };
+    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+    const active = await fixture.revision(owner, 1);
+    await fixture.start(compute, options);
+    await fixture.work(active, "succeeded");
+    await fixture.stop();
+
+    // Two pending withdrawals, and an attempt for them that is queued but held back.
+    await recordPendingWithdrawal(fixture, owner, active, denied);
+    await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      withdrawalRequest(fixture, owner, outage),
+    );
+    const [held] = await withdrawalAttempts(fixture, active);
+    const holdUntil = (interval) =>
+      fixture.observerPool.query(
+        `UPDATE occ.controller_work SET available_at = clock_timestamp() + $2::interval
+         WHERE idempotency_key = $1`,
+        [held.idempotencyKey, interval],
+      );
+    await holdUntil("1 day");
+    await fixture.start(compute, options);
+    const runMaintenance = () =>
+      runMaintenancePass(fixture, active, "the active revision's maintenance chain must continue");
+
+    // While an attempt is outstanding, maintenance queues no other.
+    await runMaintenance();
+    assert.equal(
+      (await withdrawalAttempts(fixture, active)).length,
+      1,
+      "maintenance must not queue an attempt beside an outstanding one",
+    );
+
+    // The attempt runs out during the gateway outage, and the first withdrawal then awaits a
+    // replay, as a denied requester's attempt leaves it. Maintenance still re-queues the other.
+    await holdUntil("0 seconds");
+    await fixture.work(held, "failed_permanent", 30_000);
+    await fixture.state.transact((unit) =>
+      unit.credentialSources.recordCredentialWithdrawalAttempt(
+        fixture.namespace.id,
+        active.id,
+        denied,
+        { reason: "AUTHORIZATION_DENIED", at: new Date().toISOString() },
+      ),
+    );
+    revoke = true;
+    await runMaintenance();
+    const attempts = await withdrawalAttempts(fixture, active);
+    assert.equal(
+      attempts.length,
+      2,
+      "maintenance must re-queue the withdrawal not awaiting a replay",
+    );
+    await fixture.work(attempts[1], "succeeded");
+    assert.equal((await findWithdrawal(fixture, active, outage)).state, "revoked");
   },
 );
 
