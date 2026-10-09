@@ -196,6 +196,30 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   assert.equal(third.complete, true);
   assert.equal(JSON.stringify(saved.ids), before);
   assert.equal((await request(fixture.app, `${base}/agents`)).payload.data.length, 1);
+
+  // A run that stopped after creating the Agent, before saving its principal or binding.
+  const bindingCount = bindings.length;
+  const resumed = structuredClone(saved);
+  delete resumed.ids[seeded.agent.servicePrincipalId];
+  delete resumed.ids[seeded.binding.id];
+  const fourth = await importTenants(fixture.api, bundle, values, { ...options, state: resumed });
+  assert.deepEqual(fourth.skippedBindings, []);
+  assert.equal(resumed.ids[seeded.agent.servicePrincipalId], agent.servicePrincipalId);
+  assert.ok(bindings.some(({ id }) => id === resumed.ids[seeded.binding.id]));
+  assert.equal(
+    (await request(fixture.app, `${base}/iam/access-bindings`)).payload.data.length,
+    bindingCount,
+  );
+
+  // Renaming onto a populated live Namespace is refused instead of merging into it.
+  await assert.rejects(
+    importTenants(fixture.api, bundle, values, {
+      ...options,
+      state: { ids: {}, deployed: [] },
+      names: { "team-a": "team-a restored" },
+    }),
+    /Namespace team-a restored already exists and holds Agents or Secrets; add --rename/u,
+  );
 });
 
 test("discard refuses a stale bundle or one missing workspace files, before deleting", async () => {

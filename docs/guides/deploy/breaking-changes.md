@@ -113,14 +113,15 @@ Configurations, workspace files, transcripts and Secret values.
    ```bash
    ARCHIVE=/secure/occ/tenant-archive
    mkdir -m 700 -p "$ARCHIVE"
-   kubectl get pods -A -l openclaw.dev/agent -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name} {.metadata.labels.openclaw\.dev/workload-role} {.metadata.labels.openclaw\.dev/agent}{"\n"}{end}' |
+   kubectl get pods -A -l openclaw.dev/agent --field-selector status.phase=Running -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name} {.metadata.labels.openclaw\.dev/workload-role} {.metadata.labels.openclaw\.dev/agent}{"\n"}{end}' |
    while read -r ns pod role agent; do
      case $role in
        gateway) paths='.openclaw/state .openclaw/agents/main/agent .openclaw/media .openclaw/agents/main/sessions' ;;
        agent) paths='workspace .codex/generated_images' ;;
        *) continue ;;
      esac
-     kubectl -n "$ns" exec "$pod" -c "$role" -- tar -C /home/node --exclude=codex-home -cf - $paths \
+     kubectl -n "$ns" exec "$pod" -c "$role" -- tar -C /home/node --ignore-failed-read \
+       --exclude=codex-home --exclude='.oce-workspace-setup.*' -cf - $paths \
        >"$ARCHIVE/$agent-$role.tar" </dev/null || echo "failed: $agent $role"
    done
    ```
@@ -169,7 +170,8 @@ Configurations, workspace files, transcripts and Secret values.
      old=$(basename "$tarball" -agent.tar)
      new=$(jq -r --arg old "$old" '.ids[$old] // empty' /secure/occ/tenant-ids.json)
      [ -n "$new" ] || { echo "skipped: $old was not imported"; continue; }
-     read -r ns pod < <(kubectl get pods -A -l "openclaw.dev/agent=$new,openclaw.dev/workload-role=agent" \
+     read -r ns pod < <(kubectl get pods -A --field-selector status.phase=Running \
+       -l "openclaw.dev/agent=$new,openclaw.dev/workload-role=agent" \
        -o jsonpath='{.items[0].metadata.namespace} {.items[0].metadata.name}')
      [ -n "${pod:-}" ] || { echo "skipped: $new has no running Harness"; continue; }
      kubectl -n "$ns" exec -i "$pod" -c agent -- tar -C /home/node --no-overwrite-dir -xf - <"$tarball" \

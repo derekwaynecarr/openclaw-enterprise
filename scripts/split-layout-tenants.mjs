@@ -31,6 +31,7 @@ const AGENT_FIELDS = Object.freeze([
   "harnessAuth",
   "plugins",
   "pluginApprovers",
+  "credentialSources",
 ]);
 
 /**
@@ -241,9 +242,10 @@ export async function discardTenants(
     if (deleted.status === 409) {
       throw new SplitLayoutError(
         `${namespace.name} (${namespace.id}) is not empty: ${deleted.error?.message ?? ""} ` +
-          "A Configuration no Agent references is not exported and blocks the delete; find it " +
-          "with `select id from occ.configurations where namespace_id = '<id>'`, delete it " +
-          "with `occ configuration delete`, then run discard again.",
+          "A Configuration no Agent references is not exported and blocks the delete. Unless " +
+          "the message names them, find them with `select id from occ.configurations where " +
+          "namespace_id = '<id>'`, delete each with `occ configuration delete`, then run " +
+          "discard again.",
       );
     }
     if (![200, 202, 204, 404].includes(deleted.status)) {
@@ -353,6 +355,19 @@ export async function importTenants(
     }
     const name = targetName(namespace);
     const same = existing.find((live) => live.name === name);
+    if (same !== undefined && !Object.values(state.ids).includes(same.id)) {
+      // Only an empty live Namespace is safe to fill: adopting a populated one would merge
+      // the bundle into someone else's Secrets and Agents.
+      const base = ns(same.id);
+      const populated =
+        (await list(api, `${base}/agents`)).length + (await list(api, `${base}/secrets`)).length;
+      if (populated > 0) {
+        throw new SplitLayoutError(
+          `Namespace ${name} already exists and holds Agents or Secrets; ` +
+            `add --rename '${namespace.name}=<new name>' or --skip '${namespace.name}'`,
+        );
+      }
+    }
     let created = same;
     if (created === undefined) {
       const result = await api.call("POST", "/namespaces", { name });
@@ -433,6 +448,8 @@ export async function importTenants(
         source.name,
       );
     }
+    // Configurations have no name to adopt by: a run interrupted between creating one and
+    // saving its ID leaves an unused copy behind, which is harmless.
     for (const configuration of namespace.configurations) {
       await create(
         configuration.id,
@@ -483,6 +500,10 @@ export async function importTenants(
     }
     for (const agent of namespace.agents) {
       if (ids.has(agent.id)) {
+        if (agent.servicePrincipalId && !ids.has(agent.servicePrincipalId)) {
+          const { data } = await api.expect("GET", `${base}/agents/${ids.get(agent.id)}`);
+          record(agent.servicePrincipalId, data.servicePrincipalId);
+        }
         continue;
       }
       const body = remap(
@@ -507,8 +528,14 @@ export async function importTenants(
       const data = same
         ? (await api.expect("GET", `${base}/agents/${same.id}`)).data
         : (await api.expect("POST", `${base}/agents`, body)).data;
+      if (same && data.configurationId !== body.configurationId) {
+        throw new SplitLayoutError(
+          `Agent ${namespace.name}/${agent.name} already exists here with another Configuration; ` +
+            "delete it or import into another Namespace",
+        );
+      }
       if (agent.servicePrincipalId && data.servicePrincipalId) {
-        ids.set(agent.servicePrincipalId, data.servicePrincipalId);
+        record(agent.servicePrincipalId, data.servicePrincipalId);
       }
       record(agent.id, data.id);
       log(
