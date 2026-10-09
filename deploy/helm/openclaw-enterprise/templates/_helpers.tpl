@@ -250,7 +250,29 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if and (hasKey .Values.controlPlane "nodeSelector") (not (kindIs "invalid" .Values.controlPlane.nodeSelector)) (not (kindIs "map" .Values.controlPlane.nodeSelector)) -}}{{- fail "controlPlane.nodeSelector must be a map of Kubernetes node labels" -}}{{- end -}}
+{{- if and (hasKey .Values.controlPlane "nodeSelector") (not (kindIs "invalid" .Values.controlPlane.nodeSelector)) -}}
+{{- if not (kindIs "map" .Values.controlPlane.nodeSelector) -}}{{- fail "controlPlane.nodeSelector must be a map of Kubernetes node labels" -}}{{- end -}}
+{{- /* prepare-bootstrap-volume is_label_key and is_label_value. A qualified key is a DNS subdomain prefix plus a label name. */ -}}
+{{- $labelName := "^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$" -}}
+{{- range $key, $value := .Values.controlPlane.nodeSelector }}
+{{- if or (not (kindIs "string" $value)) (eq $value "") (gt (len $value) 63) (not (regexMatch $labelName $value)) -}}
+{{- fail "controlPlane.nodeSelector values must be nonempty Kubernetes label values" -}}
+{{- end -}}
+{{- if contains "/" $key -}}
+{{- $parts := splitList "/" $key -}}
+{{- $prefix := index $parts 0 -}}
+{{- $name := index $parts 1 -}}
+{{- if or (ne (len $parts) 2) (gt (len $prefix) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $prefix)) (gt (len $name) 63) (not (regexMatch $labelName $name)) -}}
+{{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}
+{{- end -}}
+{{- range $label := splitList "." $prefix -}}
+{{- if gt (len $label) 63 -}}{{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}{{- end -}}
+{{- end -}}
+{{- else if or (gt (len $key) 63) (not (regexMatch $labelName $key)) -}}
+{{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if and .Values.controlPlane.installationChecksum (not (regexMatch "^[a-f0-9]{64}$" .Values.controlPlane.installationChecksum)) -}}{{- fail "controlPlane.installationChecksum must be an empty string or a lowercase SHA-256 digest" -}}{{- end -}}
 {{- if eq .Values.database.appUrlKey .Values.database.migrationUrlKey -}}
 {{- fail "database application and migration credentials must use different Secret keys" -}}
