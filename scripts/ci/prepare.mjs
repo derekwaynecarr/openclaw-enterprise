@@ -2116,6 +2116,12 @@ async function prepareRuntimeSmokeCodexSeccompProfile(statePath, state, env, cre
   await writeState(statePath, state);
 }
 
+async function prepareNativeWorkspaceEnvoyImage(state, env) {
+  const image = effectiveLaneEnv("images-runtime-startup", env).OCC_TEST_WORKSPACE_ENVOY_IMAGE;
+  await ensureDockerSourceImage(state, image, "OCC_TEST_WORKSPACE_ENVOY_IMAGE");
+  env.OCC_TEST_WORKSPACE_ENVOY_IMAGE = image;
+}
+
 export async function prepareRuntimeImageSmoke({ image, statePath }) {
   assertDockerImageId(image, "Runtime smoke image");
   const path = normalizeStatePath(statePath);
@@ -2131,6 +2137,7 @@ export async function prepareRuntimeImageSmoke({ image, statePath }) {
     // Import the caller's exact loaded config ID without rebuilding or pulling.
     await execFile(process.env.OCC_DOCKER_BIN ?? "docker", ["tag", image, tag]);
     await markResourceReady(path, state, resource);
+    await prepareNativeWorkspaceEnvoyImage(state, env);
     await prepareRuntimeSmokeCodexSeccompProfile(path, state, env);
     await saveLaneEnv(path, state, env);
     return { env, cleanup: () => cleanupResourceIds(path) };
@@ -2296,6 +2303,11 @@ async function prepareLane({ lane, statePath }) {
         ]),
       );
       Object.assign(env, built.env);
+      if (name === "images-runtime-startup") {
+        await timedPreparation(name, "workspace-envoy-image", () =>
+          prepareNativeWorkspaceEnvoyImage(state, env),
+        );
+      }
       if (codexSeccomp) {
         await prepareRuntimeSmokeCodexSeccompProfile(resolvedStatePath, state, env, cluster);
       }
