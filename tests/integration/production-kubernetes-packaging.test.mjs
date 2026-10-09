@@ -256,6 +256,42 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "10443" }),
     /distinct from private Envoy HTTPS/,
   );
+  // Dedicated Agent hostnames are agent-<32 hex>.<domain>, so the domain stops at 253 - 39.
+  const longestLabel = "a".repeat(63);
+  const longestDomain = [longestLabel, longestLabel, "a".repeat(22), longestLabel].join(".");
+  const overlongDomain = [longestLabel, longestLabel, "a".repeat(23), longestLabel].join(".");
+  const hostnameLimitDomain = [longestLabel, longestLabel, longestLabel, "a".repeat(61)].join(".");
+  assert.equal(longestDomain.length, 214);
+  assert.equal(overlongDomain.length, 215);
+  assert.equal(hostnameLimitDomain.length, 253);
+  assert.equal(`agent-${"0".repeat(32)}.${longestDomain}`.length, 253);
+  const longest = await resources(
+    (await render({ ...sandboxValues, "gatewayRouting.sandbox.domain": longestDomain })).stdout,
+  );
+  assert.equal(
+    longest
+      .find((item) => item.kind === "Gateway")
+      .spec.listeners.find((item) => item.name === "sandbox").hostname,
+    `*.${longestDomain}`,
+  );
+  for (const domain of [
+    "a..b.com",
+    "example.com-",
+    "example.-com",
+    `${"a".repeat(64)}.test`,
+    "localhost",
+  ]) {
+    await assert.rejects(
+      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
+      /must be a DNS hostname/,
+    );
+  }
+  for (const domain of [overlongDomain, hostnameLimitDomain]) {
+    await assert.rejects(
+      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
+      /must not exceed 214 characters, leaving room for the agent-<32 hex>\. prefix/,
+    );
+  }
   await assert.rejects(
     render({
       ...sandboxValues,
@@ -1702,6 +1738,50 @@ test(
   },
 );
 
+test("the chart refuses repository backend IDs the controller refuses", tooling, async () => {
+  const message =
+    /repositoryCredentials\.backendId must follow the Backend ID rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators/;
+  for (const backendId of [
+    " github-primary",
+    "github-primary ",
+    "github-primary\nmore",
+    "a".repeat(201),
+    "\uFEFFgithub-primary",
+    "github-primary\uFEFF",
+  ]) {
+    await assert.rejects(
+      render(repositoryCredentialValues, {
+        strings: { "repositoryCredentials.backendId": backendId },
+      }),
+      message,
+      JSON.stringify(backendId),
+    );
+  }
+  await assert.rejects(
+    render(repositoryCredentialValues, {
+      strings: { "repositoryCredentials.backendId": "😀".repeat(101) },
+    }),
+    /repositoryCredentials\.backendId must fit in 200 UTF-16 code units for a GitHub Backend, because repository bindings store it under that bound/,
+    "101 emoji",
+  );
+  for (const backendId of ["github-primary", "😀".repeat(100)]) {
+    const objects = await resources(
+      (
+        await render(repositoryCredentialValues, {
+          strings: { "repositoryCredentials.backendId": backendId },
+        })
+      ).stdout,
+    );
+    const broker = objects
+      .find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
+      )
+      .spec.template.spec.containers.find(({ name }) => name === "repository-credentials");
+    assert.equal(broker.args[broker.args.indexOf("--backend-id") + 1], backendId, backendId);
+  }
+});
+
 test("the chart refuses installation names the bootstrap Job refuses", tooling, async () => {
   const message =
     /installation\.name must follow the Name rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators/;
@@ -2829,6 +2909,80 @@ test(
   },
 );
 
+test("the chart refuses administrator emails the bootstrap Job refuses", tooling, async () => {
+  const message = /bootstrap\.adminEmail must contain a valid administrator email/;
+  for (const email of [
+    "",
+    " ",
+    "not-an-email",
+    "a@b",
+    "a@b.",
+    "a@.com",
+    "a@b c.com",
+    "a@b\u00A0c.com",
+    "a@b\u000Bc.com",
+  ]) {
+    await assert.rejects(
+      render({}, { strings: { "bootstrap.adminEmail": email } }),
+      ({ code, stderr }) => code !== 0 && message.test(stderr),
+      JSON.stringify(email),
+    );
+  }
+  for (const email of [
+    "admin@example.invalid",
+    " Admin@Example.COM ",
+    "a@b.com ",
+    "\nadmin@example.com",
+    "\uFEFFadmin@example.com",
+    "\u0085a@b.com",
+  ]) {
+    const { stdout } = await render({}, { strings: { "bootstrap.adminEmail": email } });
+    const objects = await resources(stdout);
+    const job = objects.find(
+      (object) =>
+        object.kind === "Job" &&
+        object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+    );
+    const value = job.spec.template.spec.containers
+      .find((container) => container.name === "bootstrap")
+      .env.find((entry) => entry.name === "OCC_BOOTSTRAP_ADMIN_EMAIL").value;
+    assert.equal(value, email);
+  }
+});
+
+test("the chart refuses bootstrap claim names the volume helper refuses", tooling, async () => {
+  const message =
+    /bootstrap\.password\.claimName must be a DNS subdomain of at most 253 characters/;
+  const longLabel = "a".repeat(64);
+  const longest = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
+  for (const claimName of [
+    "Bootstrap",
+    "claim_name",
+    "claim-",
+    `.claim`,
+    longLabel,
+    `${"a".repeat(254)}`,
+  ]) {
+    await assert.rejects(
+      render({}, { strings: { "bootstrap.password.claimName": claimName } }),
+      ({ code, stderr }) => code !== 0 && message.test(stderr),
+      JSON.stringify(claimName),
+    );
+  }
+  const { stdout } = await render({}, { strings: { "bootstrap.password.claimName": longest } });
+  const objects = await resources(stdout);
+  const job = objects.find(
+    (object) =>
+      object.kind === "Job" &&
+      object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+  );
+  const claim = job.spec.template.spec.volumes.find(
+    (volume) => volume.name === "bootstrap-password-output",
+  ).persistentVolumeClaim.claimName;
+  assert.equal(claim, longest);
+  assert.equal(longest.length, 253);
+});
+
 test(
   "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
   tooling,
@@ -3005,6 +3159,7 @@ test(
     for (const image of [
       `registry.example/controller@sha256:${"A".repeat(64)}`,
       `registry.example/controller@SHA256:${"a".repeat(64)}`,
+      `registry.example.invalid/foo+bar@sha256:${"a".repeat(64)}`,
     ]) {
       await assert.rejects(
         render({ "images.controller": image }),
@@ -3016,8 +3171,23 @@ test(
         image,
       );
     }
+    const underscored = `registry.example.invalid/foo_bar@sha256:${"a".repeat(64)}`;
+    assert.match((await render({ "images.controller": underscored })).stdout, /foo_bar@sha256:/);
   },
 );
+
+test("the chart refuses a relative bootstrap mount path the Job refuses", tooling, async () => {
+  const message = /bootstrap\.password\.mountPath must be an absolute path/;
+  for (const mountPath of ["bootstrap", "./bootstrap", " bootstrap"]) {
+    await assert.rejects(
+      render({}, { strings: { "bootstrap.password.mountPath": mountPath } }),
+      ({ code, stderr }) => code !== 0 && message.test(stderr),
+      JSON.stringify(mountPath),
+    );
+  }
+  const { stdout } = await render();
+  assert.match(stdout, /value: "\/var\/lib\/openclaw\/bootstrap\/initial-admin-password"/);
+});
 
 test(
   "Gateway membership selectors keep a numeric-looking route label a string",
@@ -3545,6 +3715,30 @@ test(
   },
 );
 
+test("Helm rejects worker timings the worker process rejects", tooling, async () => {
+  for (const [key, value] of [
+    ["worker.pollIntervalMs", "0"],
+    ["worker.pollIntervalMs", "abc"],
+    ["worker.leaseDurationMs", "1.5"],
+    ["worker.maxAttempts", "-1"],
+    ["worker.convergenceTimeoutMs", "9007199254740993"],
+  ]) {
+    await assert.rejects(render({ [key]: value }), /must be a positive safe integer/);
+  }
+  const rendered = await render({ "worker.pollIntervalMs": "010" });
+  assert.match(rendered.stdout, /name: OCC_WORKER_POLL_INTERVAL_MS\n\s+value: "010"/);
+});
+
+test("Helm renders a values-file worker timeout of 1800000 as digits", tooling, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-worker-timing-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const valuesFile = join(directory, "worker.yaml");
+  await writeFile(valuesFile, "worker:\n  convergenceTimeoutMs: 1800000\n", { mode: 0o600 });
+  const rendered = await render({}, { valuesFiles: [valuesFile] });
+  assert.match(rendered.stdout, /name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS\n\s+value: "1800000"/);
+  assert.doesNotMatch(rendered.stdout, /OCC_WORKER_CONVERGENCE_TIMEOUT_MS\n\s+value: "1\.8e\+06"/);
+});
+
 test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
   const collector = {
     "logging.collector.enabled": "true",
@@ -3774,3 +3968,48 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
     );
   }
 });
+
+test(
+  "the chart refuses control-plane node selectors the volume helper refuses",
+  tooling,
+  async () => {
+    const valueMessage =
+      /controlPlane\.nodeSelector values must be nonempty Kubernetes label values/;
+    const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
+    for (const [key, value, message] of [
+      ["oce-role", "not valid", valueMessage],
+      ["oce-role", "", valueMessage],
+      ["oce-role", "a".repeat(64), valueMessage],
+      ["a-", "control", keyMessage],
+      ["bad key", "control", keyMessage],
+    ]) {
+      await assert.rejects(
+        render({}, { strings: { [`controlPlane.nodeSelector.${key}`]: value } }),
+        ({ code, stderr }) => code !== 0 && message.test(stderr),
+        `${key}=${value}`,
+      );
+    }
+    const directory = await mkdtemp(join(tmpdir(), "openclaw-node-selector-"));
+    const selectorValues = join(directory, "selector.yaml");
+    await writeFile(
+      selectorValues,
+      "controlPlane:\n  nodeSelector:\n    Example.com/role: control\n",
+    );
+    await assert.rejects(
+      render({}, { valuesFiles: [selectorValues] }),
+      ({ code, stderr }) => code !== 0 && keyMessage.test(stderr),
+    );
+    await rm(directory, { recursive: true, force: true });
+    const { stdout } = await render(
+      {},
+      {
+        strings: {
+          "controlPlane.nodeSelector.oce-role": "control",
+          "controlPlane.nodeSelector.topology\\.kubernetes\\.io/zone": "east",
+        },
+      },
+    );
+    assert.match(stdout, /oce-role: control/);
+    assert.match(stdout, /topology\.kubernetes\.io\/zone: east/);
+  },
+);

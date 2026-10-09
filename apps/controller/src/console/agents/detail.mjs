@@ -922,6 +922,29 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     ...(context.installationAdmin === false ? [] : [renderAgentAccess(context, agent)]),
     versionLayout,
   );
+  function revealSelectedTab() {
+    const strip = tabs.getBoundingClientRect();
+    const bounds = tabControls.get(selectedTab).getBoundingClientRect();
+    if (bounds.left < strip.left) {
+      tabs.scrollLeft += Math.floor(bounds.left - strip.left);
+    } else if (bounds.right > strip.right) {
+      tabs.scrollLeft += Math.ceil(bounds.right - strip.right);
+    }
+  }
+  const tabResize = new ResizeObserver(() => {
+    if (!context.isCurrent() || !tabs.isConnected) {
+      tabResize.disconnect();
+      return;
+    }
+    revealSelectedTab();
+  });
+  tabResize.observe(tabs);
+  // Detached views stop observing; Back's retained view re-arms the strip.
+  context.onResume?.(() => {
+    if (tabs.isConnected) {
+      tabResize.observe(tabs);
+    }
+  });
   let details;
   const retainedTabs = new Map();
   let mountedTab = null;
@@ -1781,6 +1804,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         control.removeAttribute("aria-current");
       }
     }
+    revealSelectedTab();
     refreshDeployControls();
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);

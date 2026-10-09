@@ -114,6 +114,94 @@ test("a failed deployment's Logs link opens its version in view without reloadin
   }
 });
 
+test("phone-width routes, resizing and history keep the selected Agent tab visible", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "phone-width output")];
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await trackSettledFetches(page);
+  // Simulate a terminal deployment record so Back can retain the whole mounted view.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: revisionId,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: "succeeded",
+            error: null,
+            warnings: [],
+            progress: null,
+          },
+          meta: { requestId: "req_tabs_back" },
+        }),
+      }),
+  );
+  const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
+  await login(page, fixture, url);
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText("phone-width output")
+    .waitFor();
+
+  async function assertSelectedTabVisible(name) {
+    const selected = page.locator('.agent-tabs button[aria-current="page"]');
+    assert.equal(await selected.textContent(), name);
+    await page.waitForFunction(() => {
+      const button = globalThis.document.querySelector('.agent-tabs button[aria-current="page"]');
+      const strip = button.closest("nav").getBoundingClientRect();
+      const bounds = button.getBoundingClientRect();
+      return bounds.left >= strip.left && bounds.right <= strip.right;
+    });
+  }
+
+  // A direct route has no pointer action to scroll its off-screen selected tab.
+  await assertSelectedTabVisible("Logs");
+  const output = await page.getByRole("log", { name: "Runtime log output" }).elementHandle();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await assertSelectedTabVisible("Logs");
+  // Resizing the mounted view must also reveal the selection without recreating its panel.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertSelectedTabVisible("Logs");
+  assert.equal(await output.evaluate((node) => node.isConnected), true);
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByText("View admitted native configuration", { exact: true }).click();
+  await waitForIdleFetches(page);
+  const disclosure = await page.locator(".native-document").elementHandle();
+
+  // Browser history also selects tabs without scrolling them through a click.
+  await page.goBack();
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText("phone-width output")
+    .waitFor();
+  await assertSelectedTabVisible("Logs");
+  await page.goForward();
+  await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
+  await assertSelectedTabVisible("Configuration");
+  assert.equal(await disclosure.evaluate((node) => node.isConnected && node.open), true);
+
+  // A whole view retained for Back must resume observing after its tab strip was detached.
+  await page.goBack();
+  await page.getByRole("log", { name: "Runtime log output" }).waitFor();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const strip = await page.locator(".agent-tabs").elementHandle();
+  await waitForIdleFetches(page);
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  assert.equal(await strip.evaluate((node) => node.isConnected), false);
+  await page.goBack();
+  await page.locator('.agent-tabs button[aria-current="page"]:enabled').waitFor();
+  assert.equal(await strip.evaluate((node) => node.isConnected), true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertSelectedTabVisible("Logs");
+});
+
 test("the Logs tab shows runtime status, sanitized output and follows with a cursor", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   const secret = `ghp_${randomUUID().replaceAll("-", "")}`;
