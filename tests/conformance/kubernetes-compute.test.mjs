@@ -122,6 +122,89 @@ function options(overrides = {}) {
   };
 }
 
+test("Kubernetes peer Pod selectors reject labels the API refuses before provisioning", () => {
+  const peers = [
+    ["DNS peer", (configured, podLabels) => (configured.network.dns.podLabels = podLabels)],
+    [
+      "Gateway client",
+      (configured, podLabels) => (configured.network.gatewayClients[0].podLabels = podLabels),
+    ],
+    [
+      "Repository credential gateway",
+      (configured, podLabels) => {
+        configured.network.repositoryCredentials = {
+          namespace: "controller",
+          podLabels,
+          port: 8443,
+        };
+      },
+    ],
+    [
+      "Provider Harness gateway",
+      (configured, podLabels) => {
+        configured.network.providerHarness = {
+          namespace: "provider",
+          podLabels,
+          address: "127.0.0.1",
+          port: 8443,
+        };
+      },
+    ],
+    [
+      "Managed channel proxy",
+      (configured, podLabels) => {
+        configured.runtime = {
+          transportSecretPrefix: "transport",
+          gatewayStorageClassName: "local-path",
+          channels: {
+            proxyUrl: "http://proxy.controller.svc:3128",
+            managedProxy: {
+              namespace: "controller",
+              podLabels,
+              hostname: "proxy.controller.svc",
+              port: 3128,
+            },
+          },
+        };
+      },
+    ],
+  ];
+  for (const [description, configure] of peers) {
+    for (const podLabels of [
+      { app: "kube/dns" },
+      { app: "a".repeat(64) },
+      { app: "value\n" },
+      { "k8s.io/name/extra": "dns" },
+      { "example.com/": "dns" },
+      { "Example.com/Name": "dns" },
+      { ["a".repeat(64)]: "dns" },
+      { [`${"a".repeat(254)}/Name`]: "dns" },
+      { "example.com\n/Name": "dns" },
+    ]) {
+      const configured = options();
+      configure(configured, podLabels);
+      assert.throws(
+        () => createKubernetesComputeDriver(configured),
+        /label (?:keys|values) must be Kubernetes/,
+        description,
+      );
+    }
+    // Kubernetes accepts empty values and DNS-subdomain key prefixes up to253
+    // characters; the prefix need not follow Namespace's single-label rule.
+    for (const podLabels of [
+      { app: "" },
+      { "example.com/Name": "v.1_A-2" },
+      { [`example.com/${"a".repeat(63)}`]: "b".repeat(63) },
+      { [`${"a".repeat(253)}/Name`]: "" },
+      { 123: "0" },
+    ]) {
+      const configured = options();
+      configure(configured, podLabels);
+      assert.doesNotThrow(() => createKubernetesComputeDriver(configured), description);
+    }
+  }
+});
+
 test("repository capability admits only configured Compute-owned native topologies", () => {
   const configured = options({
     runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },

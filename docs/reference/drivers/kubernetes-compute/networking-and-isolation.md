@@ -14,6 +14,11 @@ rejects all-source ranges, including IPv4-mapped equivalents. Without private
 routing, also configure the namespace and Pod selectors in
 `network.gatewayClients` for your authenticated proxy.
 
+`podLabels` use [Kubernetes label syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set), checked before provisioning.
+Values may be empty; key names and values allow 63 characters, DNS prefixes 253. This covers
+DNS, gateway clients, repository credentials, Provider Harness, and managed channel
+proxy peers.
+
 Each tenant starts with default-deny ingress and egress. Explicit policies allow
 DNS (UDP/TCP ports `53` and `5353` through `allow-dns`), approved gateway clients,
 and required communication between an Agent's gateway and dedicated Harness.
