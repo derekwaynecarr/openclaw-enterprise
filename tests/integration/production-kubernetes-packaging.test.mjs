@@ -2558,6 +2558,77 @@ test(
   },
 );
 
+test("database CA mounts stay distinct from active production volume mounts", tooling, async () => {
+  const optionalFeatures = {
+    ...repositoryCredentialValues,
+    ...gatewayRoutingValues,
+    ...chatgptValues,
+    "executionCluster.enabled": "true",
+    "executionCluster.apiKubeconfigSecretName": "execution-api",
+    "executionCluster.workerKubeconfigSecretName": "execution-worker",
+    "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+  };
+  for (const features of [
+    {},
+    optionalFeatures,
+    { "bootstrap.password.mountPath": "/custom/bootstrap" },
+  ]) {
+    const objects = await resources((await render(features)).stdout);
+    // Derive the existing mounts from shipped workloads, independently of the validation list.
+    const paths = new Set(
+      objects
+        .filter(
+          (object) =>
+            ["Deployment", "Job"].includes(object.kind) &&
+            ["api", "worker", "initialization"].includes(
+              object.metadata.labels["app.kubernetes.io/component"],
+            ),
+        )
+        .flatMap((object) => [
+          ...(object.spec.template.spec.initContainers ?? []),
+          ...object.spec.template.spec.containers,
+        ])
+        .filter((container) => ["api", "worker", "migration", "bootstrap"].includes(container.name))
+        .flatMap((container) => (container.volumeMounts ?? []).map((mount) => mount.mountPath)),
+    );
+    assert.ok(paths.size > 0);
+    for (const mountPath of paths) {
+      await assert.rejects(
+        render({ ...features, ...databaseCaValues, "database.caMountPath": mountPath }),
+        /database.caMountPath.*distinct/,
+        mountPath,
+      );
+    }
+  }
+  // Paths reserved by optional features remain available when those features are disabled.
+  for (const mountPath of [
+    "/etc/openclaw/execution",
+    "/etc/openclaw/repository-registry",
+    "/etc/openclaw/repository-ca",
+    "/var/run/secrets/kubernetes.io/serviceaccount",
+    "/run/openclaw/repository-control",
+    "/etc/openclaw/gateway-api-key",
+    "/etc/openclaw/gateway-ca",
+    "/etc/openclaw/chatgpt",
+    "/custom/database-ca",
+  ]) {
+    await render({ ...databaseCaValues, "database.caMountPath": mountPath });
+  }
+  const ordinary = (await render()).stdout;
+  await render({
+    ...externalGatewayRoutingValues,
+    ...databaseCaValues,
+    "database.caMountPath": "/etc/openclaw/gateway-ca",
+  });
+  // The repository sidecar's private mounts do not occur in a database client.
+  for (const mountPath of ["/etc/openclaw/repository-inputs", "/run/openclaw/repository-private"]) {
+    await render({ ...optionalFeatures, ...databaseCaValues, "database.caMountPath": mountPath });
+  }
+  for (const mountPath of ["/etc/openclaw/installation", "/var/lib/openclaw/bootstrap"]) {
+    assert.equal((await render({ "database.caMountPath": mountPath })).stdout, ordinary);
+  }
+});
+
 test(
   "optional database CA Secret mounts into every production database client",
   tooling,

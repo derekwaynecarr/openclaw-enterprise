@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-10-09"
-last_updated_session: "authoring-run/b1433176-2fef-435b-bc30-c52bc7fa09e4"
+last_updated_session: "codex/01a12074-7896-7f63-99fe-9f42e9041d02"
 ---
 
 # Production Startup Flow
@@ -181,18 +181,18 @@ no `preStop` hook, since no peer takes its traffic; a request still running afte
 failed close logs `shutdown.failed` and exits `1`. A log ending at
 `shutdown.started` means the grace period cut the drain off.
 
-When `controlPlane.nodeSelector` is non-empty, the chart places the API and
-worker Pods with that selector. The same selector applies to the initialization
-Job (migration and bootstrap), so all four stay on a reviewed control-plane node
-pool.
-`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also projects
-that selector into `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`,
-so the credential-checking private proxy stays on the trusted pool.
-Empty chart defaults omit the field for clusters that do
-not label a dedicated control-plane pool. When `database.caSecretName` is set,
-API and worker also mount the CA Secret read-only at `database.caMountPath`.
-Tenant gateway and Agent placement remain in the selected Compute Driver
-configuration.
+Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
+on reviewed control-plane nodes; empty defaults omit it.
+`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also applies it
+to `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`, keeping the private
+proxy on that pool. Tenant gateway and Agent placement remain Compute-owned.
+
+`database.caSecretName` selects read-only CA mounts at `database.caMountPath`
+for all four database clients.
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl` rejects equality with
+another active client mount, including bootstrap output. Disabled optional
+features reserve no paths; disabling the CA leaves its path unused. Kubernetes
+requires unique mount paths within each container.
 
 The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
 selects only `api`, `worker`, and `initialization` Pods with the release identity.
@@ -323,6 +323,8 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 22:25: Refuse database CA paths that duplicate active database-client mounts before Kubernetes admission. (codex/01a12074-7896-7f63-99fe-9f42e9041d02 - 7f358117e)
 
 - 2026-10-09 21:04: Refuse fractional routing ports before Helm emits Kubernetes resources. (authoring-run/b1433176-2fef-435b-bc30-c52bc7fa09e4 - 78677c21f)
 
