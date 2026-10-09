@@ -76,7 +76,10 @@ snapshots, and Namespace-scoped access.
 transaction-failure compensation, and execution-mode admission. Against an
 in-memory Admin API, it checks that a create reply naming a disabled account in
 this workspace removes only that account, a lost reply deletes nothing, and a
-retried delete completes.
+retried delete completes. An invalid credential reply revokes only a credential
+it places under the requested account in this workspace.
+`tests/conformance/kubernetes-compute.test.mjs` checks that a failed token Secret
+create deletes only an account-owned Secret with the request's token.
 
 Its Backend regression uses built-in fetch and real HTTPS connections against a
 loopback TLS server with a test-owned certificate. An unfinished 429, 503 or
