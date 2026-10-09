@@ -34,7 +34,15 @@ Create calls
 calls `deleteNamespacedConfigMap` with the observed object identity when
 available. Creation starts at generation `1`; each successful PATCH replaces
 the entire native document and advances the generation exactly once. Metadata
-and ConfigMap updates share OCC's existing transactional/compensating boundary.
+and ConfigMap updates share OCC's existing transactional/compensating boundary;
+create, update and delete register their compensation before the write, so a write
+that applied but answered an error is undone as well. A failed create deletes only
+the exact Configuration `inspectExact` finds, a failed delete recreates the previous
+one only when it is gone, and a failed update restores the stored generation. When
+that check cannot read the backend, the request fails as a rollback failure (503).
+A Driver without `inspectExact`, such as the filesystem development Driver, compensates
+only a write it saw succeed. A write still in flight, or another change that lands
+between the check and the compensation, is not covered.
 A referenced Configuration cannot be deleted. Tenant child-data access remains
 limited to namespaced ConfigMap `create`, `get`, `update`, and `delete`;
 Kubernetes cannot restrict `create` by `resourceNames`, so that verb must use

@@ -720,6 +720,39 @@ export class CredentialSourceRevisionError extends Error {
 }
 
 /**
+ * A Compute Driver cannot withdraw a credential source from this exact AgentRevision: its
+ * configuration cannot identify the revision's Sandbox, or it found an object it does not
+ * own. Retrying cannot change the outcome until an operator corrects the cause, so the worker
+ * fails the withdrawal at once with `code` instead of retrying it for an hour; a replay tries
+ * again. The message stays in the controller.
+ */
+export class CredentialWithdrawalRefusedError extends Error {
+  readonly code: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED" | "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT";
+
+  constructor(code: CredentialWithdrawalRefusedError["code"], message: string) {
+    super(message);
+    this.name = "CredentialWithdrawalRefusedError";
+    this.code = code;
+  }
+}
+
+/**
+ * Source deletion is refused only because a credential withdrawal attempt or retry series is
+ * still queued or running for an inactive revision that holds the source; nothing else
+ * references it. A fixed message: it names no Agent or revision, which the caller, who holds
+ * only `delete` on the source, may not be allowed to read. A replay cannot help, since the
+ * Agent's active revision no longer holds the source.
+ */
+export class CredentialWithdrawalInProgressError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "A credential withdrawal is still queued or running for an Agent revision that held the source. Wait for it to finish (it retries for up to about an hour), or delete that revision's Agent, then retry.",
+    );
+    this.name = "CredentialWithdrawalInProgressError";
+  }
+}
+
+/**
  * An AccessBinding Role carries Permissions that can never take effect through the
  * binding: `create` is checked against the Namespace, not an existing resource, and a
  * binding to an exact resource applies only Permissions of that resource's kind.

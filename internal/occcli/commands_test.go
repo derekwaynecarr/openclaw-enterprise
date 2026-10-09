@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -517,4 +518,63 @@ func TestServiceKeyCreateLeavesNoKeyFileWhenItCannotSaveAKey(t *testing.T) {
 		t.Fatalf("response without a key ID: error = %v", err)
 	}
 	assertNoKeyFile("a response without a key ID")
+}
+
+func TestServiceKeyCreateRejectsNamesTheAPIRefusesBeforeAnyRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		writer.Header().Set("content-type", "application/json")
+		writer.WriteHeader(http.StatusCreated)
+		_, _ = writer.Write([]byte(`{"data":{"id":"key_1","name":"nora","key":"occ_secret"},"meta":{"requestId":"r"}}`))
+	}))
+	defer server.Close()
+	directory := t.TempDir()
+	adminKey := filepath.Join(directory, "admin.json")
+	if err := os.WriteFile(adminKey, []byte(`{"data":{"key":"admin-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The API counts code points, so 33 emoji are too long although 32 fit.
+	for _, name := range []string{strings.Repeat("a", 33), strings.Repeat("😀", 33), "   "} {
+		requests = 0
+		keyFile := filepath.Join(directory, "rejected-"+name+".json")
+		command := New(&bytes.Buffer{}, &bytes.Buffer{})
+		command.SetArgs([]string{
+			"--url", server.URL,
+			"--service-key-file", adminKey,
+			"--namespace", testNamespaceID,
+			"service-key", "create",
+			"--service-principal", "spn_1",
+			"--name", name,
+			"--out", keyFile,
+		})
+		err := command.Execute()
+		if err == nil || !strings.Contains(err.Error(), "1 to 32 characters") {
+			t.Fatalf("name %q: error = %v", name, err)
+		}
+		if requests != 0 {
+			t.Fatalf("name %q sent %d requests", name, requests)
+		}
+		if _, statErr := os.Stat(keyFile); !os.IsNotExist(statErr) {
+			t.Fatalf("name %q left a key file: %v", name, statErr)
+		}
+	}
+
+	for index, name := range []string{strings.Repeat("a", 32), strings.Repeat("😀", 32)} {
+		requests = 0
+		keyFile := filepath.Join(directory, "accepted-"+strconv.Itoa(index)+".json")
+		command := New(&bytes.Buffer{}, &bytes.Buffer{})
+		command.SetArgs([]string{
+			"--url", server.URL,
+			"--service-key-file", adminKey,
+			"--namespace", testNamespaceID,
+			"service-key", "create",
+			"--service-principal", "spn_1",
+			"--name", name,
+			"--out", keyFile,
+		})
+		if err := command.Execute(); err != nil || requests != 1 {
+			t.Fatalf("32-character name %q: error = %v after %d requests", name, err, requests)
+		}
+	}
 }

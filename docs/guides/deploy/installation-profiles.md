@@ -165,7 +165,8 @@ ChatGPT Backend admin credential path:
 
 Managed issuance is separate from the default `codex_pat` path. The rendered
 Backend and ServiceAccount Driver wiring does not prove that live
-service-account creation works.
+service-account creation works. Optional `credentialTtlSeconds` must be an
+integer from 1 through 2592000, the lifetime the API accepts; omit it to use 2592000.
 
 To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as
@@ -281,6 +282,10 @@ Skip both configuration-generation branches and continue at the
 [shared bootstrap PVC and configuration checks](production-installation.md#shared-bootstrap-pvc-and-configuration-checks).
 The runbook covers Secret creation, Helm installation, bootstrap key retrieval,
 and authenticated API verification.
+
+`controlPlane.nodeSelector` requires Kubernetes label keys and nonempty label
+values of at most 63 characters, matching Helm and bootstrap-volume preparation.
+Preflight rejects invalid placement labels before writing deployment files.
 
 If rendering fails or either YAML file is absent, stop and fix the input. Do not
 copy manual examples into the same output directory. Rerender successfully so

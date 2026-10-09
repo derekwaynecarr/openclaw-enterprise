@@ -97,6 +97,7 @@ import {
   agentEntryMessage,
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
+  CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -1500,12 +1501,46 @@ function validateDnsHostname(value: string, description: string): void {
   }
 }
 
+// Dedicated Agent sandbox routes use agent-<32 hex>.<domain>; the 39-character prefix must
+// still fit the Gateway API Hostname limit of 253, so the domain itself stops at 214.
+const SANDBOX_DOMAIN_MAX_LENGTH = 253 - "agent-.".length - 32;
+
+function validateSandboxDomain(value: string): void {
+  validateDnsHostname(value, "Sandbox domain");
+  // Like the chart, require two labels: browsers and Node refuse a wildcard certificate
+  // directly under a single label (*.localhost), so such a domain could never serve previews.
+  if (!value.includes(".")) {
+    throw new ConfigurationFailure(
+      "Sandbox domain must have at least two DNS labels, such as previews.example.com.",
+    );
+  }
+  if (value.length > SANDBOX_DOMAIN_MAX_LENGTH) {
+    throw new ConfigurationFailure(
+      `Sandbox domain must not exceed ${SANDBOX_DOMAIN_MAX_LENGTH} characters, leaving room for the agent-<32 hex>. prefix of dedicated Agent hostnames.`,
+    );
+  }
+}
+
 function validateKubernetesResourceName(value: string, description: string): void {
   if (
     value.length > 253 ||
     !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/.test(value)
   ) {
     throw new ConfigurationFailure(`${description} must be a DNS-safe Kubernetes resource name.`);
+  }
+}
+
+// Gateway API allows a 253-character Gateway name, but Envoy Gateway labels the proxy Pods
+// with it (gateway.envoyproxy.io/owning-gateway-name), and the NetworkPolicies select on that
+// label. A label value stops at 63 characters, so a longer name could never be applied.
+const GATEWAY_NAME_MAX_LENGTH = 63;
+
+function validateGatewayName(value: string): void {
+  validateKubernetesResourceName(value, "Gateway routing Gateway name");
+  if (value.length > GATEWAY_NAME_MAX_LENGTH) {
+    throw new ConfigurationFailure(
+      `Gateway routing Gateway name must not exceed ${GATEWAY_NAME_MAX_LENGTH} characters, because it is also a Kubernetes label value.`,
+    );
   }
 }
 
@@ -1549,7 +1584,9 @@ function channelProxy(
     );
   }
   const address = parsed.hostname.replace(/^\[|\]$/g, "");
-  const port = Number(parsed.port);
+  // URL.port drops explicit HTTP :80 and HTTPS :443; retain the raw authority's port.
+  const explicitPort = raw.match(/^https?:\/\/(?:\[[^\]]+\]|[^:/?#\\]+):([0-9]+)(?=[/?#]|$)/i)?.[1];
+  const port = Number(parsed.port || explicitPort);
   if (managedProxy !== undefined) {
     validatePeer(managedProxy, "Managed channel proxy");
     required(managedProxy.hostname, "Managed channel proxy hostname");
@@ -1588,7 +1625,7 @@ function channelProxy(
   if (
     !["http:", "https:"].includes(parsed.protocol) ||
     isIP(address) === 0 ||
-    !parsed.port ||
+    (!parsed.port && explicitPort === undefined) ||
     parsed.username ||
     parsed.password ||
     parsed.pathname !== "/" ||
@@ -1599,6 +1636,7 @@ function channelProxy(
       "Channel proxy URL must identify one credential-free HTTP(S) IP endpoint.",
     );
   }
+  validatePort(port, "Channel proxy port");
   return { kind: "ip", address, port };
 }
 
@@ -2597,6 +2635,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
       required(transportSecretPrefix, "Agent transport Secret name prefix");
+      // Credential provisioning builds `<prefix>-<12 hex>` and refuses a name that is
+      // not DNS-safe. Check that shape here so startup fails before an Agent is created.
+      try {
+        validateKubernetesResourceName(
+          `${transportSecretPrefix}-${"a".repeat(12)}`,
+          "Agent runtime credential Secret name",
+        );
+      } catch (error) {
+        if (error instanceof ConfigurationFailure) {
+          throw new ConfigurationFailure(
+            "runtime.transportSecretPrefix must produce a DNS-safe Agent transport Secret name, including its 12-character suffix.",
+          );
+        }
+        throw error;
+      }
       required(options.runtime.gatewayStorageClassName, "SQLite-compatible gateway storage class");
       const nativeOpenClawSessionCapacity = options.runtime.nativeOpenClawSessionCapacity;
       if (
@@ -2695,10 +2748,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
       validatePort(routing.endpointPort ?? 443, "Gateway routing endpoint port");
-      validateKubernetesResourceName(
-        required(routing.gatewayName, "Gateway routing Gateway name"),
-        "Gateway routing Gateway name",
-      );
+      validateGatewayName(required(routing.gatewayName, "Gateway routing Gateway name"));
       validateKubernetesResourceName(
         required(routing.gatewayNamespace, "Gateway routing Gateway namespace"),
         "Gateway routing Gateway namespace",
@@ -2709,7 +2759,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       validatePort(routing.envoyHttpsTargetPort ?? 10443, "Envoy HTTPS target port");
       if (routing.sandbox !== undefined) {
-        validateDnsHostname(required(routing.sandbox.domain, "Sandbox domain"), "Sandbox domain");
+        validateSandboxDomain(required(routing.sandbox.domain, "Sandbox domain"));
         validatePort(routing.sandbox.publicPort ?? 443, "Public sandbox port");
         validatePort(options.network.gatewayPort + 1, "Gateway sandbox port");
         if (options.runtime === undefined) {
@@ -5813,13 +5863,39 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Revokes one credential source from the revision's paired Sandbox. The Sandbox identity is
    * derived exactly as provisioning created it; a missing Namespace or Sandbox has nothing left
-   * to revoke.
+   * to revoke. A configuration that cannot reach the Sandbox, or an object this Driver does
+   * not own, is a CredentialWithdrawalRefusedError: retrying cannot change it.
    */
   async withdrawCredentialSource(
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
     options: { readonly recheck?: boolean } = {},
+  ): Promise<CredentialAttachmentStatus> {
+    try {
+      return await this.withdrawSandboxCredentialSource(revision, source, signal, options);
+    } catch (error) {
+      if (error instanceof ConfigurationFailure || error instanceof ConfigurationHarnessError) {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+          error.message,
+        );
+      }
+      if (error instanceof OwnershipFailure) {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+          error.message,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async withdrawSandboxCredentialSource(
+    revision: Readonly<AgentRevision>,
+    source: Readonly<CredentialSource>,
+    signal: AbortSignal,
+    options: { readonly recheck?: boolean },
   ): Promise<CredentialAttachmentStatus> {
     if (
       revision.compute.id !== this.id ||

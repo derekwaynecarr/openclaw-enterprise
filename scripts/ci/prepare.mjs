@@ -3,7 +3,17 @@ import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, isIPv4 } from "node:net";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -894,6 +904,76 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
   ];
 }
 
+// A restored build otherwise downloads every cached layer (about 20 s for the
+// runtime image) only to load an image the engine often already holds: the
+// hosted runners' Docker data comes from a shared image cache. Resolve the
+// image from the BuildKit cache without exporting its layers, then tag the
+// engine's image if it has the same ID. The ID is the digest of a config that
+// names every layer's content digest, so the tagged image is the one the build
+// would load. Lanes that export the cache, and any probe failure, build as
+// before.
+async function reuseEngineImage(state, role, args, tag) {
+  if (args[0] !== "buildx" || !args.includes("--load") || args.includes("--cache-to")) {
+    return false;
+  }
+  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+  const started = performance.now();
+  const directory = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), "oce-image-probe-"));
+  let outcome = "unresolved";
+  let image;
+  try {
+    const metadata = join(directory, "metadata.json");
+    await execFile(
+      docker,
+      [
+        "buildx",
+        "build",
+        "--output",
+        "type=image,push=false,store=false",
+        "--provenance=false",
+        "--metadata-file",
+        metadata,
+        ...args.slice(2).filter((arg) => arg !== "--load"),
+      ],
+      // A cache miss builds the image here; the build below then reuses those
+      // steps from the same builder and only exports and loads.
+      { timeoutMs: 20 * 60_000 },
+    );
+    const id = JSON.parse(await readFile(metadata, "utf8"))["containerimage.config.digest"];
+    if (!/^sha256:[a-f0-9]{64}$/u.test(id ?? "")) {
+      return false;
+    }
+    image = id;
+    // Under Docker's containerd image store the engine reports a manifest
+    // digest here instead, so the comparison fails safe and the lane builds.
+    const held = await execFile(docker, ["image", "inspect", "--format", "{{.Id}}", id]).then(
+      ({ stdout }) => stdout.trim(),
+      () => "",
+    );
+    if (held !== id) {
+      outcome = "absent";
+      return false;
+    }
+    await execFile(docker, ["tag", id, tag]);
+    outcome = "reused";
+    return true;
+  } catch {
+    outcome = "probe-failed";
+    return false;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    progress(
+      state.lane,
+      JSON.stringify({
+        stage: `${role}-image-reuse`,
+        outcome,
+        ...(image ? { image } : {}),
+        elapsedMs: Math.round(performance.now() - started),
+      }),
+    );
+  }
+}
+
 async function buildRuntimeImages(
   statePath,
   state,
@@ -942,79 +1022,96 @@ async function buildRuntimeImages(
           .slice(0, 17)
       : state.prefix;
   const tagBase = `localhost/${ownedName("openclaw-ci-image", label, { maxLength: 48 })}`;
+  const openclawSource = runtime ? process.env.OCC_K3D_OPENCLAW_SOURCE : undefined;
   if (controller) {
     assertNodeBaseImage(nodeBaseImage);
+  }
+  if (openclawSource !== undefined) {
+    if (!isAbsolute(openclawSource) || !(await stat(join(openclawSource, "Dockerfile"))).isFile()) {
+      throw new Error("OCC_K3D_OPENCLAW_SOURCE must select an absolute OpenClaw source checkout");
+    }
+    if (!/^[a-f0-9]{40,64}$/u.test(process.env.OCC_K3D_OPENCLAW_COMMIT ?? "")) {
+      throw new Error("OCC_K3D_OPENCLAW_COMMIT must identify the selected OpenClaw source");
+    }
+  }
+  const builds = [];
+  if (controller) {
     const tag = `${tagBase}/controller:local`;
-    const resource = addResource(state, "image-tag", { name: tag, owner: state.prefix });
-    resources.push(resource);
-    await writeState(statePath, state);
-    await build("controller", [
-      ...imageBuildArgs(state, "controller", localStore, cacheWarm),
-      ...progress,
-      "--pull=false",
-      "--target",
-      "runtime",
-      "--build-arg",
-      `NODE_BASE_IMAGE=${nodeBaseImage}`,
-      "-t",
+    builds.push({
+      role: "controller",
       tag,
-      ".",
-    ]);
-    await markResourceReady(statePath, state, resource);
-    env.OCC_TEST_PRODUCTION_IMAGE = tag;
-    env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE = tag;
+      args: [
+        ...imageBuildArgs(state, "controller", localStore, cacheWarm),
+        ...progress,
+        "--pull=false",
+        "--target",
+        "runtime",
+        "--build-arg",
+        `NODE_BASE_IMAGE=${nodeBaseImage}`,
+        "-t",
+        tag,
+        ".",
+      ],
+      env: { OCC_TEST_PRODUCTION_IMAGE: tag, OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: tag },
+    });
   }
   if (runtime) {
-    const openclawSource = process.env.OCC_K3D_OPENCLAW_SOURCE;
-    if (openclawSource !== undefined) {
-      if (
-        !isAbsolute(openclawSource) ||
-        !(await stat(join(openclawSource, "Dockerfile"))).isFile()
-      ) {
-        throw new Error("OCC_K3D_OPENCLAW_SOURCE must select an absolute OpenClaw source checkout");
-      }
-      if (!/^[a-f0-9]{40,64}$/u.test(process.env.OCC_K3D_OPENCLAW_COMMIT ?? "")) {
-        throw new Error("OCC_K3D_OPENCLAW_COMMIT must identify the selected OpenClaw source");
-      }
-    }
     const tag = `${tagBase}/runtime:local`;
-    const resource = addResource(state, "image-tag", { name: tag, owner: state.prefix });
-    resources.push(resource);
-    await writeState(statePath, state);
-    await build(
-      "runtime",
-      openclawSource === undefined
-        ? [
-            ...imageBuildArgs(state, "runtime", localStore, cacheWarm),
-            ...progress,
-            "--pull=false",
-            "-f",
-            runtimeDockerfile,
-            "-t",
-            tag,
-            repositoryRoot,
-          ]
-        : [
-            "build",
-            ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
-              ? ["--builder", "default", "--load"]
-              : []),
-            "--build-arg",
-            "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
-            "-t",
-            tag,
-            openclawSource,
-          ],
-    );
-    await markResourceReady(statePath, state, resource);
-    env.OCC_TEST_RUNTIME_IMAGE = tag;
-    env.OCC_DOCKER_RUNTIME_IMAGE = tag;
-    env.OCC_DOCKER_GATEWAY_IMAGE = tag;
-    env.OCC_DOCKER_AGENT_IMAGE = tag;
-    env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE = tag;
-    if (openclawSource !== undefined) {
-      env.OCC_K3D_OPENCLAW_COMMIT = process.env.OCC_K3D_OPENCLAW_COMMIT;
-    }
+    builds.push({
+      role: "runtime",
+      tag,
+      args:
+        openclawSource === undefined
+          ? [
+              ...imageBuildArgs(state, "runtime", localStore, cacheWarm),
+              ...progress,
+              "--pull=false",
+              "-f",
+              runtimeDockerfile,
+              "-t",
+              tag,
+              repositoryRoot,
+            ]
+          : [
+              "build",
+              ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
+                ? ["--builder", "default", "--load"]
+                : []),
+              "--build-arg",
+              "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
+              "-t",
+              tag,
+              openclawSource,
+            ],
+      env: {
+        OCC_TEST_RUNTIME_IMAGE: tag,
+        OCC_DOCKER_RUNTIME_IMAGE: tag,
+        OCC_DOCKER_GATEWAY_IMAGE: tag,
+        OCC_DOCKER_AGENT_IMAGE: tag,
+        OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag,
+        ...(openclawSource === undefined
+          ? {}
+          : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT }),
+      },
+    });
+  }
+  // Record every tag before any build starts. The builds are independent, so
+  // they run together and take as long as the slower one instead of their sum.
+  for (const entry of builds) {
+    entry.resource = addResource(state, "image-tag", { name: entry.tag, owner: state.prefix });
+    resources.push(entry.resource);
+  }
+  await writeState(statePath, state);
+  await prepareTogether(
+    builds.map((entry) => async () => {
+      if (!(await reuseEngineImage(state, entry.role, entry.args, entry.tag))) {
+        await build(entry.role, entry.args);
+      }
+      await markResourceReady(statePath, state, entry.resource);
+    }),
+  );
+  for (const entry of builds) {
+    Object.assign(env, entry.env);
   }
   return { env, resourceIds: resources.map((resource) => resource.id) };
 }
