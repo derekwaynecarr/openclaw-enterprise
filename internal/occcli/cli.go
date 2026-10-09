@@ -716,7 +716,7 @@ func (app *application) agentCommand() *cobra.Command {
 		Use:   "revisions AGENT_ID",
 		Short: "List an Agent's immutable revisions (deployment IDs)",
 		Args:  idArgs(agentIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
@@ -725,7 +725,7 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows, err := describeAgentRevisions(client, namespace, args[0], result)
+			rows, err := describeAgentRevisions(client, command.ErrOrStderr(), namespace, args[0], result)
 			if err != nil {
 				return err
 			}
@@ -822,7 +822,7 @@ func (app *application) agentCommand() *cobra.Command {
 // revision: whether it is the Agent's active revision and the status of the
 // deployment that created it. A revision whose deployment status the caller may
 // not read, or that OCC no longer records, gets a null deploymentStatus.
-func describeAgentRevisions(client *occclient.Client, namespace, agentID string, value any) ([]any, error) {
+func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespace, agentID string, value any) ([]any, error) {
 	revisions, ok := value.([]any)
 	if !ok {
 		return nil, fmt.Errorf("OCC returned an invalid resource collection")
@@ -833,6 +833,10 @@ func describeAgentRevisions(client *occclient.Client, namespace, agentID string,
 	}
 	resource, _ := agent.(map[string]any)
 	activeID, _ := resource["activeRevisionId"].(string)
+	agentReadError, agentUnreadable := resource["configurationReadError"].(map[string]any)
+	if agentUnreadable {
+		noticef(notices, "notice: Agent saved configuration is unreadable (%s); deployment status is unavailable in revision history", displayValue(agentReadError["field"]))
+	}
 	rows := make([]any, 0, len(revisions))
 	for _, item := range revisions {
 		revision, ok := item.(map[string]any)
@@ -843,7 +847,7 @@ func describeAgentRevisions(client *occclient.Client, namespace, agentID string,
 		id, _ := revision["id"].(string)
 		row["active"] = id != "" && id == activeID
 		row["deploymentStatus"] = nil
-		if id != "" {
+		if id != "" && !agentUnreadable && row["configurationReadError"] == nil {
 			deployment, err := client.GetAgentDeployment(namespace, agentID, id)
 			var apiErr *occclient.APIError
 			switch {

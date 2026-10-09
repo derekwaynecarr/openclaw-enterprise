@@ -617,3 +617,39 @@ func TestNamespaceCreateRejectsExistingNamespacesTheAPIRefuses(t *testing.T) {
 		t.Fatalf("DNS label: error = %v after %d requests", err, requests)
 	}
 }
+
+func TestAgentBrowsingShowsUnreadableSavedSettings(t *testing.T) {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	unreadable := `{"id":"` + testAgentID + `","name":"legacy","configurationReadError":{"code":"SAVED_CONFIGURATION_UNREADABLE","field":"plugins"}}`
+	for _, command := range [][]string{{"agent", "get", testAgentID}, {"agent", "list"}} {
+		responses := map[string]string{"GET " + agentPath: unreadable, "GET /namespaces/" + testNamespaceID + "/agents": "[" + unreadable + "]"}
+		out, _, err := runOCC(t, responses, append([]string{"--namespace", testNamespaceID}, command...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "CONFIGURATION ERROR") || !strings.Contains(out, "SAVED_CONFIGURATION_UNREADABLE (plugins)") {
+			t.Fatalf("error variant must remain visible: %s", out)
+		}
+	}
+}
+
+func TestAgentRevisionBrowsingKeepsHealthyStatusBesideUnreadableSnapshot(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `[{"id":"` + testRevision2ID + `","revision":2,"configurationReadError":{"code":"SAVED_CONFIGURATION_UNREADABLE","field":"plugins"}},{"id":"` + testRevision1ID + `","revision":1}]`
+	for _, format := range []string{"table", "json", "yaml"} {
+		out, requested, err := runOCC(t, responses, "--namespace", testNamespaceID, "--output", format, "agent", "revisions", testAgentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "SAVED_CONFIGURATION_UNREADABLE") || !strings.Contains(out, "succeeded") {
+			t.Fatalf("%s must preserve error and healthy status: %s", format, out)
+		}
+		if slices.Contains(requested, "GET "+agentPath+"/deployments/"+testRevision2ID) {
+			t.Fatal("error variant must not undergo strict deployment enrichment")
+		}
+		if !slices.Contains(requested, "GET "+agentPath+"/deployments/"+testRevision1ID) {
+			t.Fatal("healthy revision must retain enrichment")
+		}
+	}
+}
