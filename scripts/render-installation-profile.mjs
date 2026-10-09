@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isName, NAME_RULE } from "../packages/contracts/src/index.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -995,7 +996,11 @@ function buildRendered(profile, parsed, diagnostics) {
     description: "a valid Helm release name of at most 53 characters",
   });
   const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics);
-  const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics);
+  // The bootstrap Job applies isName to installation.name, and the chart mirrors that rule.
+  const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics, {
+    validate: isName,
+    description: NAME_RULE,
+  });
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
     pattern: digestImage,
     description: "an immutable image reference with a SHA-256 digest",

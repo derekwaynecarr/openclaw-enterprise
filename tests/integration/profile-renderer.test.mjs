@@ -1238,6 +1238,24 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
   );
 });
 
+test("profiles refuse installation names the chart and the bootstrap Job refuse", () => {
+  const accepted = render(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...baseInput().controlPlane, clusterName: "n".repeat(200) },
+    }),
+  );
+  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+  assert.match(accepted.values, /name: n{200}\n/);
+  for (const clusterName of [" profile", `${"n".repeat(201)}`, "bad\nname", "\uD800"]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ controlPlane: { ...baseInput().controlPlane, clusterName } }),
+      /controlPlane.clusterName must be 1 to 200 characters/,
+    );
+  }
+});
+
 test("preflight rejects CIDR prefixes with a leading zero", () => {
   const controlPlane = baseInput().controlPlane;
   assertPreflightFailure(
