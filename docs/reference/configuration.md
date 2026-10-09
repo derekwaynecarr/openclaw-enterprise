@@ -135,16 +135,17 @@ its `models` entries: `baseUrl` must be an absolute `http` or `https` URL, and
 A blank provider `baseUrl` and values with `${VAR}` references are left to the
 runtime. The `400` names the field as a JSON pointer within `values`.
 
-Create and update also refuse, with the `400` deployment gives, an `agents`
-roster the OpenClaw Gateway rejects on every topology: a non-object `agents`,
-`agents.defaults`, `agents.entries` or entry; any `agents.list` except an empty
-one beside an empty roster; an Agent ID OpenClaw rejects, or two it normalizes
-to one; an entry's `default`; `agents.ownership` other than `explicit`; more than
-one entry without it; or `explicit` with no entry. The message names the setting
-and the rule. A Configuration saved before this check still reads, and deployment
-still refuses it; only a write that keeps the roster is refused. Rules that depend
-on the topology stay at deployment, because a Configuration does not fix one:
-dedicated OpenClaw's `main` Agent rules, for example. Agent
+Create and update also refuse, with the `400` Kubernetes Compute deployment
+gives, an `agents` roster the pinned OpenClaw Gateway rejects on every topology:
+a non-object `agents`, `agents.defaults`, `agents.entries` or entry; any
+`agents.list` except an empty one beside an empty roster; an Agent ID OpenClaw
+rejects, or two it normalizes to one; an entry's `default`; `agents.ownership`
+other than `explicit`; more than one entry without it; or `explicit` with no
+entry. The message names the setting and the rule. A Configuration saved before
+this check still reads, and Kubernetes deployment still refuses it; only a write
+that keeps the roster is refused. SSH Compute deployment does not check rosters.
+Rules that depend on the topology stay at deployment, because a Configuration
+does not fix one: dedicated OpenClaw's `main` Agent rules, for example. Agent
 deployment separately validates supported
 runtime selection, topology, and Secret binding ownership before admission.
 Creation requires `create` permission for Configurations in the

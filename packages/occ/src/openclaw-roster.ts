@@ -4,12 +4,13 @@ import { asRecord } from "@openclaw-enterprise/utils";
 import { requireAgentsShape } from "./configured-harness.ts";
 import { agentEntryMessage, ConfigurationHarnessError } from "./errors.ts";
 
-// Every topology (embedded OpenClaw, dedicated OpenClaw or Codex, on any Compute) runs the pinned
+// Every Kubernetes topology (embedded OpenClaw, dedicated OpenClaw or Codex) runs the pinned
 // OpenClaw Gateway on the admitted document. Its config validation rejects these roster shapes
 // and the Gateway then exits at startup (EX_CONFIG) instead of serving. Kubernetes Compute
 // refuses them at deployment admission, and Configuration create and update refuse them through
-// requireDeployableRoster. The Gateway drops only an empty agents.list beside an implicit empty
-// roster, so that one passes. A refusal, not a rewrite: OCC skips this on status reads.
+// requireDeployableRoster. SSH Compute runs the host's OpenClaw and does not check them at
+// deployment. The Gateway drops only an empty agents.list beside an implicit empty roster, so
+// that one passes. A refusal, not a rewrite: OCC skips this on status reads.
 export function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): void {
   // Each refusal names the setting and the rule it breaks. Keys come from the caller's own
   // Configuration; agentEntryMessage quotes and bounds them.

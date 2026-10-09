@@ -562,6 +562,7 @@ test("Configuration save refuses an agents roster every deployment refuses, with
     // Only a write that keeps the shape is refused: replacing it with a valid roster saves.
     const kept = await request(context.app, "PATCH", item, { body: { values } });
     assert.equal(kept.status, 400, label);
+    assert.equal(kept.body.error.message, message, label);
     await storeAsOlderRelease(valid);
   }
   assert.equal(configurationDriver.storedConfigurations().length, 1);
@@ -573,6 +574,7 @@ test("Configuration save refuses an agents roster every deployment refuses, with
 
   // Rules that depend on the topology stay at deployment: only dedicated OpenClaw serves main,
   // so these save (embedded OpenClaw and Codex deploy them; see kubernetes-compute.test.mjs).
+  // An empty agents.list beside an empty roster is valid everywhere.
   for (const values of [
     withAgents({ entries: { helper: {} } }),
     withAgents({ ownership: "explicit", entries: { main: {}, _main: {} } }),

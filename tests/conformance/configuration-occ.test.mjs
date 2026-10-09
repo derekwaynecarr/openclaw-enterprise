@@ -797,6 +797,11 @@ test("Agent roster refusals name the setting and the fix", () => {
       path,
     );
   }
+  // Shape refusals precede model policy, even for an earlier entry's model.
+  assert.equal(
+    configurationRefusal({ agents: { entries: { main: { model: "unqualified" }, helper: null } } }),
+    "Configuration setting agents.entries.helper must be an object.",
+  );
   const long = "x.".repeat(200);
   const message = configurationRefusal({ agents: { entries: { [long]: false } } });
   assert.equal(Array.from(message).length, 256, message);

@@ -4613,8 +4613,8 @@ export class OpenClawController {
         createdAt: advanced.createdAt,
       });
       validateModelProviderSettings(values);
-      // A stored Configuration that predates this rule still reads and deploys as before; only a
-      // replacement that keeps the refused roster fails.
+      // A stored Configuration that predates this rule still reads, and deployment refuses it as
+      // before; only a replacement that keeps the refused roster fails.
       requireDeployableRoster(values);
       await driver.validate(configuration);
       // Registered before the write: a replace that applied but answered with an error (a
