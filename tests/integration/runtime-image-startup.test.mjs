@@ -94,6 +94,17 @@ test("Codex OAuth bootstrap preserves rotated credentials and requires a new sou
   await assert.rejects(run(), /could not initialize private credentials/);
   await assert.rejects(readFile(authPath), { code: "ENOENT" });
 
+  // A killed writer may leave auth.json without a receipt. A retry must finish
+  // that generation rather than treating the partial output as completion.
+  await rm(join(codexHome, ".oce-oauth.json"));
+  await writeFile(authPath, JSON.stringify(auth), { mode: 0o600 });
+  await Promise.all(Array.from({ length: 8 }, () => run()));
+  assert.deepEqual(JSON.parse(await readFile(authPath, "utf8")), auth);
+  assert.deepEqual(JSON.parse(await readFile(join(codexHome, ".oce-oauth.json"), "utf8")), {
+    sourceUid: "source-1",
+    volumeUid: "volume-1",
+  });
+
   // A replacement source starts from an empty Codex home. Links planted by the previous
   // process must not redirect the new bundle into the served workspace.
   const workspace = join(directory, "workspace");
@@ -105,7 +116,11 @@ test("Codex OAuth bootstrap preserves rotated credentials and requires a new sou
   }
   await run("source-2");
   assert.deepEqual(await readdir(workspace), []);
-  assert.deepEqual((await readdir(codexHome)).sort(), [".oce-oauth.json", "auth.json"]);
+  assert.deepEqual((await readdir(codexHome)).sort(), [
+    ".oce-oauth-bootstrap.lock",
+    ".oce-oauth.json",
+    "auth.json",
+  ]);
   assert.ok((await lstat(authPath)).isFile());
   assert.deepEqual(JSON.parse(await readFile(authPath, "utf8")), auth);
   assert.deepEqual(JSON.parse(await readFile(join(codexHome, ".oce-oauth.json"), "utf8")), {
@@ -125,6 +140,12 @@ test("Codex OAuth bootstrap preserves rotated credentials and requires a new sou
   await rm(authPath);
   await symlink(seedPath, authPath);
   await assert.rejects(run("source-2"), /could not initialize private credentials/);
+
+  // A planted lock link cannot redirect the writer outside its private home.
+  await rm(join(codexHome, ".oce-oauth-bootstrap.lock"));
+  await symlink(seedPath, join(codexHome, ".oce-oauth-bootstrap.lock"));
+  await assert.rejects(run("source-3"), /could not initialize private credentials/);
+  assert.deepEqual(JSON.parse(await readFile(seedPath, "utf8")), auth);
 });
 
 test("runtime image seccomp option requires the CI-prepared profile record", async (t) => {

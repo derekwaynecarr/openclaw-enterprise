@@ -1892,6 +1892,10 @@ export interface ComputeDriver extends Driver {
     signal: AbortSignal,
     options?: { readonly recheck?: boolean },
   ): Promise<CredentialAttachmentStatus>;
+  /**
+   * Throws OCC's ComputePreparationFailedError when initialization is terminal.
+   * The worker durably fails deployment and schedules stopRevision for cleanup.
+   */
   prepareRevision(
     revision: AgentRevision,
     context?: ComputeRevisionContext,

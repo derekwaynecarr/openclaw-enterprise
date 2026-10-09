@@ -670,6 +670,21 @@ export class ActivationPendingError extends Error {
 export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
 
 /**
+ * Compute preparation cannot complete for this revision. The worker records a
+ * terminal deployment failure and durable workload retirement in one transaction.
+ * Drivers own initialization and cleanup; status never exposes the error message.
+ */
+export class ComputePreparationFailedError extends Error {
+  readonly code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" | "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT";
+
+  constructor(code: ComputePreparationFailedError["code"]) {
+    super("Harness credential initialization could not complete.");
+    this.name = "ComputePreparationFailedError";
+    this.code = code;
+  }
+}
+
+/**
  * Activation found its workloads running but one of them can never complete
  * activation for this revision: the dedicated Gateway refuses its own in-Pod CLI
  * as unauthorized, so it cannot confirm its workspace node. The cause is fixed

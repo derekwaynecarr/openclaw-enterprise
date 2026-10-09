@@ -488,6 +488,10 @@ function deploymentErrorMessage(code: string): string {
   switch (code) {
     case "CONVERGENCE_DEADLINE_EXCEEDED":
       return "Deployment convergence deadline exceeded.";
+    case "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED":
+      return "Harness credential initialization failed. Correct the cause and deploy again.";
+    case "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT":
+      return "Harness credential initialization exceeded its deadline. Correct the cause and deploy again.";
     case "RUNTIME_AUTHENTICATION_FAILED":
       return "Deployment runtime credentials were rejected.";
     case "RUNTIME_CPU_STARVED":

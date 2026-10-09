@@ -42,6 +42,7 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   ComputeGatewaySettingError,
+  ComputePreparationFailedError,
   ConfigurationHarnessError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
@@ -13017,6 +13018,15 @@ function workspaceSetupFixture(embedded, runtime = true, network = undefined, co
           readyReplicas: 1,
         };
       }
+      if (kind === "Job") {
+        observed.status = {
+          conditions: state.jobFailure
+            ? [{ type: "Failed", status: "True", reason: state.jobFailure }]
+            : state.ready
+              ? [{ type: "Complete", status: "True" }]
+              : [],
+        };
+      }
       return observed;
     };
   const write = async ({ body }) => {
@@ -13138,6 +13148,11 @@ function workspaceSetupFixture(embedded, runtime = true, network = undefined, co
       patchNamespacedDeployment: write,
       deleteNamespacedDeployment: remove("Deployment"),
     },
+    batch: {
+      readNamespacedJob: read("Job"),
+      createNamespacedJob: write,
+      deleteNamespacedJob: remove("Job"),
+    },
     objects: {
       read: async (object) =>
         read(object.kind)({ name: object.metadata.name, namespace: object.metadata.namespace }),
@@ -13249,10 +13264,17 @@ for (const dualCluster of [false, true]) {
       "claimed",
     );
     const bootstrap = [...objects.values()].find(
-      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("oauth-bootstrap-"),
+      ({ kind, metadata }) => kind === "Job" && metadata.name.startsWith("oauth-bootstrap-"),
     );
     assert.ok(bootstrap);
     const seedPod = bootstrap.spec.template.spec;
+    assert.equal(bootstrap.spec.backoffLimit, 2);
+    assert.equal(bootstrap.spec.activeDeadlineSeconds, 300);
+    assert.equal(bootstrap.spec.parallelism, 1);
+    assert.equal(bootstrap.spec.completions, 1);
+    assert.equal(bootstrap.spec.podReplacementPolicy, "Failed");
+    assert.equal(seedPod.restartPolicy, "Never");
+    assert.equal(seedPod.containers[0].readinessProbe, undefined);
     assert.equal(seedPod.automountServiceAccountToken, false);
     // Containment rests on the missing profile label: namespace default-deny then applies.
     assert.equal(
@@ -13261,8 +13283,8 @@ for (const dualCluster of [false, true]) {
     );
     assert.equal(seedPod.containers[0].securityContext.readOnlyRootFilesystem, true);
     assert.deepEqual(seedPod.containers[0].securityContext.capabilities.drop, ["ALL"]);
-    // The idle seed writer and its init step run under tini, never as PID 1, so deleting
-    // the bootstrap Pod stops them on SIGTERM instead of waiting for SIGKILL.
+    // Tini preserves an interrupted writer's nonzero exit; only completed
+    // credential verification can satisfy the Job.
     assert.deepEqual(seedPod.containers[0].command, [...SETUP_WRAPPER_COMMAND]);
     // The process holding the seed sees only codex-home, never the rest of the Harness claim.
     const seedClaim = seedPod.volumes.find(({ persistentVolumeClaim }) => persistentVolumeClaim);
@@ -13275,10 +13297,6 @@ for (const dualCluster of [false, true]) {
     assert.equal(
       seedPod.containers[0].env.find(({ name }) => name === "CODEX_HOME").value,
       "/auth",
-    );
-    assert.match(
-      seedPod.containers[0].readinessProbe.exec.command[2],
-      /"\/auth\/\.oce-oauth\.json"/,
     );
     // Only a credential-free init step sees the claim root, to create codex-home as uid 1000
     // (a kubelet-created subPath is root-owned and world-writable).
@@ -13323,7 +13341,7 @@ for (const dualCluster of [false, true]) {
       "claimed",
     );
     assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-    for (const kind of ["Deployment", "Secret"]) {
+    for (const kind of ["Job", "Secret"]) {
       assert.ok(
         [...objects.values()].some(
           (object) => object.kind === kind && object.metadata.name.startsWith("oauth-bootstrap-"),
@@ -13331,7 +13349,7 @@ for (const dualCluster of [false, true]) {
       );
     }
 
-    // Transport reports the seed writer ready; production preparation must clear the source first.
+    // Transport reports Job completion; preparation must clear the source first.
     state.ready = true;
     assert.equal((await driver.prepareRevision(revision, context)).ready, true);
     const consumed = objects.get(sourceKey);
@@ -13432,6 +13450,73 @@ for (const dualCluster of [false, true]) {
     );
   });
 }
+
+for (const [reason, code] of [
+  ["BackoffLimitExceeded", "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"],
+  ["DeadlineExceeded", "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT"],
+]) {
+  test(`Kubernetes OAuth ${reason} fails preparation without consuming or recreating the bootstrap`, async () => {
+    const { driver, revision, namespace, objects, records, state, context } =
+      workspaceSetupFixture(false);
+    const sourceKey = stageReadyOAuthSource(objects, revision, context);
+    assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+    const job = [...objects.values()].find(({ kind }) => kind === "Job");
+    const creations = records.filter(({ kind }) => kind === "Job").length;
+    state.jobFailure = reason;
+
+    // Reobserving a terminal Job must not reset its retry/deadline budget or
+    // surrender the only usable credential source to a runtime that never starts.
+    for (let pass = 0; pass < 2; pass += 1) {
+      await assert.rejects(
+        driver.prepareRevision(revision, context),
+        (error) => error instanceof ComputePreparationFailedError && error.code === code,
+      );
+    }
+    assert.equal(records.filter(({ kind }) => kind === "Job").length, creations);
+    assert.equal(
+      objects.get(`Job:${namespace}:${job.metadata.name}`).metadata.uid,
+      job.metadata.uid,
+    );
+    assert.equal(
+      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
+      "claimed",
+    );
+    assert.equal(
+      records.some(
+        ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"),
+      ),
+      false,
+    );
+
+    // The worker's durable retirement calls the same supported stop path.
+    await driver.stopRevision(revision);
+    assert.equal(
+      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
+      false,
+    );
+    assert.equal(
+      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
+      "claimed",
+    );
+  });
+}
+
+test("Kubernetes OAuth reobserves an API-defaulted Job without changing its generation", async () => {
+  const { driver, revision, objects, records, context } = workspaceSetupFixture(false);
+  stageReadyOAuthSource(objects, revision, context);
+  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+  const job = [...objects.values()].find(({ kind }) => kind === "Job");
+  const uid = job.metadata.uid;
+  job.spec.template.spec.dnsPolicy = "ClusterFirst";
+  job.spec.template.spec.containers[0].terminationMessagePath = "/dev/termination-log";
+  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+  assert.equal(records.filter(({ kind }) => kind === "Job").length, 1);
+  assert.equal(job.metadata.uid, uid);
+
+  // An owned name alone cannot admit a writer with different storage or network grants.
+  job.spec.template.metadata.labels["openclaw.dev/network-profile"] = "broad-egress-v1";
+  await assert.rejects(driver.prepareRevision(revision, context), /Job changed during handoff/);
+});
 
 function stageReadyOAuthSource(objects, revision, context) {
   revision.harnessAuth = { ...apiKeyAuth, method: "oauth" };
