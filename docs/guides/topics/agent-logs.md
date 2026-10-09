@@ -60,7 +60,10 @@ GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime/
 `runtime/logs` accepts only `source` (`gateway`, `agent` or `sandbox`), `pod`, `previous`,
 `tailLines` (1 to 1000, default 200), `sinceSeconds` (1 to 86400), `cursor`,
 `download` and `minLevel` (`error`, `warn`, `info` or `debug`: drop lines below it;
-unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to read only newer lines of the same view.
+unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to
+read only newer lines of the same view. Container reads count remembered
+occurrences at the cursor timestamp, so an additional identical line at that time
+is still returned.
 `download=true` answers `text/plain` with `Content-Disposition: attachment`,
 always reads 1000 lines, and cannot be combined with `cursor` (`400`). See the
 [API reference](../../reference/api.md).

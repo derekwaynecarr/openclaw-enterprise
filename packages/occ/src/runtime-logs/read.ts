@@ -303,7 +303,10 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   }
   if (resume !== undefined && !replacedDuringRead) {
     const lastTime = resume.lastTime!;
-    const seen = new Set(resume.lastHashes);
+    const remaining = new Map<string, number>();
+    for (const hash of resume.lastHashes) {
+      remaining.set(hash, (remaining.get(hash) ?? 0) + 1);
+    }
     // The overlap re-reads the last delivered line unless the tail dropped it. The
     // Driver applies the tail before its byte cut, so a cut page may hold fewer than
     // `tailLines` lines and still have lost the lines before it.
@@ -319,7 +322,18 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
         return true;
       }
       const order = compareRuntimeLogTime(line.time, lastTime);
-      return order > 0 || (order === 0 && !seen.has(runtimeLogLineHash(line.raw)));
+      if (order !== 0) {
+        return order > 0;
+      }
+      // Equal text at the frontier can be a new occurrence. Consume only the
+      // occurrences delivered before this poll, including repeated hashes.
+      const hash = runtimeLogLineHash(line.raw);
+      const count = remaining.get(hash) ?? 0;
+      if (count === 0) {
+        return true;
+      }
+      remaining.set(hash, count - 1);
+      return false;
     });
   }
   // Bound the page. Later lines are dropped so the cursor resumes after the last

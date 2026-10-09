@@ -1479,6 +1479,39 @@ test("runtime log cursor context resets for changed stream, view, expiry and mid
   }
 });
 
+test("runtime log route polling preserves identical same-time line occurrences", async () => {
+  const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
+    await import("../helpers/runtime-logs.mjs");
+  const computeDriver = createRuntimeLogComputeDriver();
+  const fixture = await createRuntimeLogFixture({ computeDriver });
+  const target = await fixture.deployAgent();
+  const repeated = timedLog("retrying in 5s", 0);
+  let cursor;
+  async function poll(lines) {
+    computeDriver.state.lines = lines;
+    const query = new URLSearchParams({
+      source: "gateway",
+      tailLines: "1000",
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    const response = await fixture.request("GET", target.logsPath(query.toString()));
+    assert.equal(response.status, 200, response.text);
+    assert.equal(typeof response.data.cursor, "string");
+    cursor = response.data.cursor;
+    return response.data.records
+      .filter((record) => record.type === "line")
+      .map((record) => record.message);
+  }
+
+  // The Driver contract supplies raw lines without requiring unique timestamps.
+  // A later poll must subtract the two delivered occurrences, not all equal text.
+  assert.deepEqual(await poll([repeated, repeated]), ["retrying in 5s", "retrying in 5s"]);
+  const burst = [repeated, repeated, repeated, timedLog("worker connected", 0)];
+  assert.deepEqual(await poll(burst), ["retrying in 5s", "worker connected"]);
+  assert.deepEqual(await poll(burst), [], "replaying the whole overlap must show no duplicate");
+  assert.deepEqual(await poll([...burst, timedLog("retrying in 5s", 1)]), ["retrying in 5s"]);
+});
+
 test("runtime log route polling carries PEM masking through the serialized cursor", async () => {
   const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
     await import("../helpers/runtime-logs.mjs");
