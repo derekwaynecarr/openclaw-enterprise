@@ -174,6 +174,13 @@ provider, not IAM, Compute, OCC, or the Harness.
   `<account name>-sa_…` whose ID no OCC account has. A reply that names a disabled
   account in this workspace removes that account. Provider deletion cannot be undone: if it applied but the request
   failed, the account stays in OCC and a retried delete completes.
+- Invalid credential reply: a reply that names a credential under the requested
+  account in this workspace revokes that credential before failing; if that fails,
+  the `503` says it could not be removed.
+- Unknown Secret outcome: a failed token Secret create deletes the account-owned
+  Secret holding this request's token, so issuance can be retried. If it cannot
+  read or delete that Secret, it answers `503` and the leftover Secret blocks a
+  retry until an operator deletes it; the failed issuance still revokes its token.
 - Expired token: Execution fails closed; automated refresh and rotation are
   not implemented.
 

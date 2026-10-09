@@ -3795,21 +3795,91 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
 
     const clients = await this.clients(namespace.plane);
-    await this.request(
-      () =>
-        clients.core.createNamespacedSecret({
-          namespace: namespace.name,
-          body: {
-            ...this.manifest("v1", "Secret", name, ownership, namespace),
-            type: "Opaque",
-            stringData: {
-              [SERVICE_ACCOUNT_TOKEN_KEY]: accessToken,
+    try {
+      await this.request(
+        () =>
+          clients.core.createNamespacedSecret({
+            namespace: namespace.name,
+            body: {
+              ...this.manifest("v1", "Secret", name, ownership, namespace),
+              type: "Opaque",
+              stringData: {
+                [SERVICE_ACCOUNT_TOKEN_KEY]: accessToken,
+              },
             },
-          },
-        }),
-      { mutating: true },
-    );
+          }),
+        { mutating: true },
+      );
+    } catch (error) {
+      await this.discardFailedServiceAccountCredential(name, namespace, ownership, accessToken);
+      throw error;
+    }
     return { name, key: SERVICE_ACCOUNT_TOKEN_KEY };
+  }
+
+  /**
+   * A credential Secret create that applied but answered with an error (the request
+   * deadline, a lost response) would leave an account-owned Secret OCC never records: the
+   * issuance fails, its provider credential is revoked, and every later issuance stops at
+   * "already exists" (finding 924). So a failed create reads its own deterministic name and
+   * deletes the object it finds, but only when it carries this account's exact ownership and
+   * this request's token, with uid and resourceVersion preconditions. An absent or foreign
+   * object means the create never applied and its own error stands. When that cannot be
+   * checked, the outcome is reported as unknown. A create still in flight that lands after
+   * this read is not covered.
+   */
+  private async discardFailedServiceAccountCredential(
+    name: string,
+    namespace: KubernetesNamespaceAddress,
+    ownership: Ownership,
+    accessToken: string,
+  ): Promise<void> {
+    const unknown = () =>
+      new DependencyUnavailableError(
+        "The ServiceAccount credential Secret create outcome is unknown, and its cleanup could not finish.",
+      );
+    let existing: ManagedKubernetesObject<"Secret"> | undefined;
+    try {
+      existing = await this.get("Secret", name, namespace);
+    } catch {
+      throw unknown();
+    }
+    if (existing === undefined) {
+      return;
+    }
+    try {
+      this.verifyOwnership(existing, ownership);
+    } catch {
+      // Someone else's object under this name: nothing of this create's is stored.
+      return;
+    }
+    if (
+      existing.data?.[SERVICE_ACCOUNT_TOKEN_KEY] !== Buffer.from(accessToken).toString("base64")
+    ) {
+      // The account's Secret, but not this request's token: not this create's either.
+      return;
+    }
+    const { uid, resourceVersion } = existing.metadata;
+    if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
+      throw unknown();
+    }
+    try {
+      const clients = await this.clients(namespace.plane);
+      await this.request(
+        () =>
+          clients.core.deleteNamespacedSecret({
+            name,
+            namespace: namespace.name,
+            body: { preconditions: { uid, resourceVersion } },
+          }),
+        { mutating: true },
+      );
+    } catch (error) {
+      if (numericErrorStatus(error) === 404) {
+        return;
+      }
+      throw unknown();
+    }
   }
 
   async deleteServiceAccountCredential(input: {

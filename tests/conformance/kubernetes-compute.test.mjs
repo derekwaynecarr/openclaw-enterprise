@@ -4547,6 +4547,130 @@ test("dedicated Codex projects the account-owned token through the common PAT lo
   assert.equal(gatewayEnvironment.has("MSTEAMS_APP_PASSWORD"), false);
 });
 
+test("a ServiceAccount credential Secret create that applied but answered an error removes only its own Secret", async (t) => {
+  const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
+  const input = { namespaceId: tenant.id, serviceAccountId, accessToken: "at-request-fixture" };
+  const secretName = `service-account-${createHash("sha256")
+    .update(serviceAccountId)
+    .digest("hex")
+    .slice(0, 32)}`;
+  const dropped = Object.assign(new Error("dropped"), { statusCode: 500 });
+  const unknown = (error) =>
+    error instanceof DependencyUnavailableError &&
+    error.message ===
+      "The ServiceAccount credential Secret create outcome is unknown, and its cleanup could not finish.";
+  // Faults injected around the fixture's in-memory Secret calls.
+  const harness = async ({ applied, mutate, readStatus, deleteStatus }) => {
+    const { driver, namespace, objects } = workspaceSetupFixture(false);
+    const { core } = await driver.apiClients;
+    const key = `Secret:${namespace}:${secretName}`;
+    const calls = { reads: 0, deletes: [] };
+    let created = false;
+    const create = core.createNamespacedSecret;
+    core.createNamespacedSecret = async (request) => {
+      created = true;
+      if (applied) {
+        await create(request);
+        mutate?.(objects.get(key));
+      }
+      throw dropped;
+    };
+    const read = core.readNamespacedSecret;
+    core.readNamespacedSecret = async (request) => {
+      if (created && request.name === secretName) {
+        calls.reads += 1;
+        if (readStatus !== undefined) {
+          throw Object.assign(new Error("read failed"), { statusCode: readStatus });
+        }
+      }
+      return read(request);
+    };
+    const remove = core.deleteNamespacedSecret;
+    core.deleteNamespacedSecret = async (request) => {
+      calls.deletes.push(request.body.preconditions);
+      if (deleteStatus !== undefined) {
+        throw Object.assign(new Error("delete failed"), { statusCode: deleteStatus });
+      }
+      return remove(request);
+    };
+    const restore = () => {
+      core.createNamespacedSecret = create;
+    };
+    return { driver, objects, key, calls, restore };
+  };
+
+  await t.test(
+    "applied, reply lost: the exact Secret is removed and issuance can retry",
+    async () => {
+      const { driver, objects, key, calls, restore } = await harness({ applied: true });
+      await assert.rejects(
+        driver.storeServiceAccountCredential(input),
+        (error) => error === dropped,
+      );
+      assert.equal(objects.has(key), false);
+      assert.equal(calls.reads, 1);
+      assert.deepEqual(calls.deletes, [{ uid: `${secretName}-uid`, resourceVersion: "1" }]);
+      // Without the cleanup, every later issuance stopped at "already exists".
+      restore();
+      assert.deepEqual(await driver.storeServiceAccountCredential(input), {
+        name: secretName,
+        key: "token",
+      });
+      assert.equal(
+        Buffer.from(objects.get(key).data.token, "base64").toString(),
+        "at-request-fixture",
+      );
+    },
+  );
+
+  await t.test("never applied: nothing is deleted and the create keeps its error", async () => {
+    const { driver, objects, key, calls } = await harness({ applied: false });
+    await assert.rejects(driver.storeServiceAccountCredential(input), (error) => error === dropped);
+    assert.equal(objects.has(key), false);
+    assert.equal(calls.reads, 1);
+    assert.deepEqual(calls.deletes, []);
+  });
+
+  for (const [name, mutate] of [
+    [
+      "a foreign owner",
+      (stored) => {
+        stored.metadata.annotations["openclaw.dev/service-account-id"] = "sa_another";
+      },
+    ],
+    [
+      "another token",
+      (stored) => {
+        stored.data.token = Buffer.from("at-another-request").toString("base64");
+      },
+    ],
+  ]) {
+    await t.test(`an object with ${name} is kept and the create keeps its error`, async () => {
+      const { driver, objects, key, calls } = await harness({ applied: true, mutate });
+      await assert.rejects(
+        driver.storeServiceAccountCredential(input),
+        (error) => error === dropped,
+      );
+      assert.equal(objects.has(key), true);
+      assert.deepEqual(calls.deletes, []);
+    });
+  }
+
+  await t.test("the read-back fails: the outcome is reported as unknown", async () => {
+    const { driver, objects, key, calls } = await harness({ applied: true, readStatus: 403 });
+    await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
+    assert.equal(objects.has(key), true);
+    assert.deepEqual(calls.deletes, []);
+  });
+
+  await t.test("the cleanup delete fails: the outcome is reported as unknown", async () => {
+    const { driver, objects, key, calls } = await harness({ applied: true, deleteStatus: 503 });
+    await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
+    assert.equal(objects.has(key), true);
+    assert.equal(calls.deletes.length, 1);
+  });
+});
+
 test("managed PAT preparation projects the account-owned token and rejects a changed owner", async () => {
   const { driver, revision, namespace, context, objects, records } = workspaceSetupFixture(false);
   const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
