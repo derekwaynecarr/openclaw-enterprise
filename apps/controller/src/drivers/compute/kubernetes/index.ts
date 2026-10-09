@@ -3659,7 +3659,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const [kind, detail] = (["waiting", "running", "terminated"] as const)
       .map((name) => [name, asRecord(state[name])] as const)
       .find(([, value]) => value !== undefined) ?? ["unknown" as const, undefined];
-    const last = asRecord(asRecord(entry.lastState)?.terminated);
+    // A currently terminated instance is the latest exit; lastState is the prior one.
+    const last = kind === "terminated" ? detail : asRecord(asRecord(entry.lastState)?.terminated);
     return {
       name: String(entry.name),
       state: kind,
