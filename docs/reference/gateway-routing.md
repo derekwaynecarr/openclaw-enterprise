@@ -211,6 +211,11 @@ Helm's `gatewayRouting` settings configure shared infrastructure:
 | `envoyHttpsTargetPort`         | `10443`; NetworkPolicy port for the Envoy listener Pod.                                                                                                   |
 | `envoyGatewayPodLabels`        | Chart defaults select the Envoy Gateway controller for control-plane egress.                                                                              |
 
+Routing ports must be decimal integers from `1` to `65535`, without leading
+zeros. The sandbox listener must also be at least `1024` and differ from
+`envoyHttpsTargetPort`. Helm refuses fractional YAML numbers before rendering
+Gateway and NetworkPolicy resources.
+
 The Installation's `drivers.compute.configuration.gatewayRouting` separately
 requires `gatewayName`, `gatewayNamespace`, and `envoyNamespace`; `hostname` is
 optional. `endpointPort` defaults to `443`. Set it only when the external load

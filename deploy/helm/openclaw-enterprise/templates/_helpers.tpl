@@ -472,11 +472,11 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if and .Values.backend.chatgpt.enabled (eq $routing.caSecretName .Values.backend.chatgpt.secretName) -}}{{- fail "gatewayRouting.caSecretName must differ from the ChatGPT Backend Secret" -}}{{- end -}}
 {{- end -}}
-{{- if or (lt (int $routing.tenantGatewayPort) 1) (gt (int $routing.tenantGatewayPort) 65535) -}}
-{{- fail "gatewayRouting.tenantGatewayPort must be a valid TCP port" -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.tenantGatewayPort))) (lt (int $routing.tenantGatewayPort) 1) (gt (int $routing.tenantGatewayPort) 65535) -}}
+{{- fail "gatewayRouting.tenantGatewayPort must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
-{{- if or (lt (int $routing.envoyHttpsTargetPort) 1) (gt (int $routing.envoyHttpsTargetPort) 65535) -}}
-{{- fail "gatewayRouting.envoyHttpsTargetPort must be a valid TCP port" -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.envoyHttpsTargetPort))) (lt (int $routing.envoyHttpsTargetPort) 1) (gt (int $routing.envoyHttpsTargetPort) 65535) -}}
+{{- fail "gatewayRouting.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
 {{- if not $routing.envoyGatewayPodLabels -}}{{- fail "gatewayRouting.envoyGatewayPodLabels must select the Envoy Gateway control-plane Pods for xDS egress" -}}{{- end -}}
 {{- if $routing.sandbox.enabled -}}
@@ -484,7 +484,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- /* Dedicated Agent routes use agent-<32 hex>.<domain>, which must fit the 253-character Gateway API hostname limit. */ -}}
 {{- if gt (len $routing.sandbox.domain) 214 -}}{{- fail "gatewayRouting.sandbox.domain must not exceed 214 characters, leaving room for the agent-<32 hex>. prefix of dedicated Agent hostnames" -}}{{- end -}}
 {{- if not $routing.sandbox.tlsSecretName -}}{{- fail "gatewayRouting.sandbox.tlsSecretName must reference a wildcard certificate Secret" -}}{{- end -}}
-{{- if or (lt (int $routing.sandbox.listenerPort) 1024) (gt (int $routing.sandbox.listenerPort) 65535) (eq (int $routing.sandbox.listenerPort) (int $routing.envoyHttpsTargetPort)) -}}{{- fail "gatewayRouting.sandbox.listenerPort must be an unprivileged port distinct from private Envoy HTTPS" -}}{{- end -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.sandbox.listenerPort))) (lt (int $routing.sandbox.listenerPort) 1024) (gt (int $routing.sandbox.listenerPort) 65535) (eq (int $routing.sandbox.listenerPort) (int $routing.envoyHttpsTargetPort)) -}}{{- fail "gatewayRouting.sandbox.listenerPort must be an integer unprivileged port distinct from private Envoy HTTPS" -}}{{- end -}}
 {{- if ge (int $routing.tenantGatewayPort) 65535 -}}{{- fail "gatewayRouting.tenantGatewayPort must leave room for the adjacent sandbox port" -}}{{- end -}}
 {{- if not $routing.sandbox.ingressPeers -}}{{- fail "gatewayRouting.sandbox.ingressPeers must explicitly select public ingress sources" -}}{{- end -}}
 {{- $cookieDomain := trimPrefix "." (lower .Values.agentNativeAdmin.sharedCookieDomain) -}}
