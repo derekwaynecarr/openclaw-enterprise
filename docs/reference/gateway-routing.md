@@ -292,8 +292,8 @@ HTTPS origin for dedicated execution under the operator's preview domain.
 Embedded OpenClaw retains its native preview configuration. Compute owns the native
 `sandboxOrigin` and `sandboxPort` values and rejects conflicting Agent settings.
 The sandbox backend port is `network.gatewayPort + 1`, so the main port must be
-below 65535. Native Gateway configuration also reserves TCP/18791 for private
-runtime status: neither the main port nor the derived sandbox port may use it.
+below 65535. TCP/18791 is reserved for runtime status: the main port, the
+derived sandbox port, and an Agent's `mcp.apps.sandboxPort` cannot use it.
 The selected runtime must support the dedicated sandbox listener.
 
 The Agent's `-sandbox` HTTPRoute attaches only to the shared Gateway's separate
