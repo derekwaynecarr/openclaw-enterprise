@@ -96,7 +96,8 @@ branch writes only `preflight.json`, leaving no deployable artifacts.
 
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
-with the API's `tldts` list), and paired metrics scraper selectors. Invalid
+with the API's `tldts` list), Google hosted domains (at most 253 characters,
+last label starting with a letter), and paired metrics scraper selectors. Invalid
 values therefore fail before `values.yaml` or `installation.yaml` is written.
 
 ### 4. Build Helm values
@@ -200,6 +201,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09: Refuse Google hosted domains the chart and API refuse.
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 

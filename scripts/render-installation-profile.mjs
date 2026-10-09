@@ -15,6 +15,11 @@ const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
 const proxyUrl = /^https?:\/\/(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$/;
 const dnsHostname =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+// Google hosted domains, as the API's domainPattern and the chart accept them.
+// A DNS hostname whose last label starts with a digit, or a name longer than
+// 253 characters, is not one of those domains.
+const googleHostedDomain =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 function fail(message) {
   process.stderr.write(`render-installation-profile: ${message}\n`);
@@ -485,8 +490,9 @@ function signInProvider(source, name, diagnostics) {
   }
   if (source.allowedDomains !== undefined) {
     rendered.allowedDomains = stringArray(source, [...path, "allowedDomains"], diagnostics, {
-      validate: (value) => dnsHostname.test(value),
-      description: "a lowercase DNS domain name such as example.com",
+      validate: (value) => googleHostedDomain.test(value),
+      description:
+        "a lowercase DNS domain name of at most 253 characters whose last label starts with a letter, such as example.com",
       nonempty: false,
     });
   }

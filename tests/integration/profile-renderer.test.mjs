@@ -595,6 +595,29 @@ test("repository opt-in is explicit and keeps the two-stage placeholders separat
   );
 });
 
+test("preflight rejects a Google hosted domain the chart and API refuse", () => {
+  const label63 = `a${"b".repeat(61)}c`;
+  const domain254 = [label63, label63, label63, `d${"e".repeat(60)}f`].join(".");
+  const domain253 = [label63, label63, label63, `d${"e".repeat(59)}f`].join(".");
+  assert.equal(domain254.length, 254);
+  assert.equal(domain253.length, 253);
+  const googleInput = (allowedDomains) =>
+    externalSignInInput({
+      github: undefined,
+      google: { allowedDomains },
+    });
+  for (const allowedDomains of [["example.123"], ["example.1"], [domain254]]) {
+    assertPreflightFailure(
+      "openclaw",
+      googleInput(allowedDomains),
+      /controlPlane\.google\.allowedDomains\[0\] must be a lowercase DNS domain name of at most 253 characters whose last label starts with a letter, such as example\.com/,
+    );
+  }
+  const accepted = render("openclaw", googleInput([domain253]));
+  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+  assert.match(accepted.values, new RegExp(domain253));
+});
+
 test("repository serviceName is left to the chart so its upgrade guard applies", () => {
   const repositoryInput = repositoryConfiguration();
   const omitted = render("codex", codexInput({ repository: repositoryInput }));
