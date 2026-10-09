@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import https from "node:https";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -118,15 +117,19 @@ function envoyConfiguration() {
   };
 }
 
-async function ready(port, ca) {
-  return new Promise((resolve) => {
-    const request = https.get({ hostname: "127.0.0.1", port, path: "/readyz", ca }, (response) => {
-      response.resume();
-      resolve(response.statusCode === 200);
-    });
-    request.setTimeout(1_000, () => request.destroy());
-    request.once("error", () => resolve(false));
-  });
+async function ready(container) {
+  try {
+    await runDocker([
+      "exec",
+      container,
+      "node",
+      "-e",
+      `fetch("http://127.0.0.1:18800/readyz").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1));`,
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 test(
@@ -209,7 +212,6 @@ test(
     const port = Number(
       (await runDocker(["port", envoy, "8443/tcp"])).stdout.trim().split(":").at(-1),
     );
-    const ca = await readFile(join(directory, "cert.pem"));
     const cases = [
       {
         entries: { researcher: { workspace: "/home/node/workspace" } },
@@ -298,12 +300,12 @@ test(
       try {
         let available = false;
         for (let attempt = 0; attempt < 60 && !available; attempt++) {
-          available = await ready(port, ca);
+          available = await ready(native);
           if (!available) {
             await delay(250);
           }
         }
-        assert.equal(available, true, "Actual native Gateway never became ready through Envoy.");
+        assert.equal(available, true, "Actual native Gateway never became ready.");
         await mkdir(join(directory, "client-home"), { recursive: true });
         // A fresh Node process loads only this test CA before the production WSS client starts.
         const child = execute(
