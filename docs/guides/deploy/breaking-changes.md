@@ -10,6 +10,26 @@ you run now, then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-09: peer namespaces must be Kubernetes namespace names
+
+**What breaks.** Since #PRNUM, the controller refuses to start with
+`DNS peer namespace must be a Kubernetes namespace name: a DNS label of at most
+63 characters.` (or the same message for a gateway client, the repository
+credential gateway, the provider Harness gateway or the managed channel proxy)
+when that peer's namespace has dots, uppercase letters or more than 63
+characters. The observability demo chart refuses such an `occ.namespace`,
+`dns.namespace` or `grafana.clients[N].namespace`.
+
+**Who is affected.** Only a hand-written `installation.yaml` with such a value.
+No Namespace can have that name, so the peer's NetworkPolicy selected no Pods:
+the peer was already unreachable. The profile renderer and product charts
+refuse these values already.
+
+**How to tell.** The controller logs the message above at startup.
+
+**Steps.** Set the peer's real Namespace name (`kubectl get namespaces`), then
+upgrade.
+
 ## 2026-10-09: sandbox domains longer than 214 characters are refused
 
 **What breaks.** Since #1823, Helm refuses a `gatewayRouting.sandbox.domain`

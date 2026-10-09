@@ -242,12 +242,41 @@ test(
   },
 );
 
+// The observability demo chart selects the same DNS peer; it has no renderer.
+function renderDemoChart(values) {
+  const directory = mkdtempSync(join(tmpdir(), "oce-demo-parity-"));
+  try {
+    const path = join(directory, "values.json");
+    writeFileSync(path, JSON.stringify(values));
+    return run(helm, [
+      "template",
+      "demo",
+      "deploy/helm/openclaw-observability-demo",
+      "--namespace",
+      "oce-observability-demo",
+      ...[
+        "occ.namespace=openclaw-system",
+        "occ.release=oce",
+        "cluster.cidrs[0]=10.43.0.1/32",
+        "grafana.adminSecretName=grafana-admin",
+      ].flatMap((value) => ["--set", value]),
+      "--values",
+      path,
+    ]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 test(
-  "API client and DNS peer namespaces get the same verdict from the preflight and the chart",
+  "API client and DNS peer namespaces get the same verdict from the preflight, the charts and Compute",
   { skip: helmSkip },
   () => {
     const podLabels = { app: "occ-operator" };
     const dnsLabels = { "k8s-app": "kube-dns" };
+    const configured = conformanceKubernetesOptions({
+      gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
+    });
     for (const [namespace, accepted] of namespaceCases) {
       const label = namespace.length > 40 ? `${namespace.length} characters` : namespace;
       assertParity({
@@ -266,6 +295,30 @@ test(
         chartError:
           /dns\.namespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
       });
+      const demo = renderDemoChart({ dns: { namespace, podLabels: dnsLabels } });
+      assert.equal(demo.ok, accepted, `dns ${label}: demo chart\n${demo.output}`);
+      if (!accepted) {
+        assert.match(
+          demo.output,
+          /dns\.namespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
+          label,
+        );
+      }
+      let driverAccepted = true;
+      try {
+        createKubernetesComputeDriver({
+          ...configured,
+          network: { ...configured.network, dns: { namespace, podLabels: dnsLabels } },
+        });
+      } catch (error) {
+        assert.match(
+          error.message,
+          /DNS peer namespace must be a Kubernetes namespace name/,
+          label,
+        );
+        driverAccepted = false;
+      }
+      assert.equal(driverAccepted, accepted, `dns ${label}: Compute`);
     }
   },
 );

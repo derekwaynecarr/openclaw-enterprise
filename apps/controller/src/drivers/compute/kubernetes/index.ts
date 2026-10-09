@@ -1393,7 +1393,12 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string): void 
   if (asRecord(value) === undefined) {
     throw new ConfigurationFailure(`${description} is required.`);
   }
-  required(value.namespace, `${description} namespace`);
+  // NetworkPolicies select the peer on kubernetes.io/metadata.name, which only ever holds a
+  // Namespace name; anything else would select no Pods.
+  validateKubernetesNamespaceName(
+    required(value.namespace, `${description} namespace`),
+    `${description} namespace`,
+  );
   const labels = asRecord(value.podLabels);
   if (labels === undefined || Object.keys(labels).length === 0) {
     throw new ConfigurationFailure(`${description} Pod labels cannot be empty.`);
