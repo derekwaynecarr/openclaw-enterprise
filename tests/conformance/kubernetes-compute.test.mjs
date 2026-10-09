@@ -44,6 +44,8 @@ import {
   ConfigurationHarnessError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  ResourceStateConflictError,
+  ServiceAccountCredentialSecretExistsError,
 } from "../../packages/occ/src/index.ts";
 import {
   currentComputeAbortSignal,
@@ -4699,6 +4701,65 @@ test("a ServiceAccount credential Secret create that applied but answered an err
     await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
     assert.equal(objects.has(key), true);
     assert.equal(calls.deletes.length, 1);
+  });
+
+  await t.test(
+    "a leftover Secret blocks the retry with a conflict that names it, not an outage",
+    async () => {
+      const { driver, objects, key, calls, restore } = await harness({
+        applied: true,
+        deleteStatus: 503,
+      });
+      await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
+      restore();
+      const leftover = structuredClone(objects.get(key));
+      const namespace = key.split(":")[1];
+      const { core } = await driver.apiClients;
+      let creates = 0;
+      const create = core.createNamespacedSecret;
+      core.createNamespacedSecret = async (request) => {
+        creates += 1;
+        return create(request);
+      };
+      const retry = { ...input, accessToken: "at-retry-fixture" };
+      await assert.rejects(driver.storeServiceAccountCredential(retry), (error) => {
+        // Before finding 935 this was a ConfigurationFailure the controller hid behind 503.
+        assert.ok(error instanceof ServiceAccountCredentialSecretExistsError, error.name);
+        assert.ok(error instanceof ResourceStateConflictError);
+        assert.ok(!(error instanceof DependencyUnavailableError));
+        assert.equal(error.secretNamespace, namespace);
+        assert.equal(error.secretName, secretName);
+        assert.equal(
+          error.message,
+          `Kubernetes Secret ${namespace}/${secretName} from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/`,
+        );
+        assert.doesNotMatch(error.message, /at-request-fixture|at-retry-fixture/);
+        return true;
+      });
+      // Nothing is written: the leftover stays for the operator, and no create is attempted.
+      assert.equal(creates, 0);
+      assert.deepEqual(objects.get(key), leftover);
+      assert.equal(calls.deletes.length, 1);
+    },
+  );
+
+  await t.test("a foreign object under the name keeps the ownership failure", async () => {
+    const { driver, objects, key, restore } = await harness({
+      applied: true,
+      mutate: (stored) => {
+        stored.metadata.labels["openclaw.dev/service-account"] = "sa_another";
+      },
+    });
+    await assert.rejects(driver.storeServiceAccountCredential(input), (error) => error === dropped);
+    restore();
+    assert.equal(objects.has(key), true);
+    await assert.rejects(
+      driver.storeServiceAccountCredential(input),
+      // Not the account's own leftover, so the Driver's ownership refusal stands (still 503).
+      (error) =>
+        error.constructor.name === "OwnershipFailure" &&
+        !(error instanceof ResourceStateConflictError),
+    );
   });
 });
 

@@ -88,7 +88,12 @@ provisioning for `codex_pat` is optional and renders only when `codex.managedSer
 supplied.
 
 Preflight checks `controlPlane.releaseName` against Helm's lowercase release-name
-syntax and 53-character maximum. The shared `digestImage` check in `buildRendered`
+syntax and 53-character maximum. It also requires `controlPlane.namespace` and,
+when set, `controlPlane.envoyNamespace` to be DNS-safe Kubernetes resource names
+of at most 253 characters, the same rule the Compute driver applies to
+`gatewayNamespace` and `envoyNamespace`. The chart applies that rule to
+`gatewayRouting.envoyNamespace`. A slash, an uppercase letter, or a longer name
+fails before any deployable file is written. The shared `digestImage` check in `buildRendered`
 requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters for
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`.
 Noncanonical digest casing adds a field-specific diagnostic; the final error
@@ -104,6 +109,11 @@ with the API's `tldts` list), Google hosted domains (at most 253 characters,
 last label starting with a letter), repository Service names, and paired metrics
 scraper selectors. Invalid values therefore fail before `values.yaml` or
 `installation.yaml` is written.
+
+`scripts/render-installation-profile.mjs:signInProvider` refuses equal client-ID
+and client-secret Secret keys for GitHub, Google and OIDC. It considers the chart's
+`client-id` and `client-secret` defaults when only one key is overridden, so those
+collisions also fail before deployment files are written.
 
 `scripts/render-installation-profile.mjs:controlPlaneNodeSelector` checks
 `controlPlane.nodeSelector` against the chart and bootstrap-volume helper's
@@ -229,6 +239,8 @@ activation, and repository registry creation need separate evidence.
 
 - 2026-10-09 20:43: Preserve Google hosted-domain and repository Service-name checks after the main merge. (01a12099-b8bf-7523-b52e-c7a160e191ec - 31a682eba8a8e4e0e0b80fe48cb71ab86db7e985)
 
+- 2026-10-09 19:54: Reject external sign-in credential-key collisions during profile preflight. (authoring-run/d628d0ae-29d8-405c-b812-0534f00d5821 - 60a837dfd798e8fac90b53c47436c4bc7a36e8e4)
+
 - 2026-10-09: Accept empty control-plane placement label values, as Kubernetes does.
 
 - 2026-10-09 19:42: Validate control-plane placement labels before writing profile output. (authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52 - 3a1e29fb461d2ad61a9276ae4af432bcf2d04c88)
@@ -238,6 +250,8 @@ activation, and repository registry creation need separate evidence.
 - 2026-10-09: Refuse Google hosted domains the chart and API refuse.
 
 - 2026-10-09: Refuse a repository broker Service name the chart's DNS-1035 check refuses.
+
+- 2026-10-09: Refuse gateway and Envoy namespaces the Compute driver refuses.
 
 - 2026-10-09: Refuse Codex seccomp paths the Compute driver refuses.
 
