@@ -103,6 +103,7 @@ import {
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsForbiddenByClusterError,
   runtimeFailureCause,
+  ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
 import {
@@ -3791,7 +3792,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const ownership = { namespaceId, serviceAccountId };
     const existing = await this.getOwned("Secret", name, namespace, ownership);
     if (existing !== undefined) {
-      throw new ConfigurationFailure("The ServiceAccount credential Secret already exists.");
+      // OCC records no credential for this account, so this is a leftover of an earlier
+      // issuance; name it so the operator can delete it (finding 935).
+      throw new ServiceAccountCredentialSecretExistsError(namespace.name, name);
     }
 
     const clients = await this.clients(namespace.plane);

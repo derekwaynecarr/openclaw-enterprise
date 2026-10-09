@@ -158,8 +158,8 @@ provider, not IAM, Compute, OCC, or the Harness.
 - `403`: Missing exact OCC account permission.
 - `404`: Account or Agent is outside its exact Namespace.
 - `409 RESOURCE_CONFLICT`: Duplicate account name, existing credential,
-  referenced-account deletion, missing credential, or unsupported Harness or
-  OAuth deployment, or mismatched managed Backend binding.
+  leftover credential Secret, referenced-account deletion, missing credential,
+  or unsupported Harness or OAuth deployment, or mismatched managed Backend binding.
 - `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`: The Installation has no ChatGPT
   Backend, so issuance, deploying an Agent bound to an account without an
   access token, and deleting an account that holds one cannot succeed. Configure the
@@ -179,10 +179,12 @@ provider, not IAM, Compute, OCC, or the Harness.
   the `503` says it could not be removed.
 - Unknown Secret outcome: a failed token Secret create deletes the account-owned
   Secret holding this request's token, so issuance can be retried. If it cannot
-  read or delete that Secret, it answers `503` and the leftover Secret blocks a
-  retry until an operator deletes it: `service-account-` plus the first 32 hex
-  digits of the account ID's SHA-256, in the Namespace's control namespace. The
-  failed issuance still revokes its token.
+  read or delete that Secret, it answers `503`. The leftover Secret then blocks
+  each retry with a `409 RESOURCE_CONFLICT` that names it: `service-account-` plus
+  the first 32 hex digits of the account ID's SHA-256, in the Namespace's control
+  namespace (omitted when that name is long). An operator deletes it, for example
+  `kubectl delete secret -n <namespace> <name>`, then retries. The failed issuance
+  still revokes its token.
 - Expired token: Execution fails closed; automated refresh and rotation are
   not implemented.
 

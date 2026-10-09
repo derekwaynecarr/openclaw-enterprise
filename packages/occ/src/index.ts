@@ -308,6 +308,7 @@ export {
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
   SecretBindingDriverError,
+  ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
   SecretBindingValidationError,
   SecretDriverOwnershipError,
