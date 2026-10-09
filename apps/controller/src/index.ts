@@ -102,6 +102,7 @@ import {
   canonicalFailure,
   cappedPath,
   dependencyUnavailable,
+  dependencyUnavailableLogFields,
   failure,
   isAuthorizationDenied,
   isDependencyUnavailable,
@@ -3746,8 +3747,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                       "INVALID_REQUEST",
                       "The request does not match the operation contract.",
                     )
-                  : new DependencyUnavailableError(
-                      error instanceof Error ? error.message : "Auth account provisioning failed.",
+                  : Object.assign(
+                      new DependencyUnavailableError("Auth account provisioning failed."),
+                      // The API log names the cause's class and code, never its message.
+                      { cause: error },
                     );
         }
         const account = prepared;
@@ -3957,6 +3960,28 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         host: "auth.openai.com",
         reason: error.reason,
         failure: error.failure,
+      });
+    }
+    if (
+      mapped.status === 503 &&
+      mapped.code === "DEPENDENCY_UNAVAILABLE" &&
+      error instanceof Error &&
+      isDependencyUnavailable(error)
+    ) {
+      // The response keeps its text (the caller learns nothing more); the operator finds the
+      // cause here by request ID. Reading the error must never change the response.
+      let fields: ReturnType<typeof dependencyUnavailableLogFields> = {};
+      try {
+        fields = dependencyUnavailableLogFields(error);
+      } catch {
+        // An error whose fields cannot be read is logged without them.
+      }
+      app.log.warn({
+        event: "http.dependency_unavailable",
+        requestId: request.id,
+        method: request.method,
+        route: request.routeOptions.url ?? "unmatched",
+        ...fields,
       });
     }
     if (mapped.code === "INTERNAL_ERROR") {

@@ -130,7 +130,9 @@ issue a credential for a new account.
   Driver failed or does not match its Backend. Have the network operator check
   API Pod DNS and the destination allowed by the NetworkPolicy; also check the
   mounted admin key's workspace and scope, and whether Kubernetes Compute can
-  store the credential. Keep the OCC request ID; do not share the key or token.
+  store the credential. Keep the OCC request ID: the API log's WARN
+  `http.dependency_unavailable` record for it names the cause. Do not share the
+  key or token.
 - **An existing credential stopped working:** expired credentials do not refresh
   automatically; issuing a second credential on the same account returns `409`.
   Create a replacement account, issue its credential, rebind and redeploy

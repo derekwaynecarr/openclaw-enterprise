@@ -136,6 +136,31 @@ function safeString(value: string): string | undefined {
   return value;
 }
 
+// A URL with user information (`scheme://user:password@host`), or a query parameter that
+// usually carries a credential.
+const URL_CREDENTIAL =
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]*@|[?&](?:access_token|api_key|key|password|secret|sig|signature|token)=/i;
+export const WITHHELD_ERROR_TEXT = "The message was withheld because it resembles a credential.";
+
+/** Whether text resembles a credential (a bearer token, API key, private key, or URL secret). */
+export function resemblesCredential(text: string): boolean {
+  return SECRET_VALUE.test(text) || URL_CREDENTIAL.test(text);
+}
+
+/**
+ * Error text for a local operator log: one line of at most 512 characters, or fixed text when it
+ * looks like it carries a credential. Callers log only messages written by OCC code; this is a
+ * second line of defense, not a sanitizer for provider or request text.
+ */
+export function loggedErrorText(value: string): string | undefined {
+  const line = value.replace(/[\s\p{Cc}]+/gu, " ").trim();
+  if (line === "") {
+    return undefined;
+  }
+  // Checked before the cut, so a credential that straddles it is withheld too.
+  return resemblesCredential(line) ? WITHHELD_ERROR_TEXT : [...line].slice(0, 512).join("");
+}
+
 function safePath(value: unknown): string | undefined {
   return typeof value === "string" && SAFE_PATH.test(value) && !SECRET_VALUE.test(value)
     ? value
