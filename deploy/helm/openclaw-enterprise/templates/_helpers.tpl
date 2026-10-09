@@ -274,11 +274,11 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if and (hasKey .Values.controlPlane "nodeSelector") (not (kindIs "invalid" .Values.controlPlane.nodeSelector)) -}}
 {{- if not (kindIs "map" .Values.controlPlane.nodeSelector) -}}{{- fail "controlPlane.nodeSelector must be a map of Kubernetes node labels" -}}{{- end -}}
-{{- /* prepare-bootstrap-volume is_label_key and is_label_value. A qualified key is a DNS subdomain prefix plus a label name. */ -}}
+{{- /* prepare-bootstrap-volume is_label_key and is_label_value. A qualified key is a DNS subdomain prefix plus a label name; a value is empty or a label name. */ -}}
 {{- $labelName := "^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$" -}}
 {{- range $key, $value := .Values.controlPlane.nodeSelector }}
-{{- if or (not (kindIs "string" $value)) (eq $value "") (gt (len $value) 63) (not (regexMatch $labelName $value)) -}}
-{{- fail "controlPlane.nodeSelector values must be nonempty Kubernetes label values" -}}
+{{- if or (not (kindIs "string" $value)) (gt (len $value) 63) (and (ne $value "") (not (regexMatch $labelName $value))) -}}
+{{- fail "controlPlane.nodeSelector values must be Kubernetes label values" -}}
 {{- end -}}
 {{- if contains "/" $key -}}
 {{- $parts := splitList "/" $key -}}

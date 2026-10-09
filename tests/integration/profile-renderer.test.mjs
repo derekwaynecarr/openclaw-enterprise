@@ -546,6 +546,7 @@ test("label values that YAML 1.1 would retype stay strings", () => {
     hex: "0x1f",
     octal: "0o17",
     yes: "keep",
+    "node-role.kubernetes.io/infra": "",
   };
   const input = baseInput();
   input.controlPlane.nodeSelector = labels;
@@ -573,7 +574,7 @@ test("Helm renders YAML 1.1 lookalike label values as strings", { skip: helmSkip
   assertPreflightFailure(
     "openclaw",
     rejected,
-    /controlPlane\.nodeSelector values must be nonempty Kubernetes label values/,
+    /controlPlane\.nodeSelector values must be Kubernetes label values/,
   );
 });
 
@@ -600,6 +601,17 @@ test("repository opt-in is explicit and keeps the two-stage placeholders separat
     output.preflight.warnings.join("\n"),
     /Active repository sessions are not restored after broker loss/,
   );
+});
+
+test("preflight rejects a repository serviceName the chart refuses", () => {
+  const repositoryInput = repositoryConfiguration();
+  for (const serviceName of ["1git", "git.openclaw-system.svc", "a".repeat(64), "Git"]) {
+    assertPreflightFailure(
+      "codex",
+      codexInput({ repository: { ...repositoryInput, serviceName } }),
+      /repository\.serviceName must be a Kubernetes Service DNS-1035 label of at most 63 characters/,
+    );
+  }
 });
 
 test("repository serviceName is left to the chart so its upgrade guard applies", () => {
