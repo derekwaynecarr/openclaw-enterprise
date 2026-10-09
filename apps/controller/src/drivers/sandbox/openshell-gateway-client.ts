@@ -640,7 +640,7 @@ function serviceUrl(value: unknown): URL {
   return serviceUrl;
 }
 
-function normalizeServiceUrl(value: unknown, endpoint: string): string {
+export function normalizeServiceUrl(value: unknown, endpoint: string): string {
   const normalized = serviceUrl(value);
   const gateway = normalizeEndpoint(endpoint);
   const gatewayUrl = new URL(`${gateway.secure ? "https" : "http"}://${gateway.target}`);
