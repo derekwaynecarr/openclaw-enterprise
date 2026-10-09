@@ -196,7 +196,8 @@ queues another series 30 seconds later, then after 1, 2 and 4 minutes, then
 every 5 minutes, 15 series in all (about an hour). Meanwhile the read shows
 `pending`, the latest `reason`, and `withdrawalInProgress: true`, and the
 source still resolves in the Sandbox. The first series the gateway confirms
-records `revoked`, with no replay needed.
+records `revoked`, with no replay needed. A withdraw request sent while a
+series waits queues nothing more; the series runs at its scheduled time.
 
 When the last series fails, or every withdrawal left on the revision is denied
 to its requester, the withdrawal stays `pending` with
@@ -232,7 +233,8 @@ or another authentication method.
 requires exact `delete` and returns `204`:
 
 - It returns `409` while an Agent draft, active revision, or pending deployment
-  references the source.
+  references the source, or while a withdrawal attempt or retry series is queued
+  for a revision that still holds it.
 - On an Installation with no Credential Gateway it returns
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
   did not register it returns `503`; neither changes the record.
