@@ -3982,7 +3982,14 @@ export class PostgresPlatformState implements PlatformStateStore {
                  ), updated_provisioning AS (
                    UPDATE occ.agent_provisioning_work AS provisioning
                    SET status = 'running',
-                       progress = $3::jsonb,
+                       -- The database clock stamps the effect, so a later attempt on any
+                       -- replica can age it against updated_at (finding 911).
+                       progress = jsonb_set(
+                         $3::jsonb,
+                         '{pendingEffect,startedAt}',
+                         to_jsonb(to_char(clock_timestamp() AT TIME ZONE 'UTC',
+                           'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+                       ),
                        updated_at = clock_timestamp()
                    FROM owner
                    WHERE provisioning.work_id = owner.idempotency_key
@@ -4195,6 +4202,10 @@ export class PostgresPlatformState implements PlatformStateStore {
           }
           if (failed.disposition === "permanent") {
             await queue.fail(claim, { code: failed.code });
+            return provisioningRecordFromRow(checkpointed[0]);
+          }
+          if (failed.disposition === "defer") {
+            await queue.defer(claim, { code: failed.code }, { delayMs: failed.delayMs! });
             return provisioningRecordFromRow(checkpointed[0]);
           }
           await queue.retry(claim, { code: failed.code });

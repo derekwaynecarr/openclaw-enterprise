@@ -34,7 +34,9 @@ Create calls
 calls `deleteNamespacedConfigMap` with the observed object identity when
 available. Creation starts at generation `1`; each successful PATCH replaces
 the entire native document and advances the generation exactly once. Metadata
-and ConfigMap updates share OCC's existing transactional/compensating boundary.
+and ConfigMap updates share OCC's existing transactional/compensating boundary;
+an update registers its compensation before the replace, so a replace that applied
+but answered an error is rolled back to the stored generation as well.
 A referenced Configuration cannot be deleted. Tenant child-data access remains
 limited to namespaced ConfigMap `create`, `get`, `update`, and `delete`;
 Kubernetes cannot restrict `create` by `resourceNames`, so that verb must use
