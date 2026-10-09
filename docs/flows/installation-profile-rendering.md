@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-10
-last_updated_session: authoring-run/3bc71672-b18b-4cc7-9189-6d0d77957cc4
+last_updated_session: authoring-run/2a354440-5009-424f-8f64-47a48128bd1c
 ---
 
 # Installation Profile Rendering Flow
@@ -134,9 +134,13 @@ repository broker Secrets when enabled, and every provider checked before it.
 Kubernetes label-key and label-value rules (values may be empty). Compute copies
 the runtime selectors into Pod specs, where Kubernetes applies the same rule.
 Invalid placement labels fail preflight without deployment files; legal YAML
-lookalike values remain strings. The bootstrap password claim name must be a DNS
-subdomain, and a repository Backend ID must follow the Backend ID rule within
-200 UTF-16 code units, as in the chart.
+lookalike values remain strings. `peerSelector` applies Compute's
+`validatePeer` rule to the DNS, API client and metrics scraper selectors: the
+same key and value rules, empty values allowed, and a key prefix that is any DNS
+subdomain of at most 253 characters. The chart checks only that each is
+nonempty. The bootstrap password claim name must be a DNS subdomain, and a
+repository Backend ID must follow the Backend ID rule within 200 UTF-16 code
+units, as in the chart.
 
 ### 4. Build Helm values
 
@@ -275,9 +279,13 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
+- 2026-10-10 01:15: Retain the CA mount and incoming peer-selector changelog entries when merging the latest main at maintainer request. (authoring-run/2a354440-5009-424f-8f64-47a48128bd1c - 0ebf6ef99f547dab45923cf459bf96242723e845)
+
 - 2026-10-10 00:58: Merge current profile preflight rules while retaining database CA mount validation and its independent parity coverage. (authoring-run/3bc71672-b18b-4cc7-9189-6d0d77957cc4 - ba439186dbd131073c038eba4645d255cc8c128b)
 
 - 2026-10-09 23:58: Reject database CA mount collisions with the active mounts selected by installation profiles. (authoring-run/19832129-1f67-41f2-8961-d10c648012fd - e6d0571907da6bc6d40eed3e1f8125f7dd332e99)
+
+- 2026-10-09: Check DNS, API client and metrics scraper selectors with Compute's peer label rule, allowing empty values.
 
 - 2026-10-09: Apply the chart's sign-in Secret, runtime node selector, claim name and Backend ID rules, and escape characters Helm's YAML parser changes.
 

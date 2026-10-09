@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -415,6 +416,100 @@ test("node selectors get the same verdict from preflight and the chart", { skip:
       if (!accepted) {
         assert.match(renderer.output, new RegExp(`runtime\\.${field} (keys|values) must be`));
       }
+    }
+  }
+});
+
+// NetworkPolicy peer selectors. Compute applies this rule to the DNS peer at startup, and
+// Kubernetes to every NetworkPolicy: empty values pass, and the key prefix is any DNS
+// subdomain of at most 253 characters (no per-label cap, unlike the chart's nodeSelector).
+const peerSelectorCases = [
+  [{ "k8s-app": "kube-dns" }, true],
+  [{ app: "" }, true],
+  [{ "example.com/Name": "v.1_A-2" }, true],
+  [{ [`example.com/${"a".repeat(63)}`]: "b".repeat(63) }, true],
+  [{ [`${"a".repeat(253)}/Name`]: "" }, true],
+  [{ [`${"a".repeat(64)}.example/zone`]: "east" }, true],
+  [{ 123: "0" }, true],
+  [{ app: "kube/dns" }, false],
+  [{ app: "a".repeat(64) }, false],
+  [{ app: "value\n" }, false],
+  [{ app: "-dns" }, false],
+  [{ app: "@platform" }, false],
+  [{ "k8s.io/name/extra": "dns" }, false],
+  [{ "example.com/": "dns" }, false],
+  [{ "Example.com/Name": "dns" }, false],
+  [{ ["a".repeat(64)]: "dns" }, false],
+  [{ [`${"a".repeat(254)}/Name`]: "dns" }, false],
+  [{ "example.com\n/Name": "dns" }, false],
+  [{ "bad key": "dns" }, false],
+];
+
+test("peer Pod selectors get Compute's verdict in preflight, and the chart renders them", () => {
+  const peers = [
+    [
+      "controlPlane.dns.podLabels",
+      (profile, labels) => (profile.controlPlane.dns.podLabels = labels),
+    ],
+    [
+      "controlPlane.apiClients.0.podLabels",
+      (profile, labels) => (profile.controlPlane.apiClients[0].podLabels = labels),
+    ],
+    [
+      "controlPlane.metrics.scraperNamespaceLabels",
+      (profile, labels) => (profile.controlPlane.metrics.scraperNamespaceLabels = labels),
+    ],
+    [
+      "controlPlane.metrics.scraperPodLabels",
+      (profile, labels) => (profile.controlPlane.metrics.scraperPodLabels = labels),
+    ],
+  ];
+  const { loadYaml } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const admitDns = (dns) => {
+    const configured = conformanceKubernetesOptions({
+      gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
+    });
+    createKubernetesComputeDriver({ ...configured, network: { ...configured.network, dns } });
+  };
+  for (const [podLabels, accepted] of peerSelectorCases) {
+    const label = JSON.stringify(podLabels);
+    if (accepted) {
+      assert.doesNotThrow(() => admitDns({ namespace: "kube-system", podLabels }), label);
+    } else {
+      assert.throws(
+        () => admitDns({ namespace: "kube-system", podLabels }),
+        /DNS peer label (?:keys|values) must be Kubernetes/,
+        label,
+      );
+    }
+    const profile = input({});
+    for (const [, configure] of peers) {
+      configure(profile, podLabels);
+    }
+    const { directory, renderer } = renderProfile(profile);
+    try {
+      assert.equal(renderer.ok, accepted, `${label}: renderer\n${renderer.output}`);
+      if (!accepted) {
+        for (const [path] of peers) {
+          const field = path.replaceAll(".", "\\.");
+          assert.match(renderer.output, new RegExp(`${field} (?:keys|values) must be`), label);
+        }
+        continue;
+      }
+      // Compute admits the DNS peer exactly as the renderer wrote it.
+      const installation = loadYaml(readFileSync(join(directory, "installation.yaml"), "utf8"));
+      const dns = installation.drivers.compute.configuration.network.dns;
+      assert.deepEqual(dns.podLabels, podLabels, label);
+      assert.doesNotThrow(() => admitDns(dns), label);
+      // The chart checks only that the selector is nonempty; Kubernetes applies the rule.
+      if (!helmSkip) {
+        const chart = helmTemplate([join(directory, "values.yaml")]);
+        assert.equal(chart.ok, true, `${label}: helm template\n${chart.output}`);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   }
 });
