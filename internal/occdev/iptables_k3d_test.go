@@ -3,8 +3,11 @@ package occdev
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -101,27 +104,32 @@ func TestCheckLegacyNATTable(t *testing.T) {
 		name, hostOS, engine, script string
 		files                        map[string]string
 		wantError, wantWarning       []string
+		wantHint                     bool
 	}{
+		// The hosted CI runners start without iptable_nat and load it on
+		// demand, so an unloaded module only warns.
 		{
-			name: "unloaded module fails fast", hostOS: "linux", engine: "docker", script: dockerKernel, files: unloaded,
-			wantError: []string{"has not loaded the legacy iptables nat table (iptable_nat)", "IPTABLES_MODE=legacy", "sudo modprobe --all iptable_nat iptable_filter iptable_mangle br_netfilter", `"Local K3s cannot load the legacy iptables nat table"`, "troubleshooting.md"},
+			name: "unloaded module warns", hostOS: "linux", engine: "docker", script: dockerKernel, files: unloaded,
+			wantWarning: []string{"has not loaded the legacy iptables nat table (iptable_nat)", "sudo modprobe --all iptable_nat iptable_filter iptable_mangle br_netfilter", `"Local K3s cannot load the legacy iptables nat table"`, "troubleshooting.md"},
+			wantHint:    true,
 		},
 		{
 			name: "Podman on the host kernel", hostOS: "linux", engine: "podman", script: podmanKernel, files: unloaded,
-			wantError: []string{"sudo modprobe --all iptable_nat"},
+			wantWarning: []string{"sudo modprobe --all iptable_nat"}, wantHint: true,
 		},
 		{
-			name: "kernel without the module", hostOS: "linux", engine: "docker", script: dockerKernel,
+			name: "kernel without the module fails fast", hostOS: "linux", engine: "docker", script: dockerKernel,
 			files: map[string]string{
 				legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin,
 				legacyNATTestModules + "modules.dep":     "",
 			},
-			wantError: []string{"kernel " + legacyNATTestRelease + " provides no legacy iptables nat table"},
+			wantError: []string{"kernel " + legacyNATTestRelease + " provides no legacy iptables nat table", "IPTABLES_MODE=legacy", "troubleshooting.md"},
 		},
 		{name: "loaded module", hostOS: "linux", engine: "docker", script: dockerKernel, files: map[string]string{"sys/module/iptable_nat/refcnt": "1\n"}},
 		{
 			name: "undecidable host only warns", hostOS: "linux", engine: "docker", script: dockerKernel,
 			wantWarning: []string{"Warning: could not confirm", "sudo modprobe --all iptable_nat", "troubleshooting.md"},
+			wantHint:    true,
 		},
 		// Docker Desktop and Podman machines run the node on another kernel.
 		{name: "engine in a VM", hostOS: "linux", engine: "docker", script: `"info --format {{.KernelVersion}}") echo 6.10.14-linuxkit ;;
@@ -155,12 +163,15 @@ func TestCheckLegacyNATTable(t *testing.T) {
 					t.Fatalf("warning %q does not contain %q", warnings.String(), want)
 				}
 			}
+			if hint := r.legacyNATFailureHint(); (hint != "") != test.wantHint {
+				t.Fatalf("failure hint %q, want hint: %v", hint, test.wantHint)
+			}
 		})
 	}
 }
 
 // The Kubernetes-only profile checks the host before it records state or
-// asks k3d for anything.
+// asks k3d for anything, so a kernel without the nat table fails at once.
 func TestK3dStartupChecksLegacyNATTableBeforeClusterCreation(t *testing.T) {
 	root := t.TempDir()
 	state := filepath.Join(root, "state")
@@ -180,7 +191,7 @@ func TestK3dStartupChecksLegacyNATTableBeforeClusterCreation(t *testing.T) {
 	}
 	legacyNATHost(t, "linux", legacyNATTestFiles(map[string]string{
 		legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin,
-		legacyNATTestModules + "modules.dep":     legacyNATTestDep,
+		legacyNATTestModules + "modules.dep":     "",
 	}))
 	// PATH contains only fixtures, so no real tool can run.
 	t.Setenv("PATH", t.TempDir())
@@ -195,7 +206,7 @@ func TestK3dStartupChecksLegacyNATTableBeforeClusterCreation(t *testing.T) {
 		"git":     "",
 	})
 	err := upK3d(context.Background(), Options{Repository: root}, "none")
-	if err == nil || !strings.Contains(err.Error(), "sudo modprobe --all iptable_nat") {
+	if err == nil || !strings.Contains(err.Error(), "provides no legacy iptables nat table") {
 		t.Fatalf("expected the legacy nat table error, got %v", err)
 	}
 	calls := commands()
@@ -205,5 +216,22 @@ func TestK3dStartupChecksLegacyNATTableBeforeClusterCreation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(state, "state.json")); !os.IsNotExist(err) {
 		t.Fatalf("startup recorded state before the preflight: %v", err)
+	}
+}
+
+// The rollback removes the node log, so a k3d failure after an unconfirmed
+// preflight names the nat table and its remedy.
+func TestK3dCreateFailureNamesAnUnconfirmedLegacyNATTable(t *testing.T) {
+	fakeK3dCreate(t, k3dRollback+"\nexit 1")
+	r := &runner{opts: Options{Out: io.Discard, Err: io.Discard}, env: map[string]string{}}
+	err := r.createK3dCluster(context.Background(), "cluster", "create", "occ-dev-test")
+	if err == nil || strings.Contains(err.Error(), "iptable_nat") {
+		t.Fatalf("a confirmed host got the nat hint: %v", err)
+	}
+	r.legacyNATUnconfirmed = true
+	err = r.createK3dCluster(context.Background(), "cluster", "create", "occ-dev-test")
+	var exitErr *exec.ExitError
+	if err == nil || !strings.HasPrefix(err.Error(), "k3d failed: exit status 1. ") || !strings.Contains(err.Error(), "sudo modprobe --all iptable_nat") || !errors.As(err, &exitErr) {
+		t.Fatalf("expected the nat hint on the k3d failure, got %v", err)
 	}
 }

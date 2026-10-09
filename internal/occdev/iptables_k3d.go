@@ -12,11 +12,13 @@ import (
 )
 
 // Both local k3d profiles start the node with IPTABLES_MODE=legacy, so
-// kube-proxy needs the host kernel's legacy iptables nat table. The node
-// cannot load the iptable_nat module itself. On a host that never loaded it,
-// for example one whose Docker uses nftables, kube-proxy exits, K3s shuts
-// down, and k3d reports only a failure when its startup timeout expires.
-// The preflight below fails fast instead when the host kernel can be read.
+// kube-proxy needs the host kernel's legacy iptables nat table. Most hosts
+// load iptable_nat on demand when the node first uses it (the hosted CI
+// runners do), but some cannot: there kube-proxy exits, K3s shuts down, and
+// k3d reports only a failure when its startup timeout expires. Host files
+// cannot tell those apart, so the preflight below fails only for a kernel that
+// ships no legacy nat table, warns when the module is not loaded or the host
+// cannot be read, and names the module again if k3d then fails.
 
 // hostFilesystem is the host root, replaced in tests.
 var hostFilesystem fs.FS = os.DirFS("/")
@@ -105,8 +107,7 @@ func anyLine(data []byte, match func(string) bool) bool {
 // the node's kernel only when the engine runs on this kernel, so the check
 // applies only on Linux and only when the engine reports the host's kernel
 // release; Docker Desktop, Podman machines, and other VM-backed engines are
-// skipped. A host that does not expose its modules gets a warning, not a
-// failure.
+// skipped.
 func (r *runner) checkLegacyNATTable(ctx context.Context) error {
 	if developmentHostOS != "linux" {
 		return nil
@@ -128,12 +129,23 @@ func (r *runner) checkLegacyNATTable(ctx context.Context) error {
 		return nil
 	}
 	switch legacyNATTableState(hostFilesystem, release) {
-	case legacyNATUnloaded:
-		return fmt.Errorf("the host kernel has not loaded the legacy iptables nat table (%s). The local k3d node runs K3s with IPTABLES_MODE=legacy and cannot load the module itself, so cluster creation would stall until its startup timeout. Load the modules on the host, then start again:\n  %s\n%s", legacyNATModule, legacyNATRemedy, legacyNATTroubleshooting)
 	case legacyNATMissing:
 		return fmt.Errorf("the host kernel %s provides no legacy iptables nat table (%s), which the local k3d node needs because it runs K3s with IPTABLES_MODE=legacy. Use a kernel that ships the module. %s", release, legacyNATModule, legacyNATTroubleshooting)
+	case legacyNATUnloaded:
+		r.legacyNATUnconfirmed = true
+		fmt.Fprintf(r.opts.Err, "Warning: the host kernel has not loaded the legacy iptables nat table (%s) that the k3d node uses; continuing, because most hosts load it on demand. If cluster creation stalls, run `%s` on the host. %s\n", legacyNATModule, legacyNATRemedy, legacyNATTroubleshooting)
 	case legacyNATUnknown:
-		fmt.Fprintf(r.opts.Err, "Warning: could not confirm that the host kernel provides the legacy iptables nat table (%s) that the k3d node needs; continuing. If cluster creation stalls, run `%s` on the host. %s\n", legacyNATModule, legacyNATRemedy, legacyNATTroubleshooting)
+		r.legacyNATUnconfirmed = true
+		fmt.Fprintf(r.opts.Err, "Warning: could not confirm that the host kernel provides the legacy iptables nat table (%s) that the k3d node uses; continuing. If cluster creation stalls, run `%s` on the host. %s\n", legacyNATModule, legacyNATRemedy, legacyNATTroubleshooting)
 	}
 	return nil
+}
+
+// legacyNATFailureHint names the unconfirmed nat table when k3d fails, since
+// the rollback removes the node log that would show it.
+func (r *runner) legacyNATFailureHint() string {
+	if !r.legacyNATUnconfirmed {
+		return ""
+	}
+	return fmt.Sprintf(". Startup could not confirm that the host loaded %s: if the node could not initialize the iptables nat table, run `%s` on the host and start again. %s", legacyNATModule, legacyNATRemedy, legacyNATTroubleshooting)
 }
