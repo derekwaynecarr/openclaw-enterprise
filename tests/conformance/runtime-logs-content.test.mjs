@@ -1634,7 +1634,9 @@ test("runtime log polling delivers a timestamp group larger than the hash histor
     for (const lead of [[timedLog("boot", -1)], []]) {
       const reader = pollReader();
       const label = `${size} distinct lines${lead.length === 0 ? " without an earlier line" : ""}`;
-      const group = Array.from({ length: size }, (_, index) => timedLog(`worker ${index} ready`, 0));
+      const group = Array.from({ length: size }, (_, index) =>
+        timedLog(`worker ${index} ready`, 0),
+      );
       const lines = [...lead, ...group];
       assert.equal(messages(await reader.poll(lines)).length, lines.length, label);
       for (let poll = 0; poll < 3; poll += 1) {
@@ -1661,7 +1663,11 @@ test("runtime log polling counts mixed identical and distinct lines at one times
   }
   assert.equal(messages(await reader.poll(lines)).length, 25);
   assert.deepEqual(messages(await reader.poll(lines)), []);
-  lines.push(timedLog("retrying in 5s", 0), timedLog("attempt 0", 0), timedLog("retrying in 5s", 0));
+  lines.push(
+    timedLog("retrying in 5s", 0),
+    timedLog("attempt 0", 0),
+    timedLog("retrying in 5s", 0),
+  );
   assert.deepEqual(messages(await reader.poll(lines)), [
     "retrying in 5s",
     "attempt 0",
@@ -1674,7 +1680,11 @@ test("runtime log polling pages through a large timestamp group and ends", async
   const reader = pollReader();
   const big = (index) =>
     timedLog(
-      JSON.stringify({ level: "info", subsystem: "gateway", message: `line ${index} ${"x ".repeat(4096)}` }),
+      JSON.stringify({
+        level: "info",
+        subsystem: "gateway",
+        message: `line ${index} ${"x ".repeat(4096)}`,
+      }),
       0,
     );
   const lines = [timedLog("boot", -1), ...Array.from({ length: 200 }, (_, index) => big(index))];
@@ -1731,7 +1741,11 @@ test("runtime log cursor without a frontier count keeps legacy cursors usable", 
   const few = [timedLog("boot", -1), timedLog("retrying in 5s", 0), timedLog("retrying in 5s", 0)];
   await short.poll(few);
   assert.deepEqual(
-    messages(await short.poll([...few, timedLog("retrying in 5s", 0)], { query: { cursor: strip(short) } })),
+    messages(
+      await short.poll([...few, timedLog("retrying in 5s", 0)], {
+        query: { cursor: strip(short) },
+      }),
+    ),
     ["retrying in 5s"],
   );
 
