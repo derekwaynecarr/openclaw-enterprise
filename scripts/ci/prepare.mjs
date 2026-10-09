@@ -1202,10 +1202,11 @@ async function ensureK3dCluster(statePath, state) {
 }
 
 // k3d's serverlb (nginx) in front of the API server allows 1024 connections per
-// worker, and nearly all land on one worker. Each proxied API connection counts
-// twice. The k3d Fixture and Configuration lane peaks at about 1,070 on the 32vcpu
-// runner (530-760 on ubuntu-22.04), and the excess connections are dropped:
-// kubectl reports "Unable to connect to the server: EOF" (finding 682).
+// worker, and each proxied API connection counts twice. The connections appear to
+// land on one worker: drops started once the serverlb held about 1,024. The k3d
+// Fixture and Configuration lane peaked at 1,050-1,080 on the 32vcpu runner
+// (530-760 on ubuntu-22.04), and kubectl reported "Unable to connect to the
+// server: EOF" (finding 682). With this limit it peaks at about 2,000.
 const k3dLoadBalancerWorkerConnections = 8192;
 
 // Hosted CI creates a cluster, node image pull included, in 26-48 s (284 runs,
