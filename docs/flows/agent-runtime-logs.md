@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-10-09
-last_updated_session: fix-949-950
+updated: 2026-10-10
+last_updated_session: authoring-run/e25eab96-1110-45ec-b677-916a98b34613
 ---
 
 # Agent runtime logs flow
@@ -104,7 +104,10 @@ with one older than an hour, or a cursor whose Pod is gone, starts a view: the c
 `openclaw.agents.runtime_logs.view`, an `access` audit event naming the admitting
 action, before any log read. The Driver re-checks
 Pod ownership, calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
-`previous`, a 1 MiB `limitBytes` and timestamps, and re-reads the Pod. A cursor
+`previous`, a 1 MiB `limitBytes` and timestamps, and re-reads the Pod.
+`kubernetesRuntimeLogLine` separates kubelet's RFC3339 timestamp from each raw
+line and converts numeric offsets to UTC while retaining every fractional digit.
+Unknown or malformed offset prefixes remain untimed raw text. A cursor
 poll derives `sinceSeconds` from the cursor: from its newest delivered line, or,
 when the view has delivered nothing yet, from the previous read (a full or
 byte-cut tail then emits `window_exceeded`). When a resumed read delivers nothing
@@ -242,6 +245,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 00:04: Normalize supported kubelet timestamp offsets without losing nanoseconds, so classification and cursor overlap use the raw message and UTC time. (authoring-run/e25eab96-1110-45ec-b677-916a98b34613 - ba3686748ddf56052dc2717cc2ce6eaa3710c1f0)
 
 - 2026-10-09 15:42: Count container lines delivered at the cursor time, so a timestamp group larger than the 16-hash history neither replays nor hides later lines; a full history without that evidence stays suppressed. (fix-949-950)
 

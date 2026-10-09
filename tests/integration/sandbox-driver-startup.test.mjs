@@ -13,10 +13,12 @@ import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compu
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
+  normalizeServiceUrl,
   OpenShellProviderAlreadyExistsError,
   OpenShellRequestReplayRefusedError,
   OpenShellSandboxAlreadyExistsError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { serviceTarget } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   CredentialSourceRevisionError,
@@ -2423,6 +2425,77 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
   assert.deepEqual(observed, []);
 });
 
+test("OpenShell startup admits exactly the endpoints both consumers can parse and dial", async (t) => {
+  // Each consumer parses the endpoint once per gateway call: the gRPC path through its
+  // service URL normalization, the service transport through its connect target.
+  const consumers = {
+    grpc: (endpoint) => normalizeServiceUrl("http://service.example.test/", endpoint),
+    service: (endpoint) =>
+      serviceTarget({ endpoint, requestTimeoutMs: 1000 }, "http://service.example.test/"),
+  };
+  const throws = (parse, endpoint) => {
+    try {
+      parse(endpoint);
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  // [form, admitted]: one row per shape, each spelled bare, http:// and https:// where it applies.
+  const rows = [
+    ["gateway.example.test:8080", true],
+    ["gateway.example.test:1", true],
+    ["gateway.example.test:65535", true],
+    ["gateway.example.test:080", true],
+    ["127.0.0.1:8080", true],
+    ["[::1]:8080", true],
+    ["gateway.example.test:0", false],
+    ["gateway.example.test:00", false],
+    ["gateway.example.test:65536", false],
+    ["gateway.example.test:99999", false],
+    ["1.2.3.999:8080", false],
+    ["gate%way.example.test:8080", false],
+    ["[::1]:0", false],
+    ["[::1]:65536", false],
+    ["gateway.example.test?x:8080", false],
+    ["user@gateway.example.test:8080", false],
+    ["http://gateway.example.test", true],
+    ["http://gateway.example.test:8080", true],
+    ["http://[::1]:8080", true],
+    ["http://gateway.example.test:0", false],
+    ["http://gateway.example.test:65536", false],
+    ["http://1.2.3.999:8080", false],
+    ["http://gate%way.example.test:8080", false],
+    ["https://gateway.example.test", true],
+    ["https://gateway.example.test:8443", true],
+    ["https://[::1]:8443", true],
+    ["https://gateway.example.test:0", false],
+    ["https://gateway.example.test:65536", false],
+    ["https://1.2.3.999:8443", false],
+  ];
+  for (const [endpoint, admitted] of rows) {
+    const configuration = sandboxInstallation();
+    configuration.backend[0].configuration = { endpoint, insecureTransport: "network-policy" };
+    const failing = Object.entries(consumers)
+      .filter(([, parse]) => throws(parse, endpoint))
+      .map(([name]) => name);
+    if (admitted) {
+      await loadInstallationFile(t, configuration);
+      assert.deepEqual(failing, [], `${endpoint}: admitted but a consumer throws`);
+    } else {
+      await assert.rejects(
+        loadInstallationFile(t, configuration),
+        /configuration\.endpoint must be host:port or an http or https origin, with a port from 1 to 65535/,
+        endpoint,
+      );
+    }
+    // Startup never admits what either consumer would throw on at first use.
+    if (failing.length > 0) {
+      assert.equal(admitted, false, `${endpoint}: ${failing.join(", ")} throws`);
+    }
+  }
+});
+
 test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer can reach", async (t) => {
   const grpc = controllerRequire("@grpc/grpc-js");
   const loader = controllerRequire("@grpc/proto-loader");
@@ -2462,7 +2535,6 @@ test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer
     "[::1]:0",
     "[::1]:65536",
     "[::1]:999999",
-    "[::1%]:8080",
     "[not-an-ip]:8080",
     "[127.0.0.1]:8080",
     "[::1:8080",
@@ -2475,6 +2547,23 @@ test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer
     await assert.rejects(
       loadInstallationFile(t, configuration),
       /configuration.endpoint must be host:port or an http or https origin/,
+      endpoint,
+    );
+  }
+  // Node's isIP accepts a zoned literal, but WHATWG URL (the http:// form and the service
+  // transport) refuses it, so both forms refuse a zone ID with one reason.
+  for (const endpoint of [
+    "[fe80::1%eth0]:8080",
+    "http://[fe80::1%eth0]:8080",
+    "http://[fe80::1%25eth0]:8080",
+    "https://[fe80::1%eth0]:8443",
+    "[::1%]:8080",
+  ]) {
+    const configuration = sandboxInstallation();
+    configuration.backend[0].configuration = { endpoint, insecureTransport: "network-policy" };
+    await assert.rejects(
+      loadInstallationFile(t, configuration),
+      /configuration\.endpoint must not include an IPv6 zone ID/,
       endpoint,
     );
   }

@@ -98,6 +98,13 @@ shows desired state, `LIFECYCLE` (`active` or `deleting`), and the selected
 revision, not runtime health. Run `occ agent deployment-status ID` for the
 latest deployment's status and error, and verify the model separately.
 
+For [unreadable saved Agent settings](agents.md#unreadable-saved-settings),
+`agent get`, `agent list`, and `agent revisions` retain metadata and show
+`CONFIGURATION ERROR` with the affected field. JSON and YAML retain the typed
+`configurationReadError`. Revision history leaves deployment status null for
+unreadable rows; if the Agent itself is unreadable, it skips all status reads
+and explains why on stderr. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
+
 Commands take IDs, not names. The CLI rejects a value without the expected
 prefix, such as `ns_` or `agt_`, and names the list command that shows the ID.
 

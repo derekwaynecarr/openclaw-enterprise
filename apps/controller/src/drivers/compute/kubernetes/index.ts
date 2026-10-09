@@ -936,7 +936,7 @@ const WRITABLE_CONFIGURATION_PATH = "/home/node/.openclaw/openclaw.json";
 const CONFIGURATION_DOCUMENT = "openclaw.json";
 const CONFIGURATION_VOLUME = "openclaw-configuration";
 const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
-const PLUGIN_RUNTIME_STATUS_PORT = 18_791;
+export const PLUGIN_RUNTIME_STATUS_PORT = 18_791;
 const PLUGIN_RUNTIME_STATUS_PATH = "/openclaw/plugin-runtime/status";
 const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
 const RUNTIME_DIAGNOSTICS_PATH = "/openclaw/runtime/diagnostics";
@@ -1694,6 +1694,33 @@ export function kubernetesNamespaceName(namespaceId: string): string {
 
 const KUBELET_LOG_UNAVAILABLE =
   /^unable to retrieve container logs for [a-z][a-z0-9+.-]{0,31}:\/\/[0-9a-f]{1,128}\r?\n?$/;
+
+function kubernetesRuntimeLogLine(line: string): AgentRuntimeLogChunk["lines"][number] {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d{1,9})?(Z|[+-]\d{2}:\d{2}) (.*)$/s.exec(
+    line,
+  );
+  if (match === null) {
+    return { time: null, raw: line };
+  }
+  const date = match[1]!;
+  const fraction = match[2] ?? "";
+  const zone = match[3]!;
+  const raw = match[4]!;
+  if (zone === "Z") {
+    return { time: `${date}${fraction}Z`, raw };
+  }
+  const parsed = Date.parse(`${date}${zone}`);
+  if (!Number.isFinite(parsed) || new Date(`${date}Z`).toISOString().slice(0, 19) !== date) {
+    return { time: null, raw: line };
+  }
+  const utc = new Date(parsed).toISOString();
+  // The existing UTC cursor format accepts four-digit years only.
+  if (utc.length !== 24) {
+    return { time: null, raw: line };
+  }
+  // Offset conversion changes whole seconds; retain the original nanosecond fraction.
+  return { time: `${utc.slice(0, 19)}${fraction}Z`, raw };
+}
 
 function previousKubernetesNamespaceName(namespaceId: string): string {
   const id = required(namespaceId, "Platform Namespace ID");
@@ -2607,6 +2634,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     validatePeer(options.network.dns, "DNS peer");
     validatePort(options.network.gatewayPort, "Gateway port");
+    // Plugin status also serves on 18791 without a native runtime (OpenClaw Gateways
+    // with enabled plugins), so the reservation does not depend on options.runtime.
+    if (options.network.gatewayPort === PLUGIN_RUNTIME_STATUS_PORT) {
+      throw new ConfigurationFailure(
+        `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+      );
+    }
     trustedProxyCidrSet(options.network.gatewayTrustedProxyCidrs, "Trusted proxy CIDR");
     if (options.network.pluginStatusProxySourceCidrs !== undefined) {
       if (!Array.isArray(options.network.pluginStatusProxySourceCidrs)) {
@@ -2811,6 +2845,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         validatePort(options.network.gatewayPort + 1, "Gateway sandbox port");
         if (options.runtime === undefined) {
           throw new ConfigurationFailure("Sandbox routing requires a native Gateway runtime.");
+        }
+        if (options.network.gatewayPort + 1 === PLUGIN_RUNTIME_STATUS_PORT) {
+          throw new ConfigurationFailure(
+            `Gateway sandbox port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+          );
         }
       }
     }
@@ -3566,10 +3605,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           0,
       },
       observedAt: new Date().toISOString(),
-      lines: lines.map((line) => {
-        const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z) (.*)$/s.exec(line);
-        return match === null ? { time: null, raw: line } : { time: match[1]!, raw: match[2]! };
-      }),
+      lines: lines.map(kubernetesRuntimeLogLine),
       truncated,
     };
   }
@@ -10261,6 +10297,26 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       throw new GatewaySettingFailure(
         "gateway.auth.identityScopes",
         `must grant only ${TRUSTED_PROXY_IDENTITY} operator.admin when set`,
+      );
+    }
+    // OpenClaw binds its MCP Apps sandbox listener on mcp.apps.sandboxPort, else
+    // gatewayPort + 1: at startup when MCP Apps are enabled, lazily otherwise. The private
+    // status listener binds first, so the Gateway would fail with EADDRINUSE on 18791.
+    const apps = asRecord(asRecord(configuration.mcp)?.apps);
+    if (apps?.sandboxPort === PLUGIN_RUNTIME_STATUS_PORT) {
+      throw new GatewaySettingFailure(
+        "mcp.apps.sandboxPort",
+        `cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}`,
+      );
+    }
+    if (
+      apps?.sandboxPort === undefined &&
+      apps?.enabled === true &&
+      this.options.network.gatewayPort + 1 === PLUGIN_RUNTIME_STATUS_PORT
+    ) {
+      throw new GatewaySettingFailure(
+        "mcp.apps.sandboxPort",
+        `must be set when MCP Apps are enabled: its default, the Gateway port + 1, is the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}`,
       );
     }
     return {

@@ -929,6 +929,7 @@
               "flows/container-package-bootstrap",
               "flows/container-publication",
               "flows/cli-publication",
+              "flows/cli-agent-browsing",
               "flows/github-actions-testing/preparation",
               "testing/postgresql",
               "testing/images",

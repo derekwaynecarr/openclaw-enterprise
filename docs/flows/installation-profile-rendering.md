@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-10
-last_updated_session: authoring-run/4a617af9-0745-4870-a679-848dba61de53
+last_updated_session: authoring-run/c4350829-13f6-40e0-902f-9d96e622a27c
 ---
 
 # Installation Profile Rendering Flow
@@ -134,12 +134,15 @@ repository broker Secrets when enabled, and every provider checked before it.
 Kubernetes label-key and label-value rules (values may be empty). Compute copies
 the runtime selectors into Pod specs, where Kubernetes applies the same rule.
 Invalid placement labels fail preflight without deployment files; legal YAML
-lookalike values remain strings. The bootstrap password claim name must be a DNS
-subdomain of at most 253 characters total, as are qualified node-label prefixes.
-Their segments are not capped at 63; Namespace and unqualified label names remain
-limited to 63. The chart and `scripts/prepare-bootstrap-volume:is_dns_subdomain`
-apply the same Kubernetes validation. A repository Backend ID follows its rule within
-200 UTF-16 code units, as in the chart.
+lookalike values remain strings. `peerSelector` applies Compute's `validatePeer`
+rule to DNS, API client and metrics scraper selectors. Both selector kinds use
+Kubernetes label keys and values, including empty values. Their qualified
+prefixes and bootstrap password claim names are DNS subdomains of at most 253
+characters total, without a per-segment cap. Namespace names and unqualified
+label names/values retain their 63 limit. The chart and
+`scripts/prepare-bootstrap-volume:is_dns_subdomain` share this prefix/claim
+rule; the chart checks peers only for nonempty maps. Repository Backend IDs
+follow their rule within 200 UTF-16 code units, as in the chart.
 
 ### 4. Build Helm values
 
@@ -148,6 +151,15 @@ apply the same Kubernetes validation. A repository Backend ID follows its rule w
 An optional `controlPlane.databaseCa.key` must be a simple basename. The chart
 refuses `.`, `..`, and any other key that is not letters, digits, `.`, `_`, or
 `-`. Omit the key to use `ca.pem`.
+
+`validateDatabaseCaMount` checks the generated values against the chart's active
+database-client mounts. With a database CA Secret, `mountPath` cannot equal the
+Installation, worker runtime, bootstrap, gateway key, or private gateway CA mount.
+Repository mounts are reserved only when repository credentials are enabled;
+the ChatGPT mount is reserved only when managed service accounts are configured.
+Profiles do not enable execution-cluster mounts. No CA configuration adds no
+restriction; an omitted path keeps `/etc/openclaw/database-ca`. A collision adds
+a field-specific preflight error and prevents both deployable files.
 
 The Helm values select the control-plane image, Better Auth base URL,
 bootstrap administrator, database and cluster egress CIDRs, API client
@@ -269,7 +281,17 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
+- 2026-10-10 02:33: Merge current main while retaining selector owners and Kubernetes DNS-subdomain parity. (authoring-run/c4350829-13f6-40e0-902f-9d96e622a27c - db4ccbdea96a752cd99a66cf4cf02c195f5fe3ba)
+
+- 2026-10-10 01:15: Retain the CA mount and incoming peer-selector changelog entries when merging the latest main at maintainer request. (authoring-run/2a354440-5009-424f-8f64-47a48128bd1c - 0ebf6ef99f547dab45923cf459bf96242723e845)
+
+- 2026-10-10 00:58: Merge current profile preflight rules while retaining database CA mount validation and its independent parity coverage. (authoring-run/3bc71672-b18b-4cc7-9189-6d0d77957cc4 - ba439186dbd131073c038eba4645d255cc8c128b)
+
 - 2026-10-10 00:30: Match Kubernetes DNS-subdomain limits in the accompanying setup validation change. (authoring-run/4a617af9-0745-4870-a679-848dba61de53 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
+
+- 2026-10-09 23:58: Reject database CA mount collisions with the active mounts selected by installation profiles. (authoring-run/19832129-1f67-41f2-8961-d10c648012fd - e6d0571907da6bc6d40eed3e1f8125f7dd332e99)
+
+- 2026-10-09: Check DNS, API client and metrics scraper selectors with Compute's peer label rule, allowing empty values.
 
 - 2026-10-09: Apply the chart's sign-in Secret, runtime node selector, claim name and Backend ID rules, and escape characters Helm's YAML parser changes.
 
