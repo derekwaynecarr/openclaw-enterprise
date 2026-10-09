@@ -565,6 +565,57 @@ test("Helm catches generated profile Secret collisions", { skip: helmSkip }, () 
   );
 });
 
+function withGitHubSignIn(input, github) {
+  const {
+    agentNativeAdminDomain: _domain,
+    sharedCookieDomain: _cookieDomain,
+    ...controlPlane
+  } = input.controlPlane;
+  return {
+    ...input,
+    controlPlane: { ...controlPlane, recoveryUserId: "recovery-admin_1", github },
+  };
+}
+
+test(
+  "preflight refuses sign-in Secrets that ChatGPT or repository credentials use, as Helm does",
+  { skip: helmSkip },
+  () => {
+    const input = managedCodexInput({ repository: repositoryConfiguration() });
+    const accepted = render("codex", withGitHubSignIn(input, {}));
+    assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+    helmTemplate(accepted);
+    for (const secretName of [
+      "occ-chatgpt-admin",
+      "occ-repository-service-config",
+      "occ-repository-app-key",
+      "occ-repository-tls",
+      "occ-repository-public-ca",
+    ]) {
+      assertPreflightFailure(
+        "codex",
+        withGitHubSignIn(input, { secretName }),
+        /controlPlane\.github\.secretName must name a dedicated Secret/,
+      );
+      // The same name placed over the accepted values makes the chart refuse it too.
+      const override = join(accepted.directory, `github-${secretName}.json`);
+      writeFileSync(override, JSON.stringify({ auth: { github: { secretName } } }));
+      const error = renderError(() => helmTemplate(accepted, [override]));
+      assert.match(
+        `${error.stdout ?? ""}${error.stderr ?? ""}`,
+        /auth\.github credentials must use a (dedicated Secret|Secret distinct from repositoryCredentials)/,
+      );
+    }
+    // Without managed ChatGPT accounts the chart does not reserve that Secret name.
+    const unmanaged = render(
+      "codex",
+      withGitHubSignIn(codexInput(), { secretName: "occ-chatgpt-admin" }),
+    );
+    assert.equal(unmanaged.summary.ok, true, unmanaged.preflight.errors.join("\n"));
+    helmTemplate(unmanaged);
+  },
+);
+
 test("label values that YAML 1.1 would retype stay strings", () => {
   const labels = {
     spot: "no",
