@@ -5308,15 +5308,6 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     [{ entries: { main: {}, helper: {} } }, multiRefusal],
     [{ ownership: "shared", entries: { main: {} } }, ownershipRefusal],
   ];
-  for (const [harness, configure] of topologies) {
-    for (const [agents, message] of rejectedRosters) {
-      assert.throws(
-        () => driver.validateHarnessAuth(harness, apiKeyAuth, configure(agents)),
-        (error) => error instanceof ConfigurationHarnessError && error.message === message,
-        `${harness.mode} ${harness.id} ${JSON.stringify(agents)}`,
-      );
-    }
-  }
   for (const agents of [
     // OpenClaw reads an empty roster as `{ main: {} }` and drops an empty list beside it.
     { entries: {} },
@@ -5384,7 +5375,10 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   const longKey = "k.".repeat(200);
   for (const [harness, configure] of topologies) {
     for (const [configuration, message] of [
-      ...malformedRosters.map(([agents, message]) => [configure(agents), message]),
+      ...[...rejectedRosters, ...malformedRosters].map(([agents, message]) => [
+        configure(agents),
+        message,
+      ]),
       [{ ...configure({}), agents: null }, "The OpenClaw Gateway requires agents to be an object."],
       [{ ...configure({}), agents: [] }, "The OpenClaw Gateway requires agents to be an object."],
     ]) {
