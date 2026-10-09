@@ -139,6 +139,7 @@ const cidrCases = [
   ["::ffff:c000:201/32", true],
   ["::/96", true],
   ["::/81", true],
+  ["::FFFF:C000:201/24", true],
   ["fe80::1%eth0/64", false, /contains an invalid IPv6 address|requires IPv4 or IPv6 CIDRs/],
   ["::ffff:192.0.2.1/96", false, /IPv4-mapped address, whose prefix must be 1 through 32/],
   ["::ffff:192.0.2.1/128", false, /IPv4-mapped address, whose prefix must be 1 through 32/],
@@ -148,6 +149,9 @@ const cidrCases = [
   ["::/64", false, /must not trust every address/],
   ["::/1", false, /must not trust every address/],
   ["::fffe:0:0/95", false, /must not trust every address/],
+  ["::1.2.3.4/80", false, /must not trust every address/],
+  ["::8000:0:0/81", false, /must not trust every address/],
+  ["0:0:0:0:0:ffff:192.0.2.1/33", false, /IPv4-mapped address, whose prefix must be 1 through 32/],
   ["2001:db8::/0", false, /requires IPv4 or IPv6 CIDRs with a nonzero prefix/],
   ["10.42.0.0/33", false, /requires IPv4 or IPv6 CIDRs with a nonzero prefix/],
 ];
@@ -170,7 +174,9 @@ test(
   },
 );
 
-test("trusted proxy CIDR rules match the API apart from zone IDs", () => {
+// The API is looser than the chart on input outside this table: it trims whitespace and
+// takes a bare address as a single host. Preflight and the chart refuse both.
+test("every trusted proxy CIDR in the table gets the API's verdict, apart from zone IDs", () => {
   for (const [cidr, accepted] of cidrCases) {
     const configure = () =>
       clientAddressConfiguration({
