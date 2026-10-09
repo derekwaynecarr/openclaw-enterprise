@@ -6,6 +6,8 @@ namespace ownership for the [Kubernetes Compute Driver](../kubernetes-compute.md
 ## Networking
 
 Configure the cluster DNS namespace and Pod labels and the gateway port.
+Every peer namespace must be a Kubernetes namespace name, a DNS label of at most
+63 characters; startup refuses others.
 Set `network.gatewayTrustedProxyCidrs` to nonempty, valid CIDRs for the proxy
 socket sources. This trusted Installation setting has no production default and
 rejects all-source ranges, including IPv4-mapped equivalents. Without private
