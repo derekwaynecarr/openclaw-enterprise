@@ -12723,15 +12723,20 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         name: HARNESS_WORKSPACE_VOLUME,
         mountPath: "/harness-workspace-state",
       });
-      const preparation = harnessWorkspacePreparationScript(
+      (initialization.args as string[])[0] += `\n${harnessWorkspacePreparationScript(
         harnessWorkspaceCategories(oauth).map(([subPath]) => `/harness-workspace-state/${subPath}`),
-      );
-      // An OAuth home starts without earlier history, as a new OAuth source does. A revision
-      // without OAuth must not leave a personal login refreshing on the volume.
-      const removal = harnessStateRemovalScript(
-        `/harness-workspace-state/${oauth ? "codex-sessions" : "codex-home"}`,
-      );
-      (initialization.args as string[])[0] += `\n${preparation}\n${removal}`;
+      )}`;
+      if (oauth) {
+        // An OAuth home starts without earlier history, as a new OAuth source does.
+        (initialization.args as string[])[0] += `\n${harnessStateRemovalScript(
+          "/harness-workspace-state/codex-sessions",
+        )}`;
+      } else {
+        // A revision without OAuth must not leave a personal login refreshing on the volume.
+        (initialization.args as string[])[0] += `\n${harnessStateRemovalScript(
+          "/harness-workspace-state/codex-home",
+        )}`;
+      }
     }
     if (dedicated && role === "gateway") {
       // This is the logical workspace key; file access goes through the paired node.
