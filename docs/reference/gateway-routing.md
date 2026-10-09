@@ -201,7 +201,7 @@ Helm's `gatewayRouting` settings configure shared infrastructure:
 | `gatewayClassName`             | Required existing Envoy GatewayClass.                                                                                                                     |
 | `gatewayName`                  | `<release>-agent-gateways`. An explicit name must be a DNS-safe Kubernetes resource name of at most 63 characters, the same rule Compute uses at startup. |
 | `envoyNamespace`               | `envoy-gateway-system`. Must be a Kubernetes namespace name: a DNS label of at most 63 characters.                                                        |
-| `hostname`                     | Empty derives the Service DNS hostname.                                                                                                                   |
+| `hostname`                     | Empty derives Service DNS; custom lowercase DNS hostnames fit 253 characters total, 63 per label, without a port or path.                                 |
 | `apiKeySecretName`             | Required operator-created Secret with entry `occ`.                                                                                                        |
 | `issuerRef.name`               | Empty creates the private CA and issuers.                                                                                                                 |
 | `issuerRef.kind` / `group`     | `ClusterIssuer` / `cert-manager.io` for an explicit issuer.                                                                                               |
