@@ -302,11 +302,19 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   ) {
     leading.push(runtimeLogGap("window_exceeded", observedStream, earliest));
   }
+  // Legacy cursors carry no count: a history below the maximum dropped no hash.
+  const resumeCount =
+    resume === undefined
+      ? 0
+      : (resume.frontierCount ??
+        (resume.lastHashes.length < RUNTIME_LOG_MAX_FRONTIER_HASHES
+          ? resume.lastHashes.length
+          : undefined));
   if (resume !== undefined && !replacedDuringRead) {
     const lastTime = resume.lastTime!;
-    const complete =
-      resume.frontierComplete === true &&
-      resume.lastHashes.length < RUNTIME_LOG_MAX_FRONTIER_HASHES;
+    // The hashes cover every line delivered at `lastTime` only while the count fits.
+    const fullHistory = resumeCount === resume.lastHashes.length;
+    const complete = resume.frontierComplete === true && fullHistory;
     const remaining = new Map<string, number>();
     for (const hash of resume.lastHashes) {
       remaining.set(hash, (remaining.get(hash) ?? 0) + 1);
@@ -321,6 +329,31 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     ) {
       leading.push(runtimeLogGap("window_exceeded", observedStream, earliest));
     }
+    // A complete frontier delivered its timestamp group from the group's first line,
+    // in log order. When this read is ordered and also holds the group's first line
+    // (it starts earlier, or is a short uncut page), the first `resumeCount` lines at
+    // `lastTime` are the delivered ones whatever their text, so a group larger than
+    // the hash history neither replays nor hides later lines. The remembered hashes
+    // must match the end of that run; otherwise hashes decide, as below.
+    const group = completeLines.filter(
+      (line) => line.time !== null && compareRuntimeLogTime(line.time, lastTime) === 0,
+    );
+    const positional =
+      resume.frontierComplete === true &&
+      resumeCount !== undefined &&
+      group.length >= resumeCount &&
+      ((earliest !== null && compareRuntimeLogTime(earliest, lastTime) < 0) ||
+        (chunk.lines.length < query.tailLines && !chunk.truncated)) &&
+      completeLines.every(
+        (line, index) =>
+          validRuntimeLogFrontierTime(line.time) &&
+          (index === 0 || compareRuntimeLogTime(line.time, completeLines[index - 1]!.time!) >= 0),
+      ) &&
+      resume.lastHashes.every(
+        (hash, index) =>
+          runtimeLogLineHash(group[resumeCount - resume.lastHashes.length + index]!.raw) === hash,
+      );
+    let groupIndex = 0;
     lines = lines.filter((line) => {
       if (line.time === null) {
         return true;
@@ -329,14 +362,19 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       if (order !== 0) {
         return order > 0;
       }
+      if (positional) {
+        groupIndex += 1;
+        return groupIndex > resumeCount!;
+      }
       // Equal text at the frontier can be a new occurrence. Consume only the
       // occurrences delivered before this poll, including repeated hashes.
       const hash = runtimeLogLineHash(line.raw);
       const count = remaining.get(hash) ?? 0;
       if (count === 0) {
-        // An incomplete tail or full cursor may have omitted earlier copies.
-        // Matching text cannot establish a new occurrence until time advances.
-        return complete || !remaining.has(hash);
+        // An incomplete tail or full cursor may have omitted earlier copies, and a
+        // full history forgot earlier delivered text. Neither can establish a new
+        // occurrence until time advances.
+        return complete || (fullHistory && !remaining.has(hash));
       }
       remaining.set(hash, count - 1);
       return false;
@@ -469,9 +507,11 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   let lastTime = kept ? resume.lastTime : null;
   let lastHashes = kept ? [...resume.lastHashes] : [];
   let frontierComplete = kept ? resume.frontierComplete === true : false;
+  let frontierCount = kept ? resumeCount : 0;
   if (last !== undefined) {
     if (lastTime === null || compareRuntimeLogTime(last.time!, lastTime) !== 0) {
       lastHashes = [];
+      frontierCount = 0;
       // The first fetched timestamp can have been clipped by the requested tail.
       // A later frontier starts inside the fetched range; otherwise only a short,
       // uncut Driver page proves that no earlier copies were outside the tail.
@@ -484,6 +524,9 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     for (const line of delivered) {
       if (line.time !== null && compareRuntimeLogTime(line.time, lastTime!) === 0) {
         lastHashes.push(runtimeLogLineHash(line.raw));
+        if (frontierCount !== undefined) {
+          frontierCount += 1;
+        }
       }
     }
   }
@@ -496,6 +539,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     lastTime,
     lastHashes: lastHashes.slice(-RUNTIME_LOG_MAX_FRONTIER_HASHES),
     frontierComplete,
+    ...(frontierCount === undefined ? {} : { frontierCount }),
     ...(sanitized.pemOpen === undefined ? {} : { pemOpen: sanitized.pemOpen, pemAfterTime }),
     issuedAt: readStartedAt,
   };
