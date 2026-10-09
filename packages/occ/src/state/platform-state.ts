@@ -367,6 +367,17 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
   requestCredentialWithdrawal(
     withdrawal: CredentialWithdrawal,
   ): Promise<Readonly<CredentialWithdrawal>>;
+  /**
+   * Makes `requestedBy` the requester of a pending withdrawal: the principal whose
+   * `agent:operate` the worker rechecks. `requestedAt` keeps the first request's time, and a
+   * revoked withdrawal never changes.
+   */
+  reassignCredentialWithdrawal(
+    namespaceId: string,
+    revisionId: string,
+    credentialSourceId: string,
+    requestedBy: string,
+  ): Promise<Readonly<CredentialWithdrawal> | undefined>;
   /** Records the worker's latest outcome code on a pending withdrawal. */
   recordCredentialWithdrawalAttempt(
     namespaceId: string,
@@ -1745,6 +1756,26 @@ function repositories(
       );
       return immutableCopy(saved);
     },
+    reassignCredentialWithdrawal: async (
+      namespaceId,
+      revisionId,
+      credentialSourceId,
+      requestedBy,
+    ) => {
+      const current = await findCredentialWithdrawal(namespaceId, revisionId, credentialSourceId);
+      if (current === undefined || current.state !== "pending") {
+        return undefined;
+      }
+      if (!isNonEmptyString(requestedBy)) {
+        throw new ScopeViolationError("A credential withdrawal requester is missing.");
+      }
+      const saved = immutableCopy({ ...current, requestedBy });
+      snapshot.credentialWithdrawals.set(
+        withdrawalKey(namespaceId, revisionId, credentialSourceId),
+        saved,
+      );
+      return immutableCopy(saved);
+    },
     recordCredentialWithdrawalAttempt: async (
       namespaceId,
       revisionId,
@@ -2271,12 +2302,15 @@ function repositories(
         throw new ScopeViolationError("The Agent references an unavailable Configuration.");
       }
       await assertConfigurationUsableByAgent(configurations, secrets, namespaceId, configurationId);
+      // Like PostgreSQL, only a supplied binding must be available; omission keeps the stored one.
+      if (harnessAuth !== undefined) {
+        await assertHarnessAuthAvailable(
+          { secrets, serviceAccounts, credentialSources },
+          namespaceId,
+          harnessAuth,
+        );
+      }
       const association = harnessAuth === undefined ? current.harnessAuth : harnessAuth;
-      await assertHarnessAuthAvailable(
-        { secrets, serviceAccounts, credentialSources },
-        namespaceId,
-        association,
-      );
       await assertAgentCredentialSourcesAvailable(
         { credentialSources },
         namespaceId,

@@ -10,6 +10,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const profilesDir = resolve(repoRoot, "deploy/profiles");
 const allowedProfiles = new Set(["openclaw", "codex"]);
+const helmReleaseName = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
 const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
 // The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
 // The shape check alone still matches 192.0.2.999 and port 99999.
@@ -360,15 +361,21 @@ function stringArray(
   return value;
 }
 
+// parseCidr accepts only "0" or a decimal prefix with no leading zero. Number("08") is 8,
+// which would admit a prefix the API and the chart both refuse.
+function decimalPrefix(rawPrefix) {
+  if (!/^(0|[1-9][0-9]*)$/.test(rawPrefix ?? "")) {
+    return Number.NaN;
+  }
+  return Number(rawPrefix);
+}
+
 function isIpv4Cidr(value, requiredPrefix) {
   const [address, rawPrefix, extra] = value.split("/");
   if (extra !== undefined || rawPrefix === undefined || isIP(address) !== 4) {
     return false;
   }
-  if (!/^[0-9]+$/.test(rawPrefix)) {
-    return false;
-  }
-  const prefix = Number(rawPrefix);
+  const prefix = decimalPrefix(rawPrefix);
   if (!Number.isSafeInteger(prefix) || prefix < 1 || prefix > 32) {
     return false;
   }
@@ -475,11 +482,11 @@ const passwordSignInPolicies = ["all", "recovery-only"];
 function isCidr(value) {
   const [address, rawPrefix, extra] = value.split("/");
   const family = isIP(address ?? "");
-  if (extra !== undefined || family === 0 || !/^[0-9]+$/.test(rawPrefix ?? "")) {
+  if (extra !== undefined || family === 0) {
     return false;
   }
-  const prefix = Number(rawPrefix);
-  return prefix >= 1 && prefix <= (family === 4 ? 32 : 128);
+  const prefix = decimalPrefix(rawPrefix);
+  return Number.isSafeInteger(prefix) && prefix >= 1 && prefix <= (family === 4 ? 32 : 128);
 }
 
 function signInProvider(source, name, diagnostics) {
@@ -877,7 +884,10 @@ function buildRendered(profile, parsed, diagnostics) {
     oidc,
     trustedProxy,
   } = parsed;
-  const releaseName = asString(controlPlane, ["controlPlane", "releaseName"], diagnostics);
+  const releaseName = asString(controlPlane, ["controlPlane", "releaseName"], diagnostics, {
+    validate: (value) => value.length <= 53 && helmReleaseName.test(value),
+    description: "a valid Helm release name of at most 53 characters",
+  });
   const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics);
   const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics);
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
