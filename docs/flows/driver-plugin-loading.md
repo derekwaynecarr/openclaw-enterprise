@@ -80,7 +80,8 @@ extension, directory index or `main` lookup, and an encoded separator or
 directory is refused. Package containment, the compiled ESM check, and import
 must then succeed before Driver construction. The entry must be `.mjs`, or `.js`
 whose nearest `package.json` (searched from the entry's directory up to the
-package root, as Node's import does) declares `"type": "module"`. Missing files and import failures do
+package root, stopping at a `node_modules` directory, as Node's import does)
+declares `"type": "module"`. Missing files and import failures do
 not select another target.
 
 For packageless Compute, the exact id `compute-ssh` selects `SshComputeDriver`

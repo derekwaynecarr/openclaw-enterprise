@@ -125,6 +125,16 @@ function rootExportTarget(exports: unknown, manifestUrl: URL, path: string): Exp
   return exportTarget(exports, manifestUrl, path);
 }
 
+const ABSENT_MANIFEST_ERRORS: ReadonlySet<string> = new Set([
+  "EACCES",
+  "EISDIR",
+  "ELOOP",
+  "ENAMETOOLONG",
+  "ENOENT",
+  "ENOTDIR",
+  "EPERM",
+]);
+
 /**
  * The "type" Node's package.json reader gives a package scope. It matches top-level keys by
  * their raw (still escaped) text and keeps the last "type" string that is "module" or
@@ -173,8 +183,18 @@ async function entryPackageType(
     basename(directory) !== "node_modules";
     directory = dirname(directory)
   ) {
-    // Node treats a package.json it cannot read as absent and keeps walking.
-    const read = await readFile(join(directory, "package.json"), "utf8").catch(() => undefined);
+    let read: string | undefined;
+    try {
+      read = await readFile(join(directory, "package.json"), "utf8");
+    } catch (error) {
+      // Node treats a package.json it cannot open or read as absent and keeps walking. Any
+      // other failure, such as ERR_STRING_TOO_LONG for a manifest Node still reads, fails closed.
+      if (!ABSENT_MANIFEST_ERRORS.has(String((error as NodeJS.ErrnoException).code))) {
+        throw new Error(`${path}.package cannot read package scope metadata.`, {
+          cause: error,
+        });
+      }
+    }
     if (read !== undefined) {
       // Node's reader skips a byte order mark.
       const text = read.replace(/^\uFEFF/, "");
@@ -307,7 +327,8 @@ export async function loadDriverPackage(
   if (contained === "" || contained.startsWith("..") || isAbsolute(contained)) {
     throw new Error(`${path}.package entry escapes its installed package root.`);
   }
-  // Node loads `.mjs` as ESM and `.js` by the nearest package.json scope, not the root's.
+  // Node loads `.mjs` as ESM without reading a package scope, and `.js` by the nearest
+  // package.json scope, not the root's.
   const extension = extname(entryPath);
   if (
     extension !== ".mjs" &&
