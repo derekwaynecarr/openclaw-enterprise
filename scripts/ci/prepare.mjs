@@ -2296,6 +2296,15 @@ async function prepareLane({ lane, statePath }) {
         ]),
       );
       Object.assign(env, built.env);
+      if (name === "images-runtime-startup") {
+        await timedPreparation(name, "workspace-envoy-image", () =>
+          ensureDockerSourceImage(
+            state,
+            effectiveLaneEnv(name, env).OCC_TEST_WORKSPACE_ENVOY_IMAGE,
+            "OCC_TEST_WORKSPACE_ENVOY_IMAGE",
+          ),
+        );
+      }
       if (codexSeccomp) {
         await prepareRuntimeSmokeCodexSeccompProfile(resolvedStatePath, state, env, cluster);
       }
