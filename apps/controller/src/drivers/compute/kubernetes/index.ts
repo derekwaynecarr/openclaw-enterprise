@@ -2621,6 +2621,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
       required(transportSecretPrefix, "Agent transport Secret name prefix");
+      // Credential provisioning builds `<prefix>-<12 hex>` and refuses a name that is
+      // not DNS-safe. Check that shape here so startup fails before an Agent is created.
+      try {
+        validateKubernetesResourceName(
+          `${transportSecretPrefix}-${"a".repeat(12)}`,
+          "Agent runtime credential Secret name",
+        );
+      } catch (error) {
+        if (error instanceof ConfigurationFailure) {
+          throw new ConfigurationFailure(
+            "runtime.transportSecretPrefix must produce a DNS-safe Agent transport Secret name, including its 12-character suffix.",
+          );
+        }
+        throw error;
+      }
       required(options.runtime.gatewayStorageClassName, "SQLite-compatible gateway storage class");
       const nativeOpenClawSessionCapacity = options.runtime.nativeOpenClawSessionCapacity;
       if (
