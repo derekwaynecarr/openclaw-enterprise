@@ -201,6 +201,13 @@ function validateOpenShellBackend(
   }
   const { endpoint, scheme, serviceName, port, requestTimeoutMs, rootCertificatePath } =
     configuration;
+  // WHATWG URL refuses an IPv6 zone ID (fe80::1%eth0) in either form, so the service
+  // transport cannot dial one even where gRPC could; name the reason instead of the shape.
+  if (typeof endpoint === "string" && /\[[^\]]*%/.test(endpoint)) {
+    throw new ScopeViolationError(
+      path(id, "configuration.endpoint") + " must not include an IPv6 zone ID (%).",
+    );
+  }
   if (endpoint !== undefined && !validGatewayEndpoint(endpoint)) {
     throw new ScopeViolationError(
       path(id, "configuration.endpoint") + " must be host:port or an http or https origin.",
