@@ -225,6 +225,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if eq .Values.bootstrap.password.fileName .Values.bootstrap.serviceKey.fileName -}}
 {{- fail "bootstrap service key and password output file names must be distinct" -}}
 {{- end -}}
+{{- /* The bootstrap Job's bootstrapOutputPath requires an absolute file. A relative mount path joins into a relative OCC_BOOTSTRAP_PASSWORD_FILE. */ -}}
+{{- if not (hasPrefix "/" (toString .Values.bootstrap.password.mountPath)) -}}
+{{- fail "bootstrap.password.mountPath must be an absolute path" -}}
+{{- end -}}
 {{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. */ -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString .Values.api.port))) (gt (int .Values.api.port) 65535) -}}
 {{- fail "api.port must be an integer TCP port from 1 to 65535" -}}
