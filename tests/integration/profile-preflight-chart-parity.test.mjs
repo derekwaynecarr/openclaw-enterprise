@@ -239,3 +239,30 @@ test(
     }
   },
 );
+
+test(
+  "controller image references get the same verdict from preflight and the chart",
+  { skip: helmSkip },
+  () => {
+    const digest = `@sha256:${"a".repeat(64)}`;
+    const refs = [
+      ["registry.example.invalid/controller", true],
+      ["registry.example.invalid/foo_bar", true],
+      ["registry.example.invalid:5000/team/controller:release_1", true],
+      ["registry.example.invalid/foo+bar", false],
+      ["registry.example.invalid/controller?tag", false],
+      ["-registry.example.invalid/controller", false],
+      ["_registry.example.invalid/controller", false],
+    ];
+    for (const [name, accepted] of refs) {
+      const controllerImage = name + digest;
+      assertParity({
+        label: name,
+        controlPlane: { controllerImage },
+        values: { images: { controller: controllerImage } },
+        accepted,
+        chartError: /images\.controller must be an approved immutable SHA-256 image reference/,
+      });
+    }
+  },
+);

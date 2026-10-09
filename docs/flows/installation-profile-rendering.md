@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-09
-last_updated_session: authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52
+last_updated_session: authoring-run/9a3fd823-79af-431c-b422-44c0ba255013
 ---
 
 # Installation Profile Rendering Flow
@@ -91,6 +91,11 @@ Preflight checks `controlPlane.releaseName` against Helm's lowercase release-nam
 syntax and 53-character maximum. The shared `digestImage` check in `buildRendered`
 requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters for
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`.
+`controllerDigestImage` additionally applies the chart and bootstrap-volume
+helper's reference rule to `controlPlane.controllerImage`: a letter or digit
+first, then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest.
+This controller-specific rule does not change runtime or repository image inputs.
+
 Noncanonical digest casing adds a field-specific diagnostic; the final error
 branch writes only `preflight.json`, leaving no deployable artifacts.
 
@@ -222,6 +227,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 21:03: Validate controller image references before emitting profile files. (authoring-run/9a3fd823-79af-431c-b422-44c0ba255013 - b62cf404ed354079e1c51b64a1e664b3c66c0262)
 
 - 2026-10-09: Accept empty control-plane placement label values, as Kubernetes does.
 
