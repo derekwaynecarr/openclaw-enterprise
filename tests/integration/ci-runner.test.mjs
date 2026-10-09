@@ -668,6 +668,77 @@ test(
   },
 );
 
+test(
+  "run kills what a passing file left in its process group",
+  { skip: process.platform !== "linux" && "reads /proc" },
+  async (t) => {
+    const root = await fixture(t);
+    const recordPath = join(root, "state/leftover-pids.json");
+    // The file passes and exits; its grandchild, unref'd, would run on for a minute.
+    await writeFile(
+      join(root, "tests/integration/leftover.test.mjs"),
+      [
+        'import { spawn } from "node:child_process";',
+        'import { readFileSync, writeFileSync } from "node:fs";',
+        'import test from "node:test";',
+        'test("passes and leaves a process behind", () => {',
+        '  const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });',
+        "  grandchild.unref();",
+        '  const pgid = Number(readFileSync(`/proc/${grandchild.pid}/stat`, "utf8").replace(/^.*\\) /su, "").split(" ")[2]);',
+        "  writeFileSync(process.env.CI_RUNNER_ORPHAN_RECORD, JSON.stringify({ runner: process.ppid, grandchild: grandchild.pid, pgid }));",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      lanes: { leftover: { files: [{ path: "tests/integration/leftover.test.mjs" }] } },
+      groups: { ci: ["leftover"] },
+    });
+    let pids;
+    t.after(() => {
+      const pid = pids?.grandchild;
+      if (Number.isSafeInteger(pid) && pid > 1 && procStat(pid)?.pgid === pids.pgid) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    });
+
+    const result = run(
+      root,
+      [
+        "run",
+        "leftover",
+        "--manifest",
+        "manifest.json",
+        "--root",
+        root,
+        "--state",
+        join(root, "state/leftover.json"),
+        "--results",
+        join(root, "results/leftover.json"),
+      ],
+      { CI_RUNNER_ORPHAN_RECORD: recordPath },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    pids = JSON.parse(await readFile(recordPath, "utf8"));
+    assert.equal(pids.pgid, pids.runner);
+    const deadline = Date.now() + 5_000;
+    const alive = () => {
+      const stat = procStat(pids.grandchild);
+      return stat !== undefined && stat.state !== "Z" && stat.pgid === pids.pgid;
+    };
+    while (alive() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(alive(), false);
+  },
+);
+
 test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from artifacts", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/redacted.json");
