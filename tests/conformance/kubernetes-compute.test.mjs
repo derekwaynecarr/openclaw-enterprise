@@ -10071,19 +10071,22 @@ test(
     await chmod(`${root}/workspace/read-only`, 0o700);
     await chmod(`${root}/generated-images/images`, 0o700);
 
-    // An entry the init cannot move names its owner and the chown that frees it.
-    await mkdir(`${root}/.workspace.kubelet-created`);
-    await writeFile(`${root}/.workspace.kubelet-created/locked.md`, "locked");
+    // An entry the init cannot move names its owner and what frees it, and a read-only
+    // directory that stays aside keeps its mode.
+    await mkdir(`${root}/.workspace.kubelet-created/held`, { recursive: true });
+    await chmod(`${root}/.workspace.kubelet-created/held`, 0o555);
     await chmod(`${root}/.workspace.kubelet-created`, 0o500);
     const blocked = run(harnessWorkspacePreparationScript([`${root}/workspace`]));
     await chmod(`${root}/.workspace.kubelet-created`, 0o700);
     assert.notEqual(blocked.status, 0);
+    const uid = process.getuid();
     assert.match(
       blocked.stderr,
       new RegExp(
-        `EACCES.*; uid ${process.getuid()} cannot move .*locked\\.md \\(owner uid ${process.getuid()}\\): chown it to uid ${process.getuid()} on the node, and its parent directory if uid ${process.getuid()} cannot write there`,
+        `EACCES.*; uid ${uid} cannot move .*\\.workspace\\.kubelet-created/held \\(owned by uid ${uid}\\): make its parent directory writable by uid ${uid} on the node`,
       ),
     );
+    assert.equal(await mode(`${root}/.workspace.kubelet-created/held`), 0o555);
     await rm(`${root}/.workspace.kubelet-created`, { recursive: true });
 
     // State removal empties read-only directories at any depth and never follows a link.

@@ -1116,10 +1116,14 @@ export function harnessWorkspacePreparationScript(paths: readonly string[]): str
     try {
       fs.renameSync(from, to);
     } catch (error) {
-      error.message += "; uid " + uid + " cannot move " + from + " (owner uid " + stat.uid +
-        "): chown it to uid " + uid + " on the node, and its parent directory if uid " + uid +
-        " cannot write there";
-      if (locked) fs.chmodSync(from, stat.mode & 0o7777);
+      error.message += "; uid " + uid + " cannot move " + from + (stat.uid === uid
+        ? " (owned by uid " + uid + "): make its parent directory writable by uid " + uid
+        : " (owner uid " + stat.uid + "): chown it to uid " + uid) + " on the node";
+      if (locked) {
+        try {
+          fs.chmodSync(from, stat.mode & 0o7777);
+        } catch {}
+      }
       throw error;
     }
     if (locked) fs.chmodSync(to, stat.mode & 0o7777);
