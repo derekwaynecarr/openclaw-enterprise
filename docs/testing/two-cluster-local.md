@@ -110,8 +110,10 @@ Create a TLS Secret in the DP system namespace. Install
 `deploy/helm/openclaw-execution` with `routing.hostname`, `gatewayClassName`,
 `tlsSecretName`, and `controlPlaneCidrs`. `routing.hostname` must be a DNS
 hostname without a port or path, the same rule Compute applies to
-`executionCluster.harnessRouting.hostname`. For k3d, `serviceType: LoadBalancer`
-uses its service load balancer. The chart creates component ServiceAccounts,
+`executionCluster.harnessRouting.hostname`. The chart also refuses, as Compute
+does, a `routing.gatewayName` that is not a DNS-safe name of at most 63
+characters and a `routing.envoyNamespace` that is not a DNS label of at most 63
+characters. For k3d, `serviceType: LoadBalancer` uses its service load balancer. The chart creates component ServiceAccounts,
 namespace-level ClusterRoles and bindings, tenant-role definitions, Gateway API
 resources, and the exact Envoy NetworkPolicy. It does not grant tenant access
 or issue cluster credentials.

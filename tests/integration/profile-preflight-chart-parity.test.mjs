@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { clientAddressConfiguration } from "../../apps/controller/src/auth/client-address.ts";
+import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 // Each case runs through the profile preflight and through `helm template`, so the
 // renderer cannot accept a value the chart then refuses (or refuse one it accepts).
@@ -178,28 +180,64 @@ test(
   },
 );
 
+// A Kubernetes Namespace name is a DNS label of at most 63 characters, with no dots.
+const namespaceCases = [
+  ["envoy-gateway-system", true],
+  ["a", true],
+  ["1abc", true],
+  ["a".repeat(63), true],
+  ["a".repeat(64), false],
+  ["a".repeat(253), false],
+  ["gateway.example", false],
+  ["a.b", false],
+  ["Envoy", false],
+  ["-system", false],
+  ["system-", false],
+  ["envoy/system", false],
+  ["foo_bar", false],
+];
+
 test(
-  "envoy namespaces get the same verdict from the preflight and the chart",
+  "envoy namespaces get the same verdict from the preflight, the chart and Compute",
   { skip: helmSkip },
   () => {
+    const configured = conformanceKubernetesOptions({
+      gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
+    });
+    const { gatewayClients: _gatewayClients, ...network } = configured.network;
+    const routing = {
+      hostname: "agents.example.internal",
+      gatewayName: "oce-agent-gateways",
+      gatewayNamespace: "openclaw-system",
+    };
     const chartError =
-      /gatewayRouting\.envoyNamespace must be a DNS-safe Kubernetes resource name of at most 253 characters/;
-    for (const [envoyNamespace, accepted] of [
-      ["envoy-gateway-system", true],
-      ["gateway.example", true],
-      ["a".repeat(253), true],
-      ["envoy/system", false],
-      ["OpenClaw", false],
-      ["foo_bar", false],
-      ["a".repeat(254), false],
-    ]) {
+      /gatewayRouting\.envoyNamespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/;
+    for (const [envoyNamespace, accepted] of namespaceCases) {
+      const label =
+        envoyNamespace.length > 40 ? `${envoyNamespace.length} characters` : envoyNamespace;
       assertParity({
-        label: envoyNamespace.length > 40 ? `${envoyNamespace.length} characters` : envoyNamespace,
+        label,
         controlPlane: { envoyNamespace },
         values: { gatewayRouting: { envoyNamespace } },
         accepted,
         chartError,
       });
+      let driverAccepted = true;
+      try {
+        createKubernetesComputeDriver({
+          ...configured,
+          network,
+          gatewayRouting: { ...routing, envoyNamespace },
+        });
+      } catch (error) {
+        assert.match(
+          error.message,
+          /Gateway routing Envoy namespace must be a Kubernetes namespace name/,
+          label,
+        );
+        driverAccepted = false;
+      }
+      assert.equal(driverAccepted, accepted, `${label}: Compute`);
     }
   },
 );

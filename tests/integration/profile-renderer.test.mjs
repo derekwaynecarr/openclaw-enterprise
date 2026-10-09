@@ -1544,20 +1544,25 @@ test("profiles refuse gateway namespaces the compute driver refuses", () => {
   };
   const admit = (gatewayRouting) =>
     createKubernetesComputeDriver({ ...configured, network, gatewayRouting });
+  // A Kubernetes Namespace name is a DNS label of at most 63 characters, with no dots.
+  // The Gateway namespace is also an owning-gateway-namespace label value.
   const namespaceMessage =
-    /controlPlane\.namespace must be a DNS-safe Kubernetes resource name of at most 253 characters/;
+    /controlPlane\.namespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/;
   const envoyMessage =
-    /controlPlane\.envoyNamespace must be a DNS-safe Kubernetes resource name of at most 253 characters/;
+    /controlPlane\.envoyNamespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/;
   const controlPlane = baseInput().controlPlane;
-  for (const namespace of [
+  const refused = [
     "openclaw/system",
     "OpenClaw",
     "foo_bar",
     "-system",
     "system-",
-    `${"a".repeat(254)}`,
+    "a".repeat(64),
+    "a".repeat(253),
+    "gateway.example",
     "openclaw-system ",
-  ]) {
+  ];
+  for (const namespace of refused) {
     assertPreflightFailure(
       "openclaw",
       baseInput({ controlPlane: { ...controlPlane, namespace } }),
@@ -1565,10 +1570,10 @@ test("profiles refuse gateway namespaces the compute driver refuses", () => {
     );
     assert.throws(
       () => admit({ ...routing, gatewayNamespace: namespace }),
-      /Gateway routing Gateway namespace must be a DNS-safe Kubernetes resource name/,
+      /Gateway routing Gateway namespace must be a Kubernetes namespace name/,
     );
   }
-  for (const envoyNamespace of ["envoy/system", "Envoy", `${"a".repeat(254)}`]) {
+  for (const envoyNamespace of refused) {
     assertPreflightFailure(
       "openclaw",
       baseInput({ controlPlane: { ...controlPlane, envoyNamespace } }),
@@ -1576,20 +1581,17 @@ test("profiles refuse gateway namespaces the compute driver refuses", () => {
     );
     assert.throws(
       () => admit({ ...routing, envoyNamespace }),
-      /Gateway routing Envoy namespace must be a DNS-safe Kubernetes resource name/,
+      /Gateway routing Envoy namespace must be a Kubernetes namespace name/,
     );
   }
-  const namespace = "a".repeat(253);
+  const namespace = "a".repeat(63);
+  const envoyNamespace = `${"b".repeat(62)}9`;
   const output = render(
     "openclaw",
-    baseInput({
-      controlPlane: { ...controlPlane, namespace, envoyNamespace: "gateway.example" },
-    }),
+    baseInput({ controlPlane: { ...controlPlane, namespace, envoyNamespace } }),
   );
   assert.equal(output.summary.ok, true);
   assert.match(output.installation, new RegExp(`gatewayNamespace: ${namespace}`));
-  assert.match(output.installation, /envoyNamespace: gateway\.example/);
-  assert.doesNotThrow(() =>
-    admit({ ...routing, gatewayNamespace: namespace, envoyNamespace: "gateway.example" }),
-  );
+  assert.match(output.installation, new RegExp(`envoyNamespace: ${envoyNamespace}`));
+  assert.doesNotThrow(() => admit({ ...routing, gatewayNamespace: namespace, envoyNamespace }));
 });

@@ -200,7 +200,7 @@ Helm's `gatewayRouting` settings configure shared infrastructure:
 | `enabled`                      | `false`; enable to render routing resources and API mounts.                                                                                               |
 | `gatewayClassName`             | Required existing Envoy GatewayClass.                                                                                                                     |
 | `gatewayName`                  | `<release>-agent-gateways`. An explicit name must be a DNS-safe Kubernetes resource name of at most 63 characters, the same rule Compute uses at startup. |
-| `envoyNamespace`               | `envoy-gateway-system`.                                                                                                                                   |
+| `envoyNamespace`               | `envoy-gateway-system`. Must be a Kubernetes namespace name: a DNS label of at most 63 characters.                                                        |
 | `hostname`                     | Empty derives the Service DNS hostname.                                                                                                                   |
 | `apiKeySecretName`             | Required operator-created Secret with entry `occ`.                                                                                                        |
 | `issuerRef.name`               | Empty creates the private CA and issuers.                                                                                                                 |
@@ -218,7 +218,8 @@ Gateway and NetworkPolicy resources.
 
 The Installation's `drivers.compute.configuration.gatewayRouting` separately
 requires `gatewayName`, `gatewayNamespace`, and `envoyNamespace`; `hostname` is
-optional. `endpointPort` defaults to `443`. Set it only when the external load
+optional. Both namespaces must be DNS labels of at most 63 characters.
+`endpointPort` defaults to `443`. Set it only when the external load
 balancer exposes the Gateway listener on another port; Helm does not configure
 that external mapping. `envoyHttpsTargetPort` defaults to `10443` and must match Helm's value,
 so the Harness egress rule permits the listener's actual Pod port.

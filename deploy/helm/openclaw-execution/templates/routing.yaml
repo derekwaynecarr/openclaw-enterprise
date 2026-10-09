@@ -6,6 +6,14 @@
 {{- if or (gt (len $r.hostname) 253) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$" $r.hostname)) }}
 {{- fail "routing.hostname must be a DNS hostname without a port or path" }}
 {{- end }}
+{{- /* Compute validateGatewayName refuses the same harness Gateway name at startup: Envoy Gateway copies it into a label value. */ -}}
+{{- if or (gt (len (toString $r.gatewayName)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" (toString $r.gatewayName))) }}
+{{- fail "routing.gatewayName must be a DNS-safe Kubernetes resource name of at most 63 characters" }}
+{{- end }}
+{{- /* Compute isKubernetesNamespaceName refuses the same harness Envoy namespace at startup. */ -}}
+{{- if or (gt (len (toString $r.envoyNamespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $r.envoyNamespace))) }}
+{{- fail "routing.envoyNamespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" }}
+{{- end }}
 {{- if not (has $r.serviceType (list "ClusterIP" "LoadBalancer")) }}
 {{- fail "routing.serviceType must be ClusterIP or LoadBalancer" }}
 {{- end }}
