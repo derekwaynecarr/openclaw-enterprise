@@ -12,6 +12,7 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   CredentialSourceRevisionError,
+  CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   PostgresMetricsSnapshot,
   SandboxRevisionUnsupportedError,
@@ -894,6 +895,221 @@ test(
         reason_code,
       })),
       [{ outcome: "success", reason_code: "CREDENTIALS_WITHDRAWN" }],
+    );
+  },
+);
+
+test(
+  "a replay while a withdrawal series waits takes it over from a requester who lost access and runs it now",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const { owner, candidate: active } = await fixture.admitInitialRevision(
+      "withdraw-replay-series",
+      { agent: { auth: "credential_source" } },
+    );
+    let gatewayDown = true;
+    const compute = {
+      ...fixture.compute,
+      async withdrawCredentialSource(_revision, source) {
+        if (gatewayDown) {
+          throw new DependencyUnavailableError("The OpenShell gateway is unreachable.");
+        }
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    const startWorker = () =>
+      fixture.start(compute, { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway });
+    await startWorker();
+    await fixture.work(active, "succeeded");
+
+    // An operator withdraws the source. The first series fails in a gateway outage and queues
+    // the next one for 30 s later; then the operator is offboarded.
+    const offboarded = `withdraw-replay-offboarded-${randomUUID()}`;
+    await fixture.copyActorGrants(offboarded);
+    const request = withdrawalRequest(fixture, owner, owner.harnessAuth.sourceId);
+    await fixture.controller.withdrawAgentCredentialSource(offboarded, request);
+    const [first] = await withdrawalAttempts(fixture, active);
+    await fixture.work(first, "failed_permanent");
+    const series = await queuedWithdrawal(fixture, active);
+    assertRetryDelay(series, 30_000);
+    await fixture.stop();
+    await removeAccessBindings(fixture, offboarded);
+
+    // With the gateway back, another operator replays. The replay takes the withdrawal over and
+    // lets the waiting series run now, without starting a second chain, so the series is not
+    // denied to the offboarded operator and no second replay is needed.
+    gatewayDown = false;
+    const replayed = await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      request,
+    );
+    assert.equal(replayed.requestedBy, fixture.actor.id);
+    assert.equal(replayed.withdrawalInProgress, true);
+    const due = await queuedWithdrawal(fixture, active);
+    assert.equal(due.idempotencyKey, series.idempotencyKey);
+    assert.ok(due.delayMs <= 0, `expected the series to be due now, got ${due.delayMs} ms`);
+    assert.equal((await withdrawalAttempts(fixture, active)).length, 2);
+
+    await startWorker();
+    await fixture.work(due, "succeeded");
+    const revoked = await fixture.controller.readAgentCredentialWithdrawal(
+      fixture.actor.id,
+      request,
+    );
+    assert.equal(revoked.state, "revoked");
+    assert.equal(revoked.requestedBy, fixture.actor.id);
+    // The offboarded operator's failed series stays theirs; the revocation is the replaying
+    // operator's.
+    assert.deepEqual(
+      (await withdrawalAudit(fixture)).map(({ actor_id, outcome, reason_code }) => ({
+        actor_id,
+        outcome,
+        reason_code,
+      })),
+      [
+        { actor_id: offboarded, outcome: "failure", reason_code: "DEPENDENCY_UNAVAILABLE" },
+        { actor_id: fixture.actor.id, outcome: "success", reason_code: "CREDENTIALS_WITHDRAWN" },
+      ],
+    );
+  },
+);
+
+test(
+  "a replay during a running attempt takes over a withdrawal it denied, and the attempt retries instead of failing",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const owner = await fixture.agent("withdraw-replay-running", {
+      auth: "credential_source",
+      nonModelSources: 2,
+    });
+    const active = await fixture.revision(owner, 1);
+    const [allowed, deniedSource] = toolSources(owner).map(({ sourceId }) => sourceId);
+    const withdrawn = [];
+    const gatewayCall = Promise.withResolvers();
+    const gatewayReleased = Promise.withResolvers();
+    context.after(() => gatewayReleased.resolve());
+    const compute = {
+      ...fixture.compute,
+      async withdrawCredentialSource(_revision, source) {
+        withdrawn.push(source.id);
+        if (withdrawn.length === 1) {
+          gatewayCall.resolve();
+          await gatewayReleased.promise;
+        }
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    const startWorker = () =>
+      fixture.start(compute, { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway });
+    await startWorker();
+    await fixture.work(active, "succeeded");
+    await fixture.stop();
+
+    // The actor withdraws one tool source and an operator, offboarded before the worker runs,
+    // the other. Both share one claim.
+    const offboarded = `withdraw-running-offboarded-${randomUUID()}`;
+    await fixture.copyActorGrants(offboarded);
+    await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      withdrawalRequest(fixture, owner, allowed),
+    );
+    const deniedRequest = withdrawalRequest(fixture, owner, deniedSource);
+    await fixture.controller.withdrawAgentCredentialSource(offboarded, deniedRequest);
+    await removeAccessBindings(fixture, offboarded);
+    const [work, ...others] = await withdrawalAttempts(fixture, active);
+    assert.deepEqual(others, []);
+
+    // The attempt has denied the offboarded requester and is revoking the authorized source
+    // when the actor replays the denied withdrawal. The running attempt is its only work.
+    await startWorker();
+    await gatewayCall.promise;
+    const replayed = await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      deniedRequest,
+    );
+    assert.equal(replayed.requestedBy, fixture.actor.id);
+    assert.equal(replayed.withdrawalInProgress, true);
+    assert.equal((await withdrawalAttempts(fixture, active)).length, 1);
+
+    // The denial no longer stands, so the attempt retries on the actor's authority.
+    gatewayReleased.resolve();
+    const completed = await fixture.work(work, "succeeded");
+    await fixture.stop();
+    assert.equal(completed.attempt_count, 2);
+    assert.deepEqual(withdrawn, [allowed, deniedSource]);
+    const denied = await fixture.controller.readAgentCredentialWithdrawal(
+      fixture.actor.id,
+      deniedRequest,
+    );
+    assert.equal(denied.state, "revoked");
+    assert.equal(denied.requestedBy, fixture.actor.id);
+    assert.deepEqual(
+      (await withdrawalAudit(fixture)).map(({ actor_id, outcome, sources }) => ({
+        actor_id,
+        outcome,
+        sources,
+      })),
+      [
+        { actor_id: fixture.actor.id, outcome: "success", sources: [allowed] },
+        { actor_id: fixture.actor.id, outcome: "success", sources: [deniedSource] },
+      ],
+    );
+  },
+);
+
+test(
+  "a withdrawal Compute refuses as misconfigured fails once and queues no later series",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const { owner, candidate: active } = await fixture.admitInitialRevision("withdraw-refused", {
+      agent: { auth: "credential_source" },
+    });
+    let calls = 0;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        // What the Kubernetes Compute Driver throws for a SandboxDriver that cannot name the
+        // revision's Sandbox.
+        async withdrawCredentialSource() {
+          calls += 1;
+          throw new CredentialWithdrawalRefusedError(
+            "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+            "Credential withdrawal requires a SandboxDriver that identifies the revision's Harness.",
+          );
+        },
+      },
+      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
+    );
+    await fixture.work(active, "succeeded");
+    const request = withdrawalRequest(fixture, owner, owner.harnessAuth.sourceId);
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
+    const [first] = await withdrawalAttempts(fixture, active);
+
+    // One attempt, no retry series: retrying cannot change a refusal.
+    const failed = await fixture.work(first, "failed_permanent");
+    assert.equal(failed.attempt_count, 1);
+    assert.equal(calls, 1);
+    assert.equal(
+      (await fixture.workResult(first)).rows[0].reason_code,
+      "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+    );
+    assert.deepEqual(
+      (await withdrawalAttempts(fixture, active)).map(({ state }) => state),
+      ["failed_permanent"],
+    );
+    const read = await fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
+    assert.equal(read.state, "pending");
+    assert.equal(read.lastReason, "CREDENTIAL_WITHDRAWAL_MISCONFIGURED");
+    assert.equal(read.withdrawalInProgress, false);
+    assert.deepEqual(
+      (await withdrawalAudit(fixture)).map(({ outcome, reason_code }) => ({
+        outcome,
+        reason_code,
+      })),
+      [{ outcome: "failure", reason_code: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED" }],
     );
   },
 );
@@ -1832,12 +2048,6 @@ revisionTest(
     const request = withdrawalRequest(fixture, owner, owner.harnessAuth.sourceId);
     const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
     await fixture.controller.withdrawAgentCredentialSource(requester, request);
-    // While that attempt is outstanding, a replay neither queues another nor takes it over.
-    const pendingReplay = await fixture.controller.withdrawAgentCredentialSource(
-      fixture.actor.id,
-      request,
-    );
-    assert.equal(pendingReplay.requestedBy, requester);
     await removeAccessBindings(fixture, requester);
     const work = await withdrawalAttempts(fixture, active);
     assert.equal(work.length, 1);

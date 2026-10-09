@@ -159,6 +159,7 @@ export function bindPlatformUnitOfWork(
       "hasOutstandingCredentialWithdrawalWork",
       "retryFailedAgentDeletion",
       "retryFailedNamespaceDeletion",
+      "expediteCredentialWithdrawalWork",
     ]),
   });
 }

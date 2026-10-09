@@ -97,6 +97,7 @@ import {
   agentEntryMessage,
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
+  CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -5813,13 +5814,39 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Revokes one credential source from the revision's paired Sandbox. The Sandbox identity is
    * derived exactly as provisioning created it; a missing Namespace or Sandbox has nothing left
-   * to revoke.
+   * to revoke. A configuration that cannot reach the Sandbox, or an object this Driver does
+   * not own, is a CredentialWithdrawalRefusedError: retrying cannot change it.
    */
   async withdrawCredentialSource(
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
     options: { readonly recheck?: boolean } = {},
+  ): Promise<CredentialAttachmentStatus> {
+    try {
+      return await this.withdrawSandboxCredentialSource(revision, source, signal, options);
+    } catch (error) {
+      if (error instanceof ConfigurationFailure || error instanceof ConfigurationHarnessError) {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+          error.message,
+        );
+      }
+      if (error instanceof OwnershipFailure) {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+          error.message,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async withdrawSandboxCredentialSource(
+    revision: Readonly<AgentRevision>,
+    source: Readonly<CredentialSource>,
+    signal: AbortSignal,
+    options: { readonly recheck?: boolean },
   ): Promise<CredentialAttachmentStatus> {
     if (
       revision.compute.id !== this.id ||

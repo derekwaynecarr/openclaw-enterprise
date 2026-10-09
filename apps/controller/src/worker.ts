@@ -48,6 +48,7 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   CredentialSourceRevisionError,
+  CredentialWithdrawalRefusedError,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
   WorkClaimLostError,
@@ -2499,18 +2500,23 @@ export class ControllerWorker {
         throw error;
       }
       // Confirmed revocations stand; every withdrawal not yet confirmed or denied retries,
-      // including one IAM failed to authorize, so no earlier denial stays its last reason.
+      // including one IAM failed to authorize, so no earlier denial stays its last reason. A
+      // Compute refusal that retrying cannot change (a configuration that cannot reach the
+      // Sandbox, or an object Compute does not own) fails them once instead, as a Compute
+      // mismatch does; a replay tries again.
+      const code =
+        error instanceof CredentialWithdrawalRefusedError ? error.code : "DEPENDENCY_UNAVAILABLE";
       const settled = new Set(
         [...attempts, ...denied].map(({ credentialSourceId }) => credentialSourceId),
       );
       result = {
-        outcome: "retry",
-        code: "DEPENDENCY_UNAVAILABLE",
+        outcome: error instanceof CredentialWithdrawalRefusedError ? "permanent" : "retry",
+        code,
         attempts: [
           ...attempts,
           ...unrevokedAttempts(
             requested.filter(({ credentialSourceId }) => !settled.has(credentialSourceId)),
-            "DEPENDENCY_UNAVAILABLE",
+            code,
           ),
           ...denied,
         ],
@@ -2521,20 +2527,25 @@ export class ControllerWorker {
 
   private async finalizeCredentialWithdrawal(
     claim: ClaimedWork,
-    result: CredentialWithdrawalDispatchResult,
+    dispatched: CredentialWithdrawalDispatchResult,
   ): Promise<void> {
+    let result = dispatched;
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
-      const terminalFailure =
-        result.outcome === "permanent" ||
-        (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
+      result = dispatched;
+      const terminal = ({ outcome }: CredentialWithdrawalDispatchResult) =>
+        outcome === "permanent" || (outcome === "retry" && claim.attemptCount >= this.maxAttempts);
+      let terminalFailure = terminal(result);
       // A terminal failure's queue transition locks the Namespace and Agent for cleanup. Take
       // them first, in admission order, before updating withdrawal rows: a concurrent
-      // withdrawal request locks the Namespace, then the Agent, then the same rows.
+      // withdrawal request locks the Namespace, then the Agent, then the same rows. Under those
+      // locks, a replay that took a denied withdrawal over during this pass is settled.
       if (terminalFailure) {
         await this.lockClaimScope(unit, claim);
+        result = await this.withoutReassignedDenials(unit, claim, result);
+        terminalFailure = terminal(result);
       }
       // Each row explains a withdrawal that is still pending, including after the last attempt.
       const at = new Date().toISOString();
@@ -2621,6 +2632,61 @@ export class ControllerWorker {
       outcome: result.outcome,
       code: result.code,
     });
+  }
+
+  /**
+   * A denial checked the requester this pass read. A replay that made another operator the
+   * requester since then (requestRevisionCredentialWithdrawal) leaves this claim as the
+   * withdrawal's only work, so the denial must not end it: that withdrawal becomes unconfirmed
+   * with CREDENTIAL_WITHDRAWAL_REASSIGNED, and a claim that only denials failed retries, so
+   * its next attempt authorizes the new requester. Other outcomes stand. Runs under the
+   * Namespace and Agent locks, which the replay takes before it reassigns.
+   */
+  private async withoutReassignedDenials(
+    unit: PlatformUnitOfWork,
+    claim: ClaimedWork,
+    result: CredentialWithdrawalDispatchResult,
+  ): Promise<CredentialWithdrawalDispatchResult> {
+    const attempts = result.attempts ?? [];
+    if (!attempts.some(({ denial }) => denial !== undefined)) {
+      return result;
+    }
+    const current = await unit.credentialSources.listCredentialWithdrawals(
+      claim.namespaceId,
+      claim.revisionId!,
+    );
+    let reassigned = false;
+    const settled = attempts.map((attempt): CredentialWithdrawalAttempt => {
+      const withdrawal = current.find(
+        ({ credentialSourceId }) => credentialSourceId === attempt.credentialSourceId,
+      );
+      if (
+        attempt.denial === undefined ||
+        withdrawal?.state !== "pending" ||
+        withdrawal.requestedBy === attempt.requestedBy
+      ) {
+        return attempt;
+      }
+      reassigned = true;
+      return {
+        credentialSourceId: attempt.credentialSourceId,
+        requestedBy: withdrawal.requestedBy,
+        code: "CREDENTIAL_WITHDRAWAL_REASSIGNED",
+        revoked: false,
+      };
+    });
+    if (!reassigned) {
+      return result;
+    }
+    // settleCredentialWithdrawal failed the claim only for its denials when every other
+    // withdrawal was revoked; it now retries. Any other failure keeps its outcome and code.
+    if (
+      result.outcome === "permanent" &&
+      attempts.every(({ revoked, denial }) => revoked || denial !== undefined)
+    ) {
+      return { outcome: "retry", code: "CREDENTIAL_WITHDRAWAL_REASSIGNED", attempts: settled };
+    }
+    return { ...result, attempts: settled };
   }
 
   /**
