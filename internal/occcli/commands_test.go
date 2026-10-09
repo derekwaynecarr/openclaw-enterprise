@@ -578,3 +578,42 @@ func TestServiceKeyCreateRejectsNamesTheAPIRefusesBeforeAnyRequest(t *testing.T)
 		}
 	}
 }
+
+func TestNamespaceCreateRejectsExistingNamespacesTheAPIRefuses(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		writer.Header().Set("content-type", "application/json")
+		writer.WriteHeader(http.StatusCreated)
+		_, _ = writer.Write([]byte(`{"data":{"id":"ns_11111111-1111-4111-8111-111111111111","name":"support","status":"provisioning","existingNamespace":"customer-support-prod"},"meta":{"requestId":"r"}}`))
+	}))
+	defer server.Close()
+	directory := t.TempDir()
+	adminKey := filepath.Join(directory, "admin.json")
+	if err := os.WriteFile(adminKey, []byte(`{"data":{"key":"admin-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) error {
+		command := New(&bytes.Buffer{}, &bytes.Buffer{})
+		command.SetArgs(append([]string{"--url", server.URL, "--service-key-file", adminKey, "namespace", "create"}, args...))
+		return command.Execute()
+	}
+	for _, name := range []string{"", "Bad_Name", strings.Repeat("a", 64)} {
+		requests = 0
+		err := run("support", "--existing-namespace", name)
+		if err == nil || !strings.Contains(err.Error(), "DNS-1123 label of at most 63 characters") {
+			t.Fatalf("existing namespace %q: error = %v", name, err)
+		}
+		if requests != 0 {
+			t.Fatalf("existing namespace %q sent %d requests", name, requests)
+		}
+	}
+	requests = 0
+	if err := run("support"); err != nil || requests != 1 {
+		t.Fatalf("omitted adoption flag: error = %v after %d requests", err, requests)
+	}
+	requests = 0
+	if err := run("support", "--existing-namespace", "customer-support-prod"); err != nil || requests != 1 {
+		t.Fatalf("DNS label: error = %v after %d requests", err, requests)
+	}
+}

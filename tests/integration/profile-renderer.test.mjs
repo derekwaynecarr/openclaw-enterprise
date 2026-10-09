@@ -1507,6 +1507,29 @@ test("profiles refuse administrator emails the bootstrap Job refuses", () => {
   }
 });
 
+test("preflight rejects a Google hosted domain the chart and API refuse", () => {
+  const label63 = `a${"b".repeat(61)}c`;
+  const domain254 = [label63, label63, label63, `d${"e".repeat(60)}f`].join(".");
+  const domain253 = [label63, label63, label63, `d${"e".repeat(59)}f`].join(".");
+  assert.equal(domain254.length, 254);
+  assert.equal(domain253.length, 253);
+  const googleInput = (allowedDomains) =>
+    externalSignInInput({
+      github: undefined,
+      google: { allowedDomains },
+    });
+  for (const allowedDomains of [["example.123"], ["example.1"], [domain254]]) {
+    assertPreflightFailure(
+      "openclaw",
+      googleInput(allowedDomains),
+      /controlPlane\.google\.allowedDomains\[0\] must be a lowercase DNS domain name of at most 253 characters whose last label starts with a letter, such as example\.com/,
+    );
+  }
+  const accepted = render("openclaw", googleInput([domain253]));
+  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+  assert.match(accepted.values, new RegExp(domain253));
+});
+
 test("profile transport Secret prefixes agree with controller startup admission", async (t) => {
   const baseline = render("openclaw", baseInput());
   t.after(() => rmSync(baseline.directory, { recursive: true, force: true }));
