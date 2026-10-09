@@ -406,6 +406,43 @@ test("ambiguous and plugin-routed models require supported explicit native polic
   }
 });
 
+test("Agent roster refusals name the setting and the fix", () => {
+  const listRefusal =
+    "Configuration setting agents.list is unsupported: remove it and configure each Agent under agents.entries, keyed by its Agent ID.";
+  for (const list of [[{ id: "main" }], {}, null]) {
+    assert.throws(
+      () => resolveConfiguredHarnessId({ agents: { list } }),
+      (error) => error instanceof ConfigurationHarnessError && error.message === listRefusal,
+      JSON.stringify(list),
+    );
+  }
+  for (const [entries, path] of [
+    [{ main: "not-an-object" }, "agents.entries.main"],
+    [{ main: {}, helper: null }, "agents.entries.helper"],
+    [{ "a.b": [] }, 'agents.entries["a.b"]'],
+    [{ "a\u0007b": 1 }, 'agents.entries["a?b"]'],
+  ]) {
+    assert.throws(
+      () =>
+        resolveConfiguredHarnessId({
+          agents: { defaults: { model: "codex/gpt-4.1" }, entries },
+        }),
+      (error) =>
+        error instanceof ConfigurationHarnessError &&
+        error.message === `Configuration setting ${path} must be an object.`,
+      path,
+    );
+  }
+  const long = "x.".repeat(200);
+  assert.throws(
+    () => resolveConfiguredHarnessId({ agents: { entries: { [long]: false } } }),
+    (error) =>
+      error instanceof ConfigurationHarnessError &&
+      Array.from(error.message).length === 256 &&
+      error.message.endsWith("… must be an object."),
+  );
+});
+
 test("one installation admits embedded and dedicated revisions without rewriting historical placement", async () => {
   const { agent, bindHarnessAuth, configuration, controller, namespace } = await fixture();
   const embedded = await controller.deployAgent(

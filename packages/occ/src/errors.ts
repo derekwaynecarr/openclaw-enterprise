@@ -329,6 +329,19 @@ function configurationFieldMessage(path: string, message: (path: string) => stri
   );
 }
 
+/**
+ * Builds a message that names the Configuration setting `agents.entries.<key>`. A submitted
+ * key can hold any character: control and format characters show as ?, a key that is not a
+ * plain Agent ID is quoted, and a long key shortens the path to fit the 256-character cap.
+ */
+export function agentEntryMessage(key: string, message: (path: string) => string): string {
+  const shown = key.replace(/[\p{Cc}\p{Cf}]|\p{Cs}/gu, "?");
+  const path = /^[A-Za-z0-9_-]+$/.test(shown)
+    ? `agents.entries.${shown}`
+    : `agents.entries[${JSON.stringify(shown)}]`;
+  return configurationFieldMessage(path, message);
+}
+
 const modelCredentialMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.`;
 

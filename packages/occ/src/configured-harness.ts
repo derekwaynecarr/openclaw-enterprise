@@ -1,7 +1,7 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
-import { ConfigurationHarnessError } from "./errors.ts";
+import { agentEntryMessage, ConfigurationHarnessError } from "./errors.ts";
 
 function configuredRuntime(value: unknown): string | undefined {
   const runtimeValue = asRecord(value)?.agentRuntime;
@@ -100,7 +100,9 @@ export function resolveConfiguredHarnessId(
   const defaults = asRecord(agents?.defaults);
   const entries = asRecord(agents?.entries);
   if (agents?.list !== undefined && (!Array.isArray(agents.list) || agents.list.length > 0)) {
-    throw new ConfigurationHarnessError("Configured Agent lists are unsupported.");
+    throw new ConfigurationHarnessError(
+      "Configuration setting agents.list is unsupported: remove it and configure each Agent under agents.entries, keyed by its Agent ID.",
+    );
   }
   const providerConfigurations = asRecord(asRecord(values.models)?.providers);
   const defaultSelection = configuredModels(defaults?.model);
@@ -108,10 +110,12 @@ export function resolveConfiguredHarnessId(
   const candidates: Array<{ model: string; entry?: Readonly<Record<string, unknown>> }> =
     defaultSelection.map((model) => ({ model }));
 
-  for (const value of Object.values(entries ?? {})) {
+  for (const [key, value] of Object.entries(entries ?? {})) {
     const entry = asRecord(value);
     if (entry === undefined) {
-      throw new ConfigurationHarnessError("The configured Agent runtime entry is invalid.");
+      throw new ConfigurationHarnessError(
+        agentEntryMessage(key, (path) => `Configuration setting ${path} must be an object.`),
+      );
     }
     const selection = entry.model === undefined ? defaultSelection : configuredModels(entry.model);
     const model = selection[0];
