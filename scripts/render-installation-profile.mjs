@@ -5,6 +5,8 @@ import { createRequire } from "node:module";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isKubernetesResourceName } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
+
 import { isName, NAME_RULE } from "../packages/contracts/src/index.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -610,6 +612,12 @@ function signInProvider(source, name, diagnostics) {
       rendered[key] = value;
     }
   }
+  // Omitted keys retain these chart defaults; a one-key override can collide too.
+  if ((rendered.clientIdKey ?? "client-id") === (rendered.clientSecretKey ?? "client-secret")) {
+    diagnostics.errors.push(
+      `controlPlane.${name} client ID and client secret must use different Secret keys.`,
+    );
+  }
   if (source.allowedDomains !== undefined) {
     rendered.allowedDomains = stringArray(source, [...path, "allowedDomains"], diagnostics, {
       validate: (value) => googleHostedDomain.test(value),
@@ -1002,7 +1010,10 @@ function buildRendered(profile, parsed, diagnostics) {
     validate: (value) => value.length <= 53 && dnsSubdomain.test(value),
     description: "a valid Helm release name of at most 53 characters",
   });
-  const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics);
+  const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics, {
+    validate: isKubernetesResourceName,
+    description: "a DNS-safe Kubernetes resource name of at most 253 characters",
+  });
   // The bootstrap Job applies isName to installation.name, and the chart mirrors that rule.
   const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics, {
     validate: isName,
@@ -1073,8 +1084,10 @@ function buildRendered(profile, parsed, diagnostics) {
     };
   }
   const envoyNamespace =
-    optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics) ??
-    "envoy-gateway-system";
+    optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, {
+      validate: isKubernetesResourceName,
+      description: "a DNS-safe Kubernetes resource name of at most 253 characters",
+    }) ?? "envoy-gateway-system";
   const repositoryEnabled = asBoolean(repository, ["repository", "enabled"], diagnostics, false);
   const managedSlackProxyEnabled = asBoolean(
     channels,

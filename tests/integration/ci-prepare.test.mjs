@@ -1437,6 +1437,11 @@ test("Images and Packaging exports the image caches only on main pushes", async 
     assert.equal(builds.length, 2, event);
     // Only a lane that exports the cache skips the probe for an existing image.
     assert.equal(calls.length, exported ? 2 : 4, event);
+    // A fixed epoch keeps independent builds of the same layers on one image ID;
+    // the probe must resolve the same ID the build would load.
+    for (const { args } of calls) {
+      assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg", event);
+    }
     if (!exported) {
       assert.match(prepared.stderr, /"stage":"controller-image-reuse","outcome":"absent"/, event);
       assert.match(prepared.stderr, /"stage":"runtime-image-reuse","outcome":"absent"/, event);

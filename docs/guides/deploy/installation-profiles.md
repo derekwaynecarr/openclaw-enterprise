@@ -211,6 +211,9 @@ as behind a source-preserving NLB, needs none.
 }
 ```
 
+Client-ID and client-secret Secret keys must differ. Preflight compares custom
+keys with the chart defaults (`client-id` and `client-secret`) when a key is omitted.
+
 `github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
 and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`
 ([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist));

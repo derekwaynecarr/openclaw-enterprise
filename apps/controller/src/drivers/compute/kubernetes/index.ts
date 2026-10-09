@@ -8,6 +8,7 @@ import {
 import { createHash, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { isAbsolute } from "node:path";
+import { isKubernetesResourceName } from "./resource-name.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -103,6 +104,7 @@ import {
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsForbiddenByClusterError,
   runtimeFailureCause,
+  ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
 import {
@@ -1522,10 +1524,7 @@ function validateSandboxDomain(value: string): void {
 }
 
 function validateKubernetesResourceName(value: string, description: string): void {
-  if (
-    value.length > 253 ||
-    !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/.test(value)
-  ) {
+  if (!isKubernetesResourceName(value)) {
     throw new ConfigurationFailure(`${description} must be a DNS-safe Kubernetes resource name.`);
   }
 }
@@ -3791,7 +3790,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const ownership = { namespaceId, serviceAccountId };
     const existing = await this.getOwned("Secret", name, namespace, ownership);
     if (existing !== undefined) {
-      throw new ConfigurationFailure("The ServiceAccount credential Secret already exists.");
+      // OCC records no credential for this account, so this is a leftover of an earlier
+      // issuance; name it so the operator can delete it (finding 935).
+      throw new ServiceAccountCredentialSecretExistsError(namespace.name, name);
     }
 
     const clients = await this.clients(namespace.plane);
