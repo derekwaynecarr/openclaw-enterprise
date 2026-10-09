@@ -38,6 +38,7 @@
         "a withdrawal that outlasts its attempts in a gateway outage is retried later and revoked without a replay",
         "a withdrawal in a long outage backs off to 5 minutes, stops after its last retry, and a replay starts again",
         "a withdrawal retried after an outage leaves one denied to its requester for a replay",
+        "a withdrawal whose last attempt outlives its lease is retried later and revoked without a replay",
         "a terminally failing credential withdrawal takes the Namespace and Agent before its withdrawal rows",
         "maintenance of a withdrawn revision retries the withdrawal and stops once it is revoked",
         "a deployment retry never re-attaches a source withdrawn while it was finishing",
