@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-09
-last_updated_session: authoring-run/4108453c-660a-45ca-87c8-ff328a767f38
+last_updated_session: authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52
 ---
 
 # Installation Profile Rendering Flow
@@ -98,6 +98,11 @@ Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), and paired metrics scraper selectors. Invalid
 values therefore fail before `values.yaml` or `installation.yaml` is written.
+
+`scripts/render-installation-profile.mjs:controlPlaneNodeSelector` checks
+`controlPlane.nodeSelector` against the chart and bootstrap-volume helper's
+Kubernetes label-key and nonempty label-value rules. Invalid placement labels
+fail preflight without deployment files; legal YAML lookalike values remain strings.
 
 ### 4. Build Helm values
 
@@ -210,6 +215,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 19:42: Validate control-plane placement labels before writing profile output. (authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52 - 3a1e29fb461d2ad61a9276ae4af432bcf2d04c88)
 
 - 2026-10-09 08:40: Integrate database CA-key validation with current renderer guards and regressions. (authoring-run/4108453c-660a-45ca-87c8-ff328a767f38 - 1f8c782e69d5d097b622ba13b964d87f1088a2ff)
 
