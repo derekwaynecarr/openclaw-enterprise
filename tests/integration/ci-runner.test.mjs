@@ -1437,7 +1437,30 @@ test("the reporter forwards a failed file's output tail and whole stack only", a
   );
   assert.equal(
     redactFailureDetail({ message: "header Token abcdefgh%ijklmnop" }, secrets, "/repo").message,
-    "header [redacted]",
+    "[redacted credential-bearing line]",
+  );
+  assert.equal(
+    redactFailureDetail({ message: "SyntaxError: Unexpected token '}'" }, secrets, "/repo").message,
+    "SyntaxError: Unexpected token '}'",
+  );
+  // A message the reporter cut at 16 KiB still loses its possibly split tail after
+  // the raw pass has shortened it.
+  const cutMessage = `Bearer abcdefgh leak-value\n${"x".repeat(16_384 - 27 - 11)}jobonlyopaq`;
+  assert.equal(cutMessage.length, 16_384);
+  const cutDetail = redactFailureDetail({ message: cutMessage }, secrets, "/repo").message;
+  assert.match(cutDetail, /^\[redacted credential-bearing line\]\nx+$/);
+  assert.doesNotMatch(cutDetail, /jobonly|leak-value/);
+  // A control character inside a private key header cannot keep its body.
+  assert.doesNotMatch(
+    redactFailureDetail(
+      {
+        message:
+          "-----BEGIN RSA PRIV\u0000ATE KEY-----\nMIIEbodyline\n-----END RSA PRIVATE KEY-----",
+      },
+      secrets,
+      "/repo",
+    ).message,
+    /MIIEbodyline/,
   );
   // A credential marker drops its whole line, though the token shape consumes the marker.
   const sameLine = redactFailureDetail(

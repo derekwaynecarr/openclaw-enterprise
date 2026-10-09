@@ -136,11 +136,16 @@ export function redactFailure(error, secrets, root) {
 // Value-level redaction cannot see every credential, so lines that name one are
 // dropped whole, as for followed container logs (k3d-diagnostics.mjs).
 const credentialLine = /authorization|bearer\s|private.?key|-----BEGIN|https?:\/\/[^\s/]+@/i;
+// Case-sensitive, so "Unexpected token" lines survive.
+const credentialToken = /\b(?:Basic|Token)\s+\S{8,}/;
+const namesCredential = (line) => credentialLine.test(line) || credentialToken.test(line);
+// Control characters can split a keyword or a private key header.
+const stripControl = (text) => stripVTControlCharacters(text).replace(/[^\P{Cc}\n\t]/gu, "");
 
 function dropCredentialLines(text) {
   return text
     ?.split("\n")
-    .map((line) => (credentialLine.test(line) ? "[redacted credential-bearing line]" : line))
+    .map((line) => (namesCredential(line) ? "[redacted credential-bearing line]" : line))
     .join("\n");
 }
 
@@ -155,10 +160,7 @@ function redactDetailText(text, secrets, root) {
     return undefined;
   }
   const raw = dropCredentialLines(
-    stripVTControlCharacters(text.slice(0, failureInputLimit)).replace(
-      privateKeyShape,
-      "[redacted]",
-    ),
+    stripControl(text.slice(0, failureInputLimit)).replace(privateKeyShape, "[redacted]"),
   );
   return dropCredentialLines(
     redactText(raw, failureInputLimit, secrets, root, text.length >= failureInputLimit),
@@ -177,9 +179,9 @@ export function redactFailureDetail(error, secrets, root) {
 // One line of a failed file's output for the diagnostics report.
 export function redactOutputLine(line, secrets, root, limit) {
   // Test the raw line first, as for container logs: redaction can consume the keyword.
-  if (credentialLine.test(stripVTControlCharacters(line))) {
+  if (namesCredential(stripControl(line))) {
     return "[redacted credential-bearing line]";
   }
   const redacted = redactText(line, limit, secrets, root) ?? "";
-  return credentialLine.test(redacted) ? "[redacted credential-bearing line]" : redacted;
+  return namesCredential(redacted) ? "[redacted credential-bearing line]" : redacted;
 }
