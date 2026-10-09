@@ -5,12 +5,16 @@ import { createRequire } from "node:module";
 import { isIP } from "node:net";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isName, NAME_RULE } from "../packages/contracts/src/index.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const profilesDir = resolve(repoRoot, "deploy/profiles");
 const allowedProfiles = new Set(["openclaw", "codex"]);
 const helmReleaseName = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+// Kubernetes Service names are DNS-1035 labels. The chart refuses any other
+// repositoryCredentials.serviceName.
+const dns1035Label = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
 const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
 // The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
 // The shape check alone still matches 192.0.2.999 and port 99999.
@@ -30,6 +34,10 @@ function isLiteralIpv4ProxyUrl(value) {
 }
 const dnsHostname =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+// OCC's ChatGPT workspace rule (packages/occ/src/backends.ts WORKSPACE_ID). Startup
+// refuses every other spelling, including a nil UUID.
+const chatGptWorkspaceId =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function fail(message) {
   process.stderr.write(`render-installation-profile: ${message}\n`);
@@ -197,6 +205,11 @@ function sha256Hex(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+// The bootstrap Job trims, lowercases, then requires one @ and a dotted domain.
+function administratorEmail(value) {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value.trim().toLowerCase());
+}
+
 function asString(source, path, diagnostics, { pattern, validate, description } = {}) {
   const value = source[path.at(-1)];
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -360,7 +373,7 @@ function optionalPositiveInteger(source, path, diagnostics, { max } = {}) {
   return value;
 }
 
-function labelMap(source, path, diagnostics, { nonempty = true } = {}) {
+function labelMap(source, path, diagnostics, { nonempty = true, emptyValues = false } = {}) {
   const value = source[path.at(-1)];
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     diagnostics.errors.push(`${path.join(".")} must be an object of Kubernetes labels.`);
@@ -370,17 +383,20 @@ function labelMap(source, path, diagnostics, { nonempty = true } = {}) {
     diagnostics.errors.push(`${path.join(".")} must contain at least one Kubernetes label.`);
   }
   for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry !== "string" || entry.length === 0) {
-      diagnostics.errors.push(`${path.join(".")}.${key} must be a nonempty string.`);
+    if (typeof entry !== "string" || (!emptyValues && entry.length === 0)) {
+      diagnostics.errors.push(
+        `${path.join(".")}.${key} must be a ${emptyValues ? "" : "nonempty "}string.`,
+      );
     }
   }
   return value;
 }
 
 // Match the control-plane selector contract in Helm and prepare-bootstrap-volume.
+// Kubernetes allows empty label values, as in `node-role.kubernetes.io/infra: ""`.
 function controlPlaneNodeSelector(source, diagnostics) {
   const path = ["controlPlane", "nodeSelector"];
-  const labels = labelMap(source, path, diagnostics);
+  const labels = labelMap(source, path, diagnostics, { emptyValues: true });
   const labelName = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
   for (const [key, value] of Object.entries(labels)) {
     const parts = key.split("/");
@@ -398,10 +414,12 @@ function controlPlaneNodeSelector(source, diagnostics) {
     ) {
       diagnostics.errors.push("controlPlane.nodeSelector keys must be Kubernetes label keys.");
     }
-    if (typeof value === "string" && (value.length > 63 || labelName.exec(value)?.[0] !== value)) {
-      diagnostics.errors.push(
-        "controlPlane.nodeSelector values must be nonempty Kubernetes label values.",
-      );
+    if (
+      typeof value === "string" &&
+      value !== "" &&
+      (value.length > 63 || labelName.exec(value)?.[0] !== value)
+    ) {
+      diagnostics.errors.push("controlPlane.nodeSelector values must be Kubernetes label values.");
     }
   }
   return labels;
@@ -995,7 +1013,11 @@ function buildRendered(profile, parsed, diagnostics) {
     description: "a valid Helm release name of at most 53 characters",
   });
   const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics);
-  const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics);
+  // The bootstrap Job applies isName to installation.name, and the chart mirrors that rule.
+  const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics, {
+    validate: isName,
+    description: NAME_RULE,
+  });
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
     pattern: digestImage,
     description: "an immutable image reference with a SHA-256 digest",
@@ -1129,7 +1151,10 @@ function buildRendered(profile, parsed, diagnostics) {
     },
     agentNativeAdmin,
     bootstrap: {
-      adminEmail: asString(controlPlane, ["controlPlane", "adminEmail"], diagnostics),
+      adminEmail: asString(controlPlane, ["controlPlane", "adminEmail"], diagnostics, {
+        validate: administratorEmail,
+        description: "a valid administrator email",
+      }),
       password: {
         claimName: asString(
           controlPlane,
@@ -1449,6 +1474,11 @@ function buildRendered(profile, parsed, diagnostics) {
             managedServiceAccounts,
             ["codex", "managedServiceAccounts", "workspaceId"],
             diagnostics,
+            {
+              pattern: chatGptWorkspaceId,
+              description:
+                "a UUID the controller accepts for a ChatGPT workspace (version 1-8, variant 8, 9, a, or b)",
+            },
           ),
           apiKeyPath: "/etc/openclaw/chatgpt/admin-key",
           credentialTtlSeconds:
@@ -1493,7 +1523,10 @@ function buildRendered(profile, parsed, diagnostics) {
       appKeySecretName: asString(repository, ["repository", "appKeySecretName"], diagnostics),
       tlsSecretName: asString(repository, ["repository", "tlsSecretName"], diagnostics),
       publicCaSecretName: asString(repository, ["repository", "publicCaSecretName"], diagnostics),
-      serviceName: optionalString(repository, ["repository", "serviceName"], diagnostics),
+      serviceName: optionalString(repository, ["repository", "serviceName"], diagnostics, {
+        validate: (value) => value.length <= 63 && dns1035Label.test(value),
+        description: "a Kubernetes Service DNS-1035 label of at most 63 characters",
+      }),
       upstreamCidrs: stringArray(repository, ["repository", "upstreamCidrs"], diagnostics, {
         validate: isIpv4Cidr,
         description: "an IPv4 CIDR",

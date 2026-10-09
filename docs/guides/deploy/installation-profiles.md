@@ -95,7 +95,9 @@ fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
 release-name syntax and be at most 53 characters. Image references in
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
 must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
-casing fails preflight without emitting deployable files.
+casing fails preflight without emitting deployable files. `controlPlane.adminEmail`
+must be an administrator email the bootstrap Job accepts after trim and lowercase:
+one `@` and a dotted domain.
 
 ```json
 {
@@ -163,10 +165,13 @@ ChatGPT Backend admin credential path:
 }
 ```
 
-Managed issuance is separate from the default `codex_pat` path. The rendered
-Backend and ServiceAccount Driver wiring does not prove that live
-service-account creation works. Optional `credentialTtlSeconds` must be an
-integer from 1 through 2592000, the lifetime the API accepts; omit it to use 2592000.
+`workspaceId` must be a UUID the controller accepts at startup: version digit
+1–8 and variant 8, 9, a, or b, as in the example. Any other spelling, including
+a nil UUID, is a preflight error. Managed issuance is separate from the default
+`codex_pat` path. The rendered Backend and ServiceAccount Driver wiring does not
+prove that live service-account creation works. Optional `credentialTtlSeconds`
+must be an integer from 1 through 2592000, the lifetime the API accepts; omit it
+to use 2592000.
 
 To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as
@@ -236,7 +241,10 @@ If you opt in to repositories, add the broker inputs:
 upgrade fails until you set it. When upgrading an installation whose broker
 Service has another name, set `serviceName` to that current name so TLS and
 active repository sessions keep working, then switch it deliberately after
-sessions drain.
+sessions drain. A set name must be a DNS-1035 label of at most 63 characters:
+a lowercase letter, then lowercase letters, digits, or hyphens, ending in a
+letter or digit. Preflight refuses any other spelling, which the chart also
+refuses.
 
 ## Render files
 
@@ -280,8 +288,9 @@ Skip both configuration-generation branches and continue at the
 The runbook covers Secret creation, Helm installation, bootstrap key retrieval,
 and authenticated API verification.
 
-`controlPlane.nodeSelector` requires Kubernetes label keys and nonempty label
-values of at most 63 characters, matching Helm and bootstrap-volume preparation.
+`controlPlane.nodeSelector` requires Kubernetes label keys and label values
+that are empty or a label name of at most 63 characters, matching Helm and
+bootstrap-volume preparation.
 Preflight rejects invalid placement labels before writing deployment files.
 
 If rendering fails or either YAML file is absent, stop and fix the input. Do not
