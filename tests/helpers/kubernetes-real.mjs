@@ -23,12 +23,13 @@ async function kubectlFor(selection, ...args) {
 }
 
 // kubectl reports a dropped API server or kubelet stream on stderr: an exec
-// WebSocket that closed mid-stream ("error: EOF"), a reset or refused
-// connection, or a kubelet tunnel that could not be dialed. A remote command
-// that ran and failed ends with "command terminated with exit code N"; that is
-// the command's own result and is never retried.
+// WebSocket that closed mid-stream ("error: EOF"), an API request whose
+// connection closed before the reply ('Post "https://...": EOF'), a reset or
+// refused connection, or a kubelet tunnel that could not be dialed. A remote
+// command that ran and failed ends with "command terminated with exit code N";
+// that is the command's own result and is never retried.
 const transientKubectlFailure =
-  /^error: EOF$|Unable to connect to the server|error dialing backend|websocket: close|unexpected EOF|connection reset by peer|connection refused|http2: client connection lost|TLS handshake timeout|i\/o timeout|the server is currently unable to handle the request|etcdserver: request timed out/m;
+  /^error: EOF$|"https?:\/\/[^"\s]+": EOF$|Unable to connect to the server|error dialing backend|websocket: close|unexpected EOF|connection reset by peer|connection refused|http2: client connection lost|TLS handshake timeout|i\/o timeout|the server is currently unable to handle the request|etcdserver: request timed out/m;
 
 export function isTransientKubectlFailure(error) {
   // A spawn failure (ENOENT, EACCES) has empty stderr: kubectl never ran.
@@ -64,6 +65,26 @@ export async function retryKubectlRead(
       delayMs *= 2;
     }
   }
+}
+
+// Retries a kubectl write whose transport dropped. The dropped attempt may or
+// may not have been applied, so only writes that converge when repeated belong
+// here: label and annotate with --overwrite, apply, delete with
+// --ignore-not-found, and create, where AlreadyExists after a dropped attempt
+// means that attempt was applied. AlreadyExists on the first attempt is thrown.
+export async function retryKubectlWrite(write, options) {
+  let dropped = false;
+  return retryKubectlRead(async () => {
+    try {
+      return await write();
+    } catch (error) {
+      if (dropped && /^Error from server \(AlreadyExists\): /m.test(String(error?.stderr ?? ""))) {
+        return "";
+      }
+      dropped ||= isTransientKubectlFailure(error);
+      throw error;
+    }
+  }, options);
 }
 
 // tests/fixtures/kubernetes/probe.mjs exits with this code, and prints
