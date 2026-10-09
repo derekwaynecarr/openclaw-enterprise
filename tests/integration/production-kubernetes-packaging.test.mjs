@@ -673,6 +673,87 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   assert.equal(bootstrapClaim.spec.resources.requests.storage, "1Gi");
 });
 
+test(
+  "production Helm custom Gateway hostname follows the loaded Compute contract",
+  tooling,
+  async (t) => {
+    const { loadInstallationConfiguration } =
+      await import("../../apps/controller/src/composition/installation-config.ts");
+    const directory = await mkdtemp(join(tmpdir(), "occ-control-hostname-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const example = loadYaml(
+      (await readFile(new URL("installation.yaml", productionExamples), "utf8")).replace(
+        "<actual-proxy-source-cidr>",
+        "192.0.2.10/32",
+      ),
+    );
+    const installationPath = join(directory, "installation.yaml");
+    const invalid = [
+      "Bad_Host",
+      "proxy.example.test:443",
+      "https://proxy.example.test",
+      "proxy..example.test",
+      `${"a".repeat(64)}.test`,
+      `${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(62)}`,
+    ];
+    const valid = [
+      "proxy.example.test",
+      `${"a".repeat(63)}.test`,
+      `${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(61)}`,
+      "",
+      undefined,
+    ];
+    for (const hostname of [...invalid, ...valid]) {
+      const configuration = structuredClone(example);
+      if (hostname === undefined)
+        delete configuration.drivers.compute.configuration.gatewayRouting.hostname;
+      else configuration.drivers.compute.configuration.gatewayRouting.hostname = hostname;
+      await writeFile(installationPath, JSON.stringify(configuration));
+      const load = () =>
+        loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: installationPath },
+        });
+      const helmValues =
+        hostname === undefined
+          ? gatewayRoutingValues
+          : { ...gatewayRoutingValues, "gatewayRouting.hostname": hostname };
+      if (invalid.includes(hostname)) {
+        await assert.rejects(
+          load(),
+          /Gateway routing hostname must be a DNS hostname without a port or path/,
+        );
+        await assert.rejects(
+          render(helmValues),
+          ({ stderr }) =>
+            stderr.includes(
+              "gatewayRouting.hostname must be a DNS hostname without a port or path",
+            ),
+          hostname,
+        );
+        continue;
+      }
+      const loaded = await load();
+      const objects = await resources((await render(helmValues)).stdout);
+      const gateway = objects.find((object) => object.kind === "Gateway");
+      const envoy = objects.find((object) => object.kind === "EnvoyProxy");
+      const certificate = objects.find(
+        (object) => object.kind === "Certificate" && !object.spec.isCA,
+      );
+      const routing = loaded.installation.drivers.compute.configuration.gatewayRouting;
+      const expected =
+        hostname ||
+        `${envoy.spec.provider.kubernetes.envoyService.name}.${routing.envoyNamespace}.svc`;
+      assert.equal(
+        gateway.spec.listeners.find((listener) => listener.name === "https").hostname,
+        expected,
+      );
+      assert.deepEqual(certificate.spec.dnsNames, [expected]);
+      assert.equal(routing.hostname, hostname);
+    }
+  },
+);
+
 test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
   await assert.rejects(
     execute(
