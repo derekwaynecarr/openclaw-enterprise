@@ -22,14 +22,14 @@ export interface OccLoggerOptions {
 const SAFE_STRING = /^[A-Za-z0-9][A-Za-z0-9._: /@-]{0,511}$/;
 const SAFE_PATH = /^\/[ -~]{0,1023}$/;
 // Token shapes: a bearer credential, an OpenAI, GitHub (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,
-// `github_pat_`) or Slack key, a JWT, a private key, or an AWS access key ID.
+// `github_pat_`) or Slack key, a private key, or an AWS access key ID.
 const SECRET_VALUE =
-  /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:gh[oprsu]|github_pat)_[A-Za-z0-9_]{12,}|\bxox[abeoprs]-[A-Za-z0-9-]{10,}|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.|\bAKIA[0-9A-Z]{16}\b/i;
-// A basic credential. Case-sensitive: a base64 token of 8 or more characters with an uppercase
-// letter, digit, `+`, `/` or `=` after its first character, so prose ("Basic authentication")
-// passes.
-const BASIC_CREDENTIAL =
-  /\b(?:Basic|basic|BASIC)\s+(?=[A-Za-z0-9+/]{8})[A-Za-z0-9+/][a-z]*[A-Z0-9+/=]/;
+  /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:gh[oprsu]|github_pat)_[A-Za-z0-9_]{12,}|\bxox[abeoprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b/i;
+// Case-sensitive token shapes. A JWT (`eyJ` header and payload). A basic credential: a base64
+// token of 8 or more characters with a digit, `+` or `=`, or with two uppercase letters after
+// its first character, so prose ("Basic authentication", "basic OpenShell") passes.
+const CASE_SENSITIVE_TOKEN =
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.|\b(?:Basic|basic|BASIC)\s+(?=[A-Za-z0-9+/]{8})(?:[A-Za-z0-9+/]*[0-9+=]|[A-Za-z0-9+/][a-z/]*[A-Z][a-z/]*[A-Z])/;
 const ALLOWED_ATTEMPT_FIELDS = new Set([
   "authAccountId",
   "installationId",
@@ -147,11 +147,11 @@ function safeString(value: string): string | undefined {
 // `/`), a query parameter that usually carries a credential, or a `password=` or OAuth secret
 // pair in a connection string or form body. The scheme is not matched: `://` anchors the search.
 const URL_CREDENTIAL =
-  /:\/\/[^\s/?#@:]*(?::[^\s?#@]*)?@|[?&](?:access_token|api_key|apikey|client_secret|code|id_token|key|password|refresh_token|secret|sig|signature|token|x-amz-credential|x-amz-security-token|x-amz-signature)=|(?:client_secret|passwd|password|refresh_token)=[^\s&;]/i;
+  /:\/\/[^\s/?#@:]*(?::[^\s?#@]*)?@|[?&](?:access_token|api_key|apikey|client_secret|code|id_token|key|password|refresh_token|secret|sig|signature|token|x-amz-credential|x-amz-security-token|x-amz-signature)=|(?:client_secret|passwd|password|pwd|refresh_token)=[^\s&;]/i;
 export const WITHHELD_ERROR_TEXT = "The message was withheld because it resembles a credential.";
 const LOGGED_ERROR_TEXT_CHARACTERS = 512;
-// How much of the error text is checked: the logged cut plus a margin for a credential that
-// straddles it. Bounding it keeps the patterns linear in the logged text, not in the input.
+// How much of the collapsed error text is checked: the logged cut (at most 1024 code units) plus
+// a margin for a credential that straddles it. The bound caps what the patterns cost.
 const CHECKED_ERROR_TEXT_UNITS = 4 * LOGGED_ERROR_TEXT_CHARACTERS;
 
 /**
@@ -163,7 +163,7 @@ export function resemblesCredential(text: string): boolean {
 }
 
 function resemblesToken(text: string): boolean {
-  return SECRET_VALUE.test(text) || BASIC_CREDENTIAL.test(text);
+  return SECRET_VALUE.test(text) || CASE_SENSITIVE_TOKEN.test(text);
 }
 
 /**
@@ -174,10 +174,11 @@ function resemblesToken(text: string): boolean {
  * still keep provider and request text out of what they log.
  */
 export function loggedErrorText(value: string): string | undefined {
+  // Collapsed first (a linear pass), so padding cannot push a credential past the bound.
   const line = value
-    .slice(0, CHECKED_ERROR_TEXT_UNITS)
     .replace(/[\s\p{Cc}]+/gu, " ")
-    .trim();
+    .trim()
+    .slice(0, CHECKED_ERROR_TEXT_UNITS);
   if (line === "") {
     return undefined;
   }

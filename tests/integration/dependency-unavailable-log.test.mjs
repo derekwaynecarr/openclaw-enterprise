@@ -282,10 +282,11 @@ const CREDENTIAL_MESSAGES = [
   "Connect postgres://fake-user:pa/ss@db.example.test:5432/occ failed.",
   "Connect postgres://fake-user@db.example.test/occ failed.",
   "Connect host=db.example.test user=occ password=fake-pass failed.",
+  "Connect Server=db.example.test;Uid=occ;Pwd=fake-pass; failed.",
   "Token exchange body grant_type=refresh_token&refresh_token=fake-value was refused.",
 ];
-// Every interpolating construction site, rendered with representative values (the audit of
-// DependencyUnavailableError and its subclasses), plus prose that names credentials.
+// Representative renderings of the interpolating construction sites found by the audit of
+// DependencyUnavailableError and its subclasses, plus prose that names credentials.
 const BENIGN_MESSAGES = [
   "ChatGPT Admin API POST request was unavailable.",
   "ChatGPT Admin API DELETE request failed with HTTP 503.",
@@ -302,6 +303,8 @@ const BENIGN_MESSAGES = [
   "Persisted AgentRevision plugin state is invalid.",
   "The Agent runtime credential Kubernetes namespace is unavailable.",
   "Basic authentication with the registry failed.",
+  "Uses basic OpenShell sandboxing.",
+  "Basic ServiceAccount token projection failed.",
   "The ServiceAccount credential Secret create outcome is unknown, and its cleanup could not finish.",
   "Fetch https://registry.example.test/v2/token?scope=pull failed.",
   "Cluster https://kubernetes.default.svc:443/api answered 503.",
@@ -328,7 +331,8 @@ test("dependency log fields withhold common token, URL and connection-string cre
   assert.deepEqual(dependencyUnavailableLogFields(error).causes, [{}, {}, { code: "ECONNRESET" }]);
 });
 
-test("dependency log fields check a bounded prefix of a long message", () => {
+// A timeout, so a pattern that scans quadratically fails here instead of stalling the run.
+test("dependency log fields check a bounded prefix of a long message", { timeout: 10_000 }, () => {
   // Inputs that made the URL pattern scan quadratically before the check was bounded.
   for (const message of [
     "a.".repeat(500_000),
@@ -345,6 +349,12 @@ test("dependency log fields check a bounded prefix of a long message", () => {
   const straddling = `${"c".repeat(500)} Bearer ${"t".repeat(5_000)}`;
   assert.equal(
     dependencyUnavailableLogFields(new DependencyUnavailableError(straddling)).message,
+    WITHHELD_ERROR_TEXT,
+  );
+  // Padding collapses before the bound, so it cannot push a credential's end past the check.
+  const padded = `x${" ".repeat(2_025)}postgres://fake-user:fake-pass@db.example.test/occ`;
+  assert.equal(
+    dependencyUnavailableLogFields(new DependencyUnavailableError(padded)).message,
     WITHHELD_ERROR_TEXT,
   );
 });
