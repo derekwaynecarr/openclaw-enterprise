@@ -774,7 +774,7 @@ test(
         { cwd: repository, maxBuffer: 2_000_000 },
       );
     // Compute validateGatewayName: a DNS subdomain, at most 63 characters (a label value).
-    for (const gatewayName of ["Bad_Name", "-gateways", "a".repeat(64)]) {
+    for (const gatewayName of ["Bad_Name", "-gateways", "gateways-", "a..b", "a".repeat(64)]) {
       await assert.rejects(
         template("gatewayName", gatewayName),
         /routing\.gatewayName must be a DNS-safe Kubernetes resource name of at most 63 characters/,
@@ -789,11 +789,13 @@ test(
         envoyNamespace,
       );
     }
-    const gateways = await resources((await template("gatewayName", "gateways.example")).stdout);
-    assert.equal(
-      gateways.find((object) => object.kind === "Gateway")?.metadata.name,
-      "gateways.example",
-    );
+    for (const gatewayName of ["gateways.example", "a".repeat(63)]) {
+      const gateways = await resources((await template("gatewayName", gatewayName)).stdout);
+      assert.equal(
+        gateways.find((object) => object.kind === "Gateway")?.metadata.name,
+        gatewayName,
+      );
+    }
     const envoyNamespace = "a".repeat(63);
     const envoy = await resources((await template("envoyNamespace", envoyNamespace)).stdout);
     assert.ok(envoy.some((object) => object.metadata?.namespace === envoyNamespace));

@@ -1,6 +1,6 @@
 /**
  * A Kubernetes resource name: a DNS subdomain of at most 253 characters.
- * The Compute driver applies this to gateway routing names.
+ * The Compute driver applies this to Gateway names and Secret names.
  */
 const KUBERNETES_RESOURCE_NAME =
   /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/;
