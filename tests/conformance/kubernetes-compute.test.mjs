@@ -3076,6 +3076,44 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
   }
 });
 
+test("native Gateway listeners cannot overlap the private runtime status port", () => {
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  for (const [gatewayPort, sandbox] of [
+    [18791, false],
+    [18790, true],
+  ]) {
+    const configured = routedOptions({
+      runtime,
+      gatewayRouting: {
+        ...gatewayRouting,
+        ...(sandbox ? { sandbox: { domain: "previews.example.test" } } : {}),
+      },
+    });
+    configured.network.gatewayPort = gatewayPort;
+    assert.throws(
+      () => createKubernetesComputeDriver(configured),
+      /reserved runtime status port 18791/,
+    );
+  }
+  // 18790 remains valid without the auxiliary listener; neighboring ordinary
+  // and sandbox ports must retain the existing configured-port contract.
+  for (const [gatewayPort, sandbox] of [
+    [18790, false],
+    [18792, true],
+    [8080, true],
+  ]) {
+    const configured = routedOptions({
+      runtime,
+      gatewayRouting: {
+        ...gatewayRouting,
+        ...(sandbox ? { sandbox: { domain: "previews.example.test" } } : {}),
+      },
+    });
+    configured.network.gatewayPort = gatewayPort;
+    assert.doesNotThrow(() => createKubernetesComputeDriver(configured));
+  }
+});
+
 test("sandbox routing keeps generated HTML off the administrative origin and backend", () => {
   const driver = createKubernetesComputeDriver(
     routedOptions({
