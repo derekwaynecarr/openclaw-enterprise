@@ -15,6 +15,10 @@ const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
 const proxyUrl = /^https?:\/\/(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$/;
 const dnsHostname =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+// OCC's ChatGPT workspace rule (packages/occ/src/backends.ts WORKSPACE_ID). Startup
+// refuses every other spelling, including a nil UUID.
+const chatGptWorkspaceId =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function fail(message) {
   process.stderr.write(`render-installation-profile: ${message}\n`);
@@ -1315,6 +1319,11 @@ function buildRendered(profile, parsed, diagnostics) {
             managedServiceAccounts,
             ["codex", "managedServiceAccounts", "workspaceId"],
             diagnostics,
+            {
+              pattern: chatGptWorkspaceId,
+              description:
+                "a UUID the controller accepts for a ChatGPT workspace (version 1-8, variant 8, 9, a, or b)",
+            },
           ),
           apiKeyPath: "/etc/openclaw/chatgpt/admin-key",
           credentialTtlSeconds:
