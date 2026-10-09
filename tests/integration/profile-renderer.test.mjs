@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { loadStartupConfigurationSnapshot } from "../../apps/controller/src/composition/installation-config.ts";
+import {
+  loadInstallationConfiguration,
+  loadStartupConfigurationSnapshot,
+} from "../../apps/controller/src/composition/installation-config.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
@@ -1432,4 +1435,44 @@ test("profiles refuse ChatGPT credential lifetimes the API refuses", () => {
     }),
     /codex.managedServiceAccounts.credentialTtlSeconds must be an integer from 1 through 2592000/,
   );
+});
+
+test("profile transport Secret prefixes agree with controller startup admission", async (t) => {
+  const baseline = render("openclaw", baseInput());
+  t.after(() => rmSync(baseline.directory, { recursive: true, force: true }));
+  const prefixes = [
+    ["transport", true],
+    ["transport-", true],
+    ["tenant.transport", true],
+    ["a".repeat(240), true],
+    ["Bad_Prefix", false],
+    ["transport/agent", false],
+    ["transport.", false],
+    ["a".repeat(241), false],
+  ];
+  for (const [prefix, accepted] of prefixes) {
+    const input = baseInput();
+    input.runtime.transportSecretPrefix = prefix;
+    if (accepted) {
+      const output = render("openclaw", input);
+      t.after(() => rmSync(output.directory, { recursive: true, force: true }));
+      await loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: join(output.directory, "installation.yaml") },
+      });
+    } else {
+      assertPreflightFailure("openclaw", input, /runtime\.transportSecretPrefix/);
+      const installation = loadYaml(baseline.installation);
+      installation.drivers.compute.configuration.runtime.transportSecretPrefix = prefix;
+      const path = join(baseline.directory, "invalid-installation.json");
+      writeFileSync(path, JSON.stringify(installation));
+      await assert.rejects(
+        loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: path },
+        }),
+        /runtime\.transportSecretPrefix/,
+      );
+    }
+  }
 });

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-09
-last_updated_session: authoring-run/4108453c-660a-45ca-87c8-ff328a767f38
+last_updated_session: authoring-run/8b675a82-44c5-4fc1-a404-dad5edd03858
 ---
 
 # Installation Profile Rendering Flow
@@ -158,6 +158,12 @@ entries, but it does not read the files; controller startup resolves the paths
 and validates their contents. Preset input changes alter the Installation
 checksum like any other startup configuration.
 
+`runtime.transportSecretPrefix` must produce the same DNS-safe name that
+Kubernetes Compute startup requires: `<prefix>-<12 hex characters>`, at most
+253 characters in total. Preflight checks that composed name before writing
+Installation YAML. A trailing hyphen in the prefix remains valid; a trailing
+dot does not, because the suffix would start a new label with a hyphen.
+
 ### 6. Write outputs and preflight
 
 `scripts/render-installation-profile.mjs:writeYaml`
@@ -210,6 +216,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 20:06: Validate transport Secret prefixes before rendering Installation configuration. (authoring-run/8b675a82-44c5-4fc1-a404-dad5edd03858 - cd468c23101b201b3969fa1a4077a18042d3396b)
 
 - 2026-10-09 08:40: Integrate database CA-key validation with current renderer guards and regressions. (authoring-run/4108453c-660a-45ca-87c8-ff328a767f38 - 1f8c782e69d5d097b622ba13b964d87f1088a2ff)
 
