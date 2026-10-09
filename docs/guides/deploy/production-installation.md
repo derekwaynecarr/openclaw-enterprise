@@ -196,7 +196,8 @@ before running the checks:
 
 - `values.yaml`: set auth URL, admin email, database and cluster CIDRs,
   control-plane node selector, database CA, DNS, API clients, and bootstrap
-  password claim. Keep native admin enabled for the password profile, and gateway
+  password claim. Keep `bootstrap.password.mountPath` absolute; the bootstrap Job
+  refuses a relative output file. Keep native admin enabled for the password profile, and gateway
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
   `auth.baseUrl` that is not an `https` origin (`http` only for `localhost` or
   `127.0.0.1`), has a path other than `/`, a query, fragment or user info (even a

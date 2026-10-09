@@ -3096,6 +3096,19 @@ test(
   },
 );
 
+test("the chart refuses a relative bootstrap mount path the Job refuses", tooling, async () => {
+  const message = /bootstrap\.password\.mountPath must be an absolute path/;
+  for (const mountPath of ["bootstrap", "./bootstrap", " bootstrap"]) {
+    await assert.rejects(
+      render({}, { strings: { "bootstrap.password.mountPath": mountPath } }),
+      ({ code, stderr }) => code !== 0 && message.test(stderr),
+      JSON.stringify(mountPath),
+    );
+  }
+  const { stdout } = await render();
+  assert.match(stdout, /value: "\/var\/lib\/openclaw\/bootstrap\/initial-admin-password"/);
+});
+
 test(
   "Gateway membership selectors keep a numeric-looking route label a string",
   tooling,
