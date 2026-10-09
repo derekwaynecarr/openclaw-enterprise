@@ -3875,3 +3875,48 @@ test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
     );
   }
 });
+
+test(
+  "the chart refuses control-plane node selectors the volume helper refuses",
+  tooling,
+  async () => {
+    const valueMessage =
+      /controlPlane\.nodeSelector values must be nonempty Kubernetes label values/;
+    const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
+    for (const [key, value, message] of [
+      ["oce-role", "not valid", valueMessage],
+      ["oce-role", "", valueMessage],
+      ["oce-role", "a".repeat(64), valueMessage],
+      ["a-", "control", keyMessage],
+      ["bad key", "control", keyMessage],
+    ]) {
+      await assert.rejects(
+        render({}, { strings: { [`controlPlane.nodeSelector.${key}`]: value } }),
+        ({ code, stderr }) => code !== 0 && message.test(stderr),
+        `${key}=${value}`,
+      );
+    }
+    const directory = await mkdtemp(join(tmpdir(), "openclaw-node-selector-"));
+    const selectorValues = join(directory, "selector.yaml");
+    await writeFile(
+      selectorValues,
+      "controlPlane:\n  nodeSelector:\n    Example.com/role: control\n",
+    );
+    await assert.rejects(
+      render({}, { valuesFiles: [selectorValues] }),
+      ({ code, stderr }) => code !== 0 && keyMessage.test(stderr),
+    );
+    await rm(directory, { recursive: true, force: true });
+    const { stdout } = await render(
+      {},
+      {
+        strings: {
+          "controlPlane.nodeSelector.oce-role": "control",
+          "controlPlane.nodeSelector.topology\\.kubernetes\\.io/zone": "east",
+        },
+      },
+    );
+    assert.match(stdout, /oce-role: control/);
+    assert.match(stdout, /topology\.kubernetes\.io\/zone: east/);
+  },
+);

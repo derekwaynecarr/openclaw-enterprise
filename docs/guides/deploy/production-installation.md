@@ -385,7 +385,8 @@ scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG_FILE" --context "$CON
 
 Replace `--node-selector oce-role=control` with the `controlPlane.nodeSelector`
 labels, one option per label, so preparation and initialization share volume
-topology.
+topology. Helm refuses a key or value that helper refuses: a Kubernetes label
+key, and a nonempty label value of at most 63 characters.
 
 The helper refuses any nonfresh mounted root except `lost+found`, schedules with
 the supplied node selector before storage binds, reports `Prepared bootstrap
