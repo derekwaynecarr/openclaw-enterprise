@@ -224,6 +224,8 @@ For Slack Agents, configure both proxy paths in the
 [Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
 
+`images.controller` must be an immutable reference `prepare-bootstrap-volume --image` accepts: a letter or digit, then only letters, digits, `.`, `_`, `:`, `/`, and `-`, and a lowercase `sha256` digest.
+
 Run every check below before provisioning the password profile:
 
 ```bash

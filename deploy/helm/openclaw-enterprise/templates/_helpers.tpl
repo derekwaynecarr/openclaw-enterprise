@@ -4,7 +4,8 @@
 {{- if hasKey .Values "integrations" -}}{{- fail "integrations is retired; configure ChatGPT packaging under backend.chatgpt" -}}{{- end -}}
 {{- if hasKey .Values "workspaceFiles" -}}{{- fail "workspaceFiles is retired; configure private Envoy Gateway routing under gatewayRouting" -}}{{- end -}}
 {{- range $name, $image := .Values.images -}}
-{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $image) -}}
+{{- /* prepare-bootstrap-volume --image: a letter or digit, then letters, digits, dot, underscore, colon, slash, or hyphen, and a lowercase sha256 digest. */ -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$" $image) -}}
 {{- fail (printf "images.%s must be an approved immutable SHA-256 image reference" $name) -}}
 {{- end -}}
 {{- end -}}
