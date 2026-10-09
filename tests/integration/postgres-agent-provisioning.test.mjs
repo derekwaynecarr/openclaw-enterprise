@@ -1580,8 +1580,10 @@ test(
         throw new Error("synthetic Configuration create timeout");
       }
       // The first create lands just before the resend reaches the API server, which answers
-      // the resend with AlreadyExists, as the Kubernetes Driver reports it.
-      await lateOriginal(configuration);
+      // that resend and any later one with AlreadyExists, as the Kubernetes Driver reports it.
+      if (sent.length === 2) {
+        await lateOriginal(configuration);
+      }
       throw new ConfigurationConflictError("The Kubernetes ConfigMap create conflicted.");
     };
     const fixture = await createFixture(context, { computeDriver, configurationDriver });
@@ -1624,6 +1626,8 @@ test(
 
     // A different Configuration under the same name is never taken as this request's write:
     // the work is not settled and runs out of attempts, and the stored document is untouched.
+    // (This test Driver's inspection answers not found for a mismatch; the Kubernetes one
+    // reports a conflict, which fails the attempt the same way.)
     sent.length = 0;
     const foreign = { model: "foreign-configuration" };
     lateOriginal = (configuration) =>
@@ -1651,6 +1655,69 @@ test(
       [namespace.id, sent[0].id],
     );
     assert.equal(metadata.rows[0].count, 0);
+  },
+);
+
+test(
+  "a Configuration resend follows a fresh authority check and sends nothing once authority is revoked",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-provisioning-resend-revoked",
+    });
+    const createExact = configurationDriver.createExact;
+    const inspectExact = configurationDriver.inspectExact;
+    const sent = [];
+    configurationDriver.createExact = async (configuration) => {
+      sent.push(structuredClone(configuration));
+      if (sent.length === 1) {
+        throw new Error("synthetic Configuration create timeout before the API server");
+      }
+      return createExact(configuration);
+    };
+    let revokeOnInspection;
+    configurationDriver.inspectExact = async (configuration) => {
+      const inspected = await inspectExact(configuration);
+      await revokeOnInspection?.();
+      return inspected;
+    };
+    const fixture = await createFixture(context, { configurationDriver });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const { workId } = admitted.data.provisioning;
+    await provisionUntilConfigurationSettling(fixture, admitted, sent);
+    await elapseConfigurationSettleWindow(fixture, workId);
+
+    // The actor loses authority after the attempt's first checks passed, while the worker is
+    // inspecting the absent Configuration, so only the check just before the resend sees it.
+    // Revoked authority must send nothing: the create stays an unknown outcome and the work
+    // runs out of attempts.
+    let inspections = 0;
+    revokeOnInspection = async () => {
+      inspections += 1;
+      if (inspections === 2) {
+        await fixture.revokeCurrentPrincipal();
+      }
+    };
+    await fixture.startWorker();
+    const work = await waitFor("the revoked provisioning work to run out of attempts", async () => {
+      const observed = await fixture.pool.query(
+        "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
+        [workId],
+      );
+      return observed.rows[0]?.state === "failed_permanent" ? observed.rows[0] : undefined;
+    });
+    await fixture.stopWorker();
+    assert.equal(work.reason_code, "PROVISIONING_OUTCOME_UNKNOWN");
+    assert.equal(sent.length, 1, "revoked authority must not resend the Configuration create");
+    await assert.rejects(
+      configurationDriver.read({ id: sent[0].id, namespaceId: namespace.id }),
+      /does not exist/,
+    );
   },
 );
 

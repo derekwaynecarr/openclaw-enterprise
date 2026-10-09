@@ -912,14 +912,6 @@ function fittedList(prefix: string, items: readonly string[], suffix: string): s
 }
 
 /**
- * The provisioning status message for a worker failure. Only the shared duplicate-name,
- * Compute refusal, Secret Driver ownership and missing ChatGPT Backend texts and the
- * plugin-policy, native-support and Configuration Harness refusals pass through; other error
- * messages stay internal. Those refusals name only Installation configuration, the work's own
- * plugin selection and settings in its own Configuration, and HTTP returns them verbatim. The
- * status contract caps `error.message` at 256 characters.
- */
-/**
  * A pending provisioning Configuration create is not visible yet but may still be in flight, so
  * the attempt defers for the rest of the settle window instead of spending a retry (finding 911).
  */
@@ -932,6 +924,14 @@ class ProvisioningConfigurationSettlingError extends DependencyUnavailableError 
   }
 }
 
+/**
+ * The provisioning status message for a worker failure. Only the shared duplicate-name,
+ * Compute refusal, Secret Driver ownership and missing ChatGPT Backend texts and the
+ * plugin-policy, native-support and Configuration Harness refusals pass through; other error
+ * messages stay internal. Those refusals name only Installation configuration, the work's own
+ * plugin selection and settings in its own Configuration, and HTTP returns them verbatim. The
+ * status contract caps `error.message` at 256 characters.
+ */
 function provisioningFailureMessage(code: string, error: unknown): string {
   if (code === "PROVISIONING_REJECTED") {
     if (
@@ -8000,9 +8000,12 @@ export class OpenClawController {
    * defers without spending a retry. The resend keeps the pending effect, its owner and target,
    * so the Namespace still waits for it; it follows a fresh fence, as the first send did, and
    * writes the same deterministic Configuration with create-if-absent semantics. If it fails
-   * (AlreadyExists, or a lost response), the earlier send may have landed after all: the exact
+   * (AlreadyExists, or a lost response), an earlier send may have landed after all: the exact
    * inspection, which checks identity, generation, creation time and values, decides whether
-   * the effect settles. An effect recorded before its start was stamped keeps waiting.
+   * the effect settles, and a conflict it reports replaces the create's error. The window is
+   * measured from the first send only (the pending effect cannot be replaced), so a later
+   * attempt resends at once and relies on create-if-absent and that inspection alone. An effect
+   * recorded before its start was stamped keeps waiting.
    */
   private async resendProvisioningConfigurationEffect(
     claim: ClaimedWork,

@@ -4205,7 +4205,12 @@ export class PostgresPlatformState implements PlatformStateStore {
             return provisioningRecordFromRow(checkpointed[0]);
           }
           if (failed.disposition === "defer") {
-            await queue.defer(claim, { code: failed.code }, { delayMs: failed.delayMs! });
+            // The provisioning failure audit the caller appends already records this wait.
+            await queue.defer(
+              claim,
+              { code: failed.code },
+              { delayMs: failed.delayMs!, recordEvidence: false },
+            );
             return provisioningRecordFromRow(checkpointed[0]);
           }
           await queue.retry(claim, { code: failed.code });

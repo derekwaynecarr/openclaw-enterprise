@@ -241,6 +241,25 @@ test("a Configuration update that applied but answered an error is rolled back w
   );
   assert.deepEqual(await configurationDriver.read(reference), configuration);
 
+  // When the backend cannot even be read, OCC cannot tell whether the replace applied, so it
+  // says the rollback failed instead of claiming the write did not happen.
+  const read = configurationDriver.read;
+  configurationDriver.update = async () => {
+    configurationDriver.update = update;
+    configurationDriver.read = async () => {
+      configurationDriver.read = read;
+      throw new Error("synthetic Configuration outage");
+    };
+    throw new Error("synthetic Configuration outage");
+  };
+  await assert.rejects(
+    controller.updateConfiguration(administrator, updateInput("unknown")),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "A Driver could not roll back a failed resource mutation.",
+  );
+  assert.deepEqual(await configurationDriver.read(reference), configuration);
+
   const updated = await controller.updateConfiguration(administrator, updateInput("applied"));
   assert.equal(updated.generation, 2);
   assert.deepEqual((await configurationDriver.read(reference)).values, { model: "applied" });

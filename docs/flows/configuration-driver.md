@@ -99,10 +99,12 @@ the exact identity and document there; an adopted data-plane namespace does not
 change canonical Configuration ownership. When a create's outcome is unknown and
 `inspectExact` still finds nothing 90 seconds after the provisioning effect began
 (database clock), the worker fences again and sends the same create under the
-same effect; earlier attempts wait without spending a retry. The Driver's write
-deadline is 10 seconds and the API server's default request timeout 60 seconds,
-so a late original then fails `AlreadyExists`. A failed resend settles the effect
-only if `inspectExact` finds the exact Configuration.
+same effect; earlier attempts wait without spending a retry, and a Namespace
+deletion keeps waiting meanwhile. The Driver's write deadline is 10 seconds and
+the API server's default request timeout 60 seconds, so a late original then
+fails `AlreadyExists`. The window covers the first send only: later attempts
+resend at once. A failed resend settles the effect only if `inspectExact` finds
+the exact Configuration.
 
 ### 3. Authorize the exact Namespace Configuration operation
 
