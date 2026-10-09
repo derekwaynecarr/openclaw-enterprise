@@ -190,8 +190,9 @@ send the withdraw request again to retry it on their own authority.
 
 The worker retries an unconfirmed withdrawal a few times with backoff
 (`OCC_WORKER_MAX_ATTEMPTS`; by default about 12 seconds). If those attempts run
-out because the gateway is unreachable or has not confirmed revocation, and
-Compute has no maintenance (the Kubernetes Compute Driver has none), the worker
+out because the gateway is unreachable or has not confirmed revocation, or the
+last attempt outlived its worker's claim (a worker restart or a hung gateway
+call), and Compute has no maintenance (the Kubernetes Compute Driver has none), the worker
 queues another series 30 seconds later, then after 1, 2 and 4 minutes, then
 every 5 minutes, 15 series in all (about an hour). Meanwhile the read shows
 `pending`, the latest `reason`, and `withdrawalInProgress: true`, and the
