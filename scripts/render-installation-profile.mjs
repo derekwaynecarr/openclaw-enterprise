@@ -313,13 +313,17 @@ function asBoolean(source, path, diagnostics, fallback = false) {
   return value;
 }
 
-function optionalPositiveInteger(source, path, diagnostics) {
+function optionalPositiveInteger(source, path, diagnostics, { max } = {}) {
   const value = source[path.at(-1)];
   if (value === undefined) {
     return undefined;
   }
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    diagnostics.errors.push(`${path.join(".")} must be a positive integer when supplied.`);
+  if (!Number.isSafeInteger(value) || value < 1 || (max !== undefined && value > max)) {
+    diagnostics.errors.push(
+      max === undefined
+        ? `${path.join(".")} must be a positive integer when supplied.`
+        : `${path.join(".")} must be an integer from 1 through ${max} when supplied.`,
+    );
     return undefined;
   }
   return value;
@@ -1386,6 +1390,8 @@ function buildRendered(profile, parsed, diagnostics) {
               managedServiceAccounts,
               ["codex", "managedServiceAccounts", "credentialTtlSeconds"],
               diagnostics,
+              // packages/occ validateBackendDefinitions refuses a larger lifetime.
+              { max: 2_592_000 },
             ) ?? 2_592_000,
         },
         drivers: {
