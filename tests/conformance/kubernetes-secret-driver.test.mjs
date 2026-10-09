@@ -723,11 +723,13 @@ test("kubernetes-secret-driver removes a Secret whose create applied but answere
   // A create that never applied reads nothing back, deletes nothing, and keeps its own error.
   client.failureCodes.createNamespacedSecret.push("dropped");
   const reads = client.reads;
+  const deletes = client.calls.deleteNamespacedSecret;
   await assert.rejects(() => create(driver, nsId), createFailed);
   assert.equal(client.reads - reads, 1);
-  assert.equal(client.calls.deleteNamespacedSecret, 1);
+  assert.equal(client.calls.deleteNamespacedSecret - deletes, 0);
 
-  // An object under that name without this identity's exact ownership is never deleted.
+  // An object under that name without this identity's exact ownership is never deleted, and
+  // since it is not this create's, the create keeps its own error.
   client = new FakeCoreV1Api();
   nsId = namespaceId();
   client.addNamespace(nsId);
@@ -736,7 +738,7 @@ test("kubernetes-secret-driver removes a Secret whose create applied but answere
     stored.metadata.annotations["openclaw.dev/secret-id"] = secretId();
   };
   client.createAppliedFailureCodes.push("dropped");
-  await assert.rejects(() => create(driver, nsId), cleanupFailed);
+  await assert.rejects(() => create(driver, nsId), createFailed);
   assert.equal(client.secrets.size, 1);
   assert.equal(client.calls.deleteNamespacedSecret, 0);
 

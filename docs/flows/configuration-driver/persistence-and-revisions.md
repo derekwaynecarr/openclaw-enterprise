@@ -40,7 +40,9 @@ that applied but answered an error is undone as well. A failed create deletes on
 the exact Configuration `inspectExact` finds, a failed delete recreates the previous
 one only when it is gone, and a failed update restores the stored generation. When
 that check cannot read the backend, the request fails as a rollback failure (503).
-A write still in flight that lands after the check is not covered.
+A Driver without `inspectExact`, such as the filesystem development Driver, compensates
+only a write it saw succeed. A write still in flight, or another change that lands
+between the check and the compensation, is not covered.
 A referenced Configuration cannot be deleted. Tenant child-data access remains
 limited to namespaced ConfigMap `create`, `get`, `update`, and `delete`;
 Kubernetes cannot restrict `create` by `resourceNames`, so that verb must use

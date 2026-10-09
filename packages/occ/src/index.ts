@@ -4339,10 +4339,14 @@ export class OpenClawController {
           if (!created) {
             return;
           }
-        } else if ((await driver.inspectExact(configuration)) === undefined) {
+        } else if (
+          (await this.driverOperation(() => driver.inspectExact!(configuration))) === undefined
+        ) {
           return;
         }
-        await driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId });
+        await this.driverOperation(() =>
+          driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
+        );
       });
       const result = await this.driverOperation(() => driver.create(configuration));
       created = true;
@@ -4674,10 +4678,12 @@ export class OpenClawController {
           if (!deleted) {
             return;
           }
-        } else if ((await driver.inspectExact(previous)) !== undefined) {
+        } else if (
+          (await this.driverOperation(() => driver.inspectExact!(previous))) !== undefined
+        ) {
           return;
         }
-        await driver.create(previous);
+        await this.driverOperation(() => driver.create(previous));
       });
       await this.driverOperation(() =>
         driver.delete({ id: configuration.id, namespaceId: namespace.id }),

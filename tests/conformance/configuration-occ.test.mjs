@@ -311,6 +311,12 @@ test("a Configuration create that applied but answered an error leaves no Config
   );
 
   // A create that never applied leaves nothing to delete and keeps its own error.
+  const inspected = [];
+  const inspect = configurationDriver.inspectExact;
+  configurationDriver.inspectExact = async (configuration) => {
+    inspected.push(configuration);
+    return inspect(configuration);
+  };
   configurationDriver.create = async (configuration) => {
     configurationDriver.create = create;
     created.push(configuration);
@@ -328,6 +334,7 @@ test("a Configuration create that applied but answered an error leaves no Config
       error instanceof DependencyUnavailableError &&
       error.message === "The selected Configuration Driver is unavailable.",
   );
+  assert.deepEqual(inspected, [created[1]]);
   assert.deepEqual(deleted, []);
 
   // A document at the new identity that is not this exact Configuration is never deleted; OCC
