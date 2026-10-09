@@ -1730,6 +1730,18 @@ test("runtime log polling checks a counted timestamp group against its hashes", 
   assert.deepEqual(messages(await reader.poll([...group.slice(5), ...fresh])), []);
 });
 
+test("runtime log polling counts a timestamp group past an untimed line", async () => {
+  const reader = pollReader();
+  const lines = [
+    timedLog("boot", -1),
+    ...Array.from({ length: 20 }, (_, index) => timedLog(`worker ${index} ready`, 0)),
+  ];
+  assert.equal(messages(await reader.poll(lines)).length, 21);
+  lines.push(timedLog("untimed", null), timedLog("worker late ready", 0));
+  assert.deepEqual(messages(await reader.poll(lines)), ["untimed", "worker late ready"]);
+  assert.deepEqual(messages(await reader.poll(lines)), ["untimed"]);
+});
+
 test("runtime log polling stops counting by position after tail-clipped polls", async () => {
   const reader = pollReader();
   const group = [timedLog("worker 0 ready", 0)];
@@ -1786,6 +1798,13 @@ test("runtime log cursor without a frontier count keeps legacy cursors usable", 
     frontierCount: 1,
   });
   assert.equal(full.codec.decode(inconsistent, full.binding).status, "invalid");
+  const untimed = full.codec.encode(full.binding, {
+    ...position,
+    lastTime: null,
+    lastHashes: [],
+    frontierCount: 1,
+  });
+  assert.equal(full.codec.decode(untimed, full.binding).status, "invalid");
 });
 
 test("runtime log route polling carries PEM masking through the serialized cursor", async () => {
