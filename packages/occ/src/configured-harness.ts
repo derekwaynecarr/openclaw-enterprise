@@ -76,7 +76,11 @@ function isCatalogModelId(id: unknown, reference: string): boolean {
   return id === reference || id === splitModelRef(reference).id;
 }
 
+const providerModelsArrayMessage = (path: string): string =>
+  `Configuration setting ${path}.models must be an array of model entries.`;
+
 function providerModelEntry(
+  providerId: string,
   provider: Readonly<Record<string, unknown>>,
   model: string,
 ): Readonly<Record<string, unknown>> | undefined {
@@ -85,13 +89,21 @@ function providerModelEntry(
     return undefined;
   }
   if (!Array.isArray(configured)) {
-    throw new ConfigurationHarnessError("Configured provider models must be a native model array.");
+    throw new ConfigurationHarnessError(
+      modelProviderMessage(providerId, providerModelsArrayMessage),
+    );
   }
   const matches = configured.filter((candidate) =>
     isCatalogModelId(asRecord(candidate)?.id, model),
   );
   if (matches.length > 1) {
-    throw new ConfigurationHarnessError("The selected provider model Harness policy is ambiguous.");
+    throw new ConfigurationHarnessError(
+      modelProviderMessage(
+        providerId,
+        (path) =>
+          `Configuration setting ${path}.models lists the selected model more than once: keep one entry.`,
+      ),
+    );
   }
   return asRecord(matches[0]);
 }
@@ -100,13 +112,16 @@ function providerModelEntry(
 export function resolveConfiguredHarnessId(
   values: Readonly<OpenClawConfigurationDocument>,
 ): string {
-  // Shape refusals come first: a non-object agents or agents.entries would otherwise read as
-  // an empty roster and surface as an unrelated model-policy refusal below.
+  // Shape refusals come first: a non-object agents, agents.defaults or agents.entries would
+  // otherwise read as absent and surface as an unrelated model-policy refusal below.
   const agents = asRecord(values.agents);
   if (values.agents !== undefined && agents === undefined) {
     throw new ConfigurationHarnessError("Configuration setting agents must be an object.");
   }
   const defaults = asRecord(agents?.defaults);
+  if (agents?.defaults !== undefined && defaults === undefined) {
+    throw new ConfigurationHarnessError("Configuration setting agents.defaults must be an object.");
+  }
   const entries = asRecord(agents?.entries);
   if (agents?.entries !== undefined && entries === undefined) {
     throw new ConfigurationHarnessError(
@@ -186,10 +201,7 @@ export function resolveConfiguredHarnessId(
     }
     if (!Array.isArray(provider.models)) {
       throw new ConfigurationHarnessError(
-        modelProviderMessage(
-          providerId,
-          (path) => `Configuration setting ${path}.models must be an array of model entries.`,
-        ),
+        modelProviderMessage(providerId, providerModelsArrayMessage),
       );
     }
     if (
@@ -206,7 +218,7 @@ export function resolveConfiguredHarnessId(
         modelProviderMessage(
           providerId,
           (path) =>
-            `Configuration setting ${path}.models may list only the primary and fallback models set in agents.defaults.model or agents.entries.`,
+            `Configuration setting ${path}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`,
         ),
       );
     }
@@ -222,7 +234,9 @@ export function resolveConfiguredHarnessId(
     const providerId = splitModelRef(candidate.model).provider;
     const provider = asRecord(providerConfigurations?.[providerId]);
     const providerModel =
-      provider === undefined ? undefined : providerModelEntry(provider, candidate.model);
+      provider === undefined
+        ? undefined
+        : providerModelEntry(providerId, provider, candidate.model);
     const entryModels = asRecord(candidate.entry?.models);
     const policies = new Set(
       [entryModels?.[candidate.model], defaultModels?.[candidate.model], providerModel, provider]

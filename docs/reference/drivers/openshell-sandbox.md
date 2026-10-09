@@ -122,9 +122,9 @@ approved mounts, and `/sandbox/.openclaw-runtime` are writable. Set an explicit
 `filesystem` block to replace the baseline when tightening the Sandbox. The
 Driver still adds its required mounts, runtime root, and `/tmp`.
 
-OpenShell requires `policy.process.runAsUser` and `runAsGroup` but ignores
-them: its Kubernetes driver runs every Sandbox process as the workload identity,
-default `10001:10001`.
+The Driver requires `policy.process.runAsUser` and `runAsGroup`, but the pinned
+OpenShell ignores them: its Kubernetes driver runs every Sandbox process as the
+workload identity, default `10001:10001`.
 
 Do not add a policy for the model endpoint. The credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for

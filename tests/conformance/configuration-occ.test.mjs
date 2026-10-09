@@ -464,6 +464,13 @@ test("model policy refusals name the Configuration setting", () => {
       JSON.stringify(agents),
     );
   }
+  for (const defaults of ["x", [], null]) {
+    assert.equal(
+      refusal({ agents: { defaults, entries: { main: {} } }, models: catalog }),
+      "Configuration setting agents.defaults must be an object.",
+      JSON.stringify(defaults),
+    );
+  }
   for (const entries of ["x", [], null]) {
     assert.equal(
       refusal({ agents: { entries }, models: catalog }),
@@ -516,7 +523,28 @@ test("model policy refusals name the Configuration setting", () => {
       agents: { defaults: { model: "openai/gpt-4.1" } },
       models: { providers: { openai: { models: [{ id: "gpt-4.1" }, { id: "gpt-4.1-mini" }] } } },
     }),
-    "Configuration setting models.providers.openai.models may list only the primary and fallback models set in agents.defaults.model or agents.entries.",
+    "Configuration setting models.providers.openai.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.",
+  );
+  assert.equal(
+    refusal({
+      agents: { defaults: { model: "openai/gpt-4.1" } },
+      models: { providers: { openai: { models: ["gpt-4.1"] } } },
+    }),
+    "Configuration setting models.providers.openai.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.",
+  );
+  assert.equal(
+    refusal({
+      agents: {
+        defaults: {
+          model: "openai/gpt-4.1",
+          models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+        },
+      },
+      models: {
+        providers: { openai: { models: [{ id: "gpt-4.1" }, { id: "openai/gpt-4.1" }] } },
+      },
+    }),
+    "Configuration setting models.providers.openai.models lists the selected model more than once: keep one entry.",
   );
   const long = "p.".repeat(200);
   assert.ok(refusal({ models: { providers: { [long]: false } } }).endsWith("… must be an object."));
