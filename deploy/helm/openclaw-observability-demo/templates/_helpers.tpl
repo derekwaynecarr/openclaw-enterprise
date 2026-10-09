@@ -25,9 +25,9 @@ app.kubernetes.io/component: {{ .component }}
 {{- if and (le (len $name) 63) (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $name) -}}
 {{- $name -}}
 {{- else -}}
-{{- $prefix := replace "." "-" .root.Release.Name -}}
-{{- if not (regexMatch "^[a-z]" $prefix) -}}{{- $prefix = printf "demo-%s" $prefix -}}{{- end -}}
-{{- $suffix := printf "-%s-%s" (.root.Release.Name | sha256sum | trunc 12) .component -}}
+{{- /* End with the hash: a fallback cannot alias an unchanged name ending in -prometheus, -loki or -grafana. */ -}}
+{{- $prefix := printf "%s-%s" .component (replace "." "-" .root.Release.Name) -}}
+{{- $suffix := printf "-%s" (.root.Release.Name | sha256sum | trunc 12) -}}
 {{- printf "%s%s" ($prefix | trunc (int (sub 63 (len $suffix))) | trimSuffix "-") $suffix -}}
 {{- end -}}
 {{- end -}}

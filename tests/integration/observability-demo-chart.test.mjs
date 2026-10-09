@@ -103,6 +103,7 @@ test(
       "demo-2026-demo",
       "team.qa",
       "team-qa",
+      "team-qa-7bdce6278c69",
       "9.qa",
       "a".repeat(52),
       longPrefix + "a",
@@ -149,6 +150,7 @@ test(
     for (const [left, right] of [
       ["2026-demo", "demo-2026-demo"],
       ["team.qa", "team-qa"],
+      ["team.qa", "team-qa-7bdce6278c69"],
       [longPrefix + "a", longPrefix + "b"],
     ]) {
       assert.notEqual(names.get(left).prometheus, names.get(right).prometheus);

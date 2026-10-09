@@ -232,8 +232,9 @@ service, worker reconciliation, or PostgreSQL audit persistence.
 
 `deploy/helm/openclaw-observability-demo/templates/_helpers.tpl:demo.serviceName`
 preserves short DNS-label Service names. For dotted, leading-digit or overlong
-release names, it normalizes a prefix and appends the original release hash
-and component name. `templates/deployments.yaml` creates those Services;
+release names, it prefixes the component and a normalized release name,
+then appends the original release hash. Ending with the hash separates these
+names from unchanged component-suffixed Service names. `templates/deployments.yaml` creates those Services;
 `templates/grafana.yaml` uses the same names in both datasource URLs.
 Deployment names, Pod selectors and discovery identity keep the full release.
 
