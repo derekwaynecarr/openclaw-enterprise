@@ -364,11 +364,15 @@ class OpenShellGatewayRequestFailure extends DependencyUnavailableError {
 
   constructor(method: OpenShellMethod, error: unknown) {
     const grpcStatus = rawStatusCode(error);
+    // A failure without a gRPC status (a local client error) keeps only its class: its message
+    // can be any library text, and the API logs this message for a 503 (http.dependency_unavailable).
     const detail =
       method === "CreateSandbox"
         ? sanitizedErrorDetail(error)
-        : grpcStatus === undefined
-          ? sanitizedText(error instanceof Error ? error.message : undefined)
+        : grpcStatus === undefined &&
+            error instanceof Error &&
+            /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(error.name)
+          ? error.name
           : undefined;
     super(
       `OpenShell ${method} failed${

@@ -178,6 +178,32 @@ test(
   },
 );
 
+test(
+  "envoy namespaces get the same verdict from the preflight and the chart",
+  { skip: helmSkip },
+  () => {
+    const chartError =
+      /gatewayRouting\.envoyNamespace must be a DNS-safe Kubernetes resource name of at most 253 characters/;
+    for (const [envoyNamespace, accepted] of [
+      ["envoy-gateway-system", true],
+      ["gateway.example", true],
+      ["a".repeat(253), true],
+      ["envoy/system", false],
+      ["OpenClaw", false],
+      ["foo_bar", false],
+      ["a".repeat(254), false],
+    ]) {
+      assertParity({
+        label: envoyNamespace.length > 40 ? `${envoyNamespace.length} characters` : envoyNamespace,
+        controlPlane: { envoyNamespace },
+        values: { gatewayRouting: { envoyNamespace } },
+        accepted,
+        chartError,
+      });
+    }
+  },
+);
+
 // The API is looser than the chart on input outside this table: it trims whitespace and
 // takes a bare address as a single host. Preflight and the chart refuse both.
 test("every trusted proxy CIDR in the table gets the API's verdict, apart from zone IDs", () => {
@@ -236,6 +262,46 @@ test(
         accepted,
         chartError: /controlPlane\.nodeSelector (keys|values) must be/,
       });
+    }
+  },
+);
+
+test(
+  "external sign-in credential keys get the same verdict from preflight and the chart",
+  { skip: helmSkip },
+  () => {
+    const keyCases = [
+      [{}, true],
+      [{ clientIdKey: "id" }, true],
+      [{ clientSecretKey: "secret" }, true],
+      [{ clientIdKey: "id", clientSecretKey: "secret" }, true],
+      [{ clientIdKey: "same-key", clientSecretKey: "same-key" }, false],
+      [{ clientIdKey: "client-secret" }, false],
+      [{ clientSecretKey: "client-id" }, false],
+    ];
+    for (const provider of ["github", "google", "oidc"]) {
+      const endpoints =
+        provider === "oidc"
+          ? {
+              issuer: "https://sso.example.com/realm",
+              authorizationUrl: "https://sso.example.com/authorize",
+              tokenUrl: "https://sso.example.com/token",
+              jwksUrl: "https://sso.example.com/keys",
+            }
+          : {};
+      for (const [keys, accepted] of keyCases) {
+        const settings = { ...endpoints, ...keys };
+        assertParity({
+          label: `${provider}: ${JSON.stringify(keys)}`,
+          controlPlane: { github: undefined, [provider]: settings },
+          values: {
+            auth: { github: { enabled: false }, [provider]: { enabled: true, ...settings } },
+          },
+          accepted,
+          chartError:
+            /auth\.(github|google|oidc) client ID and client secret must use different Secret keys/,
+        });
+      }
     }
   },
 );
