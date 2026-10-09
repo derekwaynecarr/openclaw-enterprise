@@ -330,6 +330,32 @@ test("managed ChatGPT service-account wiring is optional and explicit", () => {
   assert.match(codex.preflight.warnings.join("\n"), /issuance is wired but remains unverified/);
 });
 
+test("profiles refuse ChatGPT workspace IDs the controller refuses", () => {
+  const message =
+    /codex\.managedServiceAccounts\.workspaceId must be a UUID the controller accepts for a ChatGPT workspace/;
+  for (const workspaceId of [
+    "not-a-uuid",
+    "00000000-0000-0000-0000-000000000000",
+    "11111111-1111-4111-0111-111111111111",
+    "11111111-1111-0111-8111-111111111111",
+  ]) {
+    assertPreflightFailure(
+      "codex",
+      managedCodexInput({
+        codex: {
+          managedServiceAccounts: {
+            workspaceId,
+            adminSecretName: "occ-chatgpt-admin",
+            adminSecretKey: "admin-key",
+            providerCidr: "192.0.2.21/32",
+          },
+        },
+      }),
+      message,
+    );
+  }
+});
+
 test("profiles reject invalid Helm release names before emitting deployment files", (t) => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
