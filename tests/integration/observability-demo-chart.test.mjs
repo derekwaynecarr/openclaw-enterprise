@@ -204,7 +204,13 @@ test(
     // Namespace name: a DNS label of at most 63 characters. Anything else selects nothing.
     for (const path of ["occ.namespace", "dns.namespace", "grafana.clients[0].namespace"]) {
       await render([`${path}=${"a".repeat(63)}`]);
-      for (const namespace of ["kube.system", "Kube-System", "a".repeat(64), "-system", "system-"]) {
+      for (const namespace of [
+        "kube.system",
+        "Kube-System",
+        "a".repeat(64),
+        "-system",
+        "system-",
+      ]) {
         await assert.rejects(
           render([`${path}=${namespace}`]),
           ({ stderr }) =>
