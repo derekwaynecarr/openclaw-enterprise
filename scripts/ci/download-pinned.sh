@@ -62,10 +62,16 @@ delay=2
 started=${SECONDS}
 while :; do
   status=0
-  http_code="$(curl --fail --silent --show-error --location \
+  attempt_started=${SECONDS}
+  transfer="$(curl --fail --silent --show-error --location \
     --connect-timeout 20 --max-time 300 \
     --speed-limit "${speed_limit_bytes}" --speed-time "${speed_time_seconds}" \
-    --write-out '%{http_code}' --output "${destination}" "${url}")" || status=$?
+    --write-out '%{http_code} %{speed_download}' --output "${destination}" "${url}")" || status=$?
+  http_code="${transfer%% *}"
+  # curl --silent hides progress, so name slow attempts for the next stall investigation.
+  if [[ $((SECONDS - attempt_started)) -ge 20 ]]; then
+    echo "Slow download attempt ${attempt}: $((SECONDS - attempt_started))s, average ${transfer#* } bytes/s, curl exit ${status}: ${url}" >&2
+  fi
   if [[ ${status} -eq 0 ]]; then
     break
   fi

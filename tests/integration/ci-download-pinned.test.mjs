@@ -25,6 +25,8 @@ async function withServer(plan, run) {
     requests.push(request.url);
     const mode = plan(requests.length);
     response.writeHead(200, { "content-length": body.length });
+    // Send the headers now, so a trickle's first second already counts as a 200.
+    response.flushHeaders();
     if (mode === "fast") {
       response.end(body);
       return;
@@ -66,7 +68,10 @@ function download(url, destination, checksum, env = {}) {
     execFile(
       "bash",
       [script, url, destination, checksum],
-      { env: { ...process.env, ...env }, timeout: 30_000 },
+      {
+        env: { ...process.env, NO_PROXY: "127.0.0.1", no_proxy: "127.0.0.1", ...env },
+        timeout: 30_000,
+      },
       (error, stdout, stderr) =>
         resolveRun({ code: error ? (error.code ?? 1) : 0, stdout, stderr }),
     );
@@ -108,7 +113,7 @@ test("a slow but moving download above the floor is not cut off", async () => {
   );
 });
 
-test("the default floor passes a healthy download and a checksum mismatch is not retried", async () => {
+test("default settings download a fast file once and never retry a checksum mismatch", async () => {
   await withServer(
     () => "fast",
     async ({ url, destination, requests }) => {
