@@ -230,7 +230,8 @@ async function withRetryTimers(operation, pauses = []) {
   }
 }
 
-// READ_RETRY_DELAYS_MS: five pauses, about four seconds in all.
+// A copy of the driver's READ_RETRY_DELAYS_MS, as a pin: five pauses, about four
+// seconds in all. A change to the schedule updates both.
 const READ_RETRY_PAUSES_MS = [100, 250, 500, 1_000, 2_000];
 
 function secretId() {
@@ -758,6 +759,8 @@ test("kubernetes-secret-driver ends a retry pause at once when the owner cancels
     );
     assert.equal(client.reads - reads, 1, "no read after the cancellation");
   } finally {
+    // Settles the read even when an assertion above failed first.
+    owner.abort();
     mock.timers.reset();
   }
 });
