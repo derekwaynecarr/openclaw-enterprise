@@ -434,7 +434,7 @@ function positiveInteger(value: number, name: string): number {
   return value;
 }
 
-function workOperation(claim: ClaimedWork): string {
+function workOperation(claim: ControllerWork): string {
   if (isCredentialWithdrawalWork(claim)) {
     return "agent_revision.credential_withdrawal";
   }
@@ -2681,20 +2681,33 @@ export class ControllerWorker {
    * Stale-claim recovery fails withdrawal work whose lease ran out on its last attempt (its
    * worker died, or a gateway call outlasted the lease) without the worker's final pass. Each
    * such item gets its next series here, as if that pass had failed it, in its own transaction
-   * that takes the Namespace and Agent first. A replay or another series queued in between wins
-   * (the outstanding-work check), so this never starts a second chain.
+   * that takes the Namespace and Agent first. A replay queued in between wins (the
+   * outstanding-work check), so this never starts a second chain. An item that cannot be
+   * scheduled is reported and left for a replay; the others still are.
    */
   private async scheduleRecoveredCredentialWithdrawals(
     failed: readonly ControllerWork[],
   ): Promise<void> {
+    if (this.maintenanceIntervalMs !== undefined) {
+      return;
+    }
     for (const work of failed) {
       if (!isCredentialWithdrawalWork(work) || work.agentId === undefined) {
         continue;
       }
-      await this.state.transactWithQueue(async (unit, queue) => {
-        await this.lockClaimScope(unit, work);
-        await this.scheduleCredentialWithdrawalRecovery(unit, queue, work);
-      }, this.queueOptions);
+      try {
+        await this.state.transactWithQueue(async (unit, queue) => {
+          await this.lockClaimScope(unit, work);
+          await this.scheduleCredentialWithdrawalRecovery(unit, queue, work);
+        }, this.queueOptions);
+      } catch {
+        this.emit({
+          event: "worker.error",
+          code: "WORKER_UNAVAILABLE",
+          workId: work.idempotencyKey,
+          operation: workOperation(work),
+        });
+      }
     }
   }
 
