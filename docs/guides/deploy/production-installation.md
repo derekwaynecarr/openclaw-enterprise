@@ -197,15 +197,16 @@ before running the checks:
 - `values.yaml`: set auth URL, admin email, database and cluster CIDRs,
   control-plane node selector, database CA, DNS, API clients, and bootstrap
   password claim. Keep `bootstrap.password.mountPath` absolute; the bootstrap Job
-  refuses a relative output file. Keep native admin enabled for the password profile, and gateway
+  refuses relative paths. Keep native admin enabled for the password profile, and gateway
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
   `auth.baseUrl` that is not an `https` origin (`http` only for `localhost` or
-  `127.0.0.1`), has a path other than `/`, a query, fragment or user info (even a
-  bare `?` or `#`), or contains Unicode spaces or invisible characters (ASCII
-  spaces at either end are ignored) or compatibility forms the API's URL parser
-  refuses, such as full-width `？`. A joiner (U+200C, U+200D) in a position IDNA
-  does not allow passes Helm but fails the bootstrap Job. With native admin, it
-  must be `https` and its host inside `agentNativeAdmin.sharedCookieDomain`.
+  `127.0.0.1`), has a path other than `/`, a query, fragment or user info (even
+  bare `?` or `#`), an IPv4 host other than four decimal octets without leading
+  zeros, Unicode spaces or invisible characters (outer ASCII spaces are ignored)
+  or compatibility forms the API's URL parser refuses, such as full-width `？`.
+  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job. With
+  native admin, it must be `https` and its host inside
+  `agentNativeAdmin.sharedCookieDomain`.
 - `installation.yaml`: set cluster name, log level, DNS selectors,
   service-principal token settings, Secret prefixes, runtime storage class,
   immutable runtime image digests, and PluginDriver catalog. Set
