@@ -360,6 +360,36 @@ function labelMap(source, path, diagnostics, { nonempty = true } = {}) {
   return value;
 }
 
+// Match the control-plane selector contract in Helm and prepare-bootstrap-volume.
+function controlPlaneNodeSelector(source, diagnostics) {
+  const path = ["controlPlane", "nodeSelector"];
+  const labels = labelMap(source, path, diagnostics);
+  const labelName = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
+  for (const [key, value] of Object.entries(labels)) {
+    const parts = key.split("/");
+    const name = parts.at(-1);
+    const prefix = parts.length === 2 ? parts[0] : undefined;
+    if (
+      parts.length > 2 ||
+      name.length > 63 ||
+      labelName.exec(name)?.[0] !== name ||
+      (prefix !== undefined &&
+        (prefix.length > 253 ||
+          /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/.exec(prefix)?.[0] !==
+            prefix ||
+          prefix.split(".").some((label) => label.length > 63)))
+    ) {
+      diagnostics.errors.push("controlPlane.nodeSelector keys must be Kubernetes label keys.");
+    }
+    if (typeof value === "string" && (value.length > 63 || labelName.exec(value)?.[0] !== value)) {
+      diagnostics.errors.push(
+        "controlPlane.nodeSelector values must be nonempty Kubernetes label values.",
+      );
+    }
+  }
+  return labels;
+}
+
 function stringArray(
   source,
   path,
@@ -1153,7 +1183,7 @@ function buildRendered(profile, parsed, diagnostics) {
     controlPlane: {
       ...(controlPlane.nodeSelector === undefined
         ? {}
-        : { nodeSelector: labelMap(controlPlane, ["controlPlane", "nodeSelector"], diagnostics) }),
+        : { nodeSelector: controlPlaneNodeSelector(controlPlane, diagnostics) }),
     },
     dns: {
       namespace: asString(dns, ["controlPlane", "dns", "namespace"], diagnostics),
