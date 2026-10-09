@@ -67,18 +67,26 @@ export async function retryKubectlRead(
   }
 }
 
+const alreadyCreated = /^Error from server \(AlreadyExists\): /m;
+
+// A second delete of a Namespace that the dropped attempt already started removing.
+export const namespaceAlreadyTerminating =
+  /^Error from server \(Conflict\): .*The system is ensuring all content is removed from this namespace/m;
+
 // Retries a kubectl write whose transport dropped. The dropped attempt may or
 // may not have been applied, so only writes that converge when repeated belong
 // here: label and annotate with --overwrite, apply, delete with
-// --ignore-not-found, and create, where AlreadyExists after a dropped attempt
-// means that attempt was applied. AlreadyExists on the first attempt is thrown.
-export async function retryKubectlWrite(write, options) {
+// --ignore-not-found, and create. After a dropped attempt, an error matching
+// `applied` (by default AlreadyExists, for a create) means that attempt was
+// applied; before one it is thrown. That assumes nobody else writes the same
+// object, so use it only for names the test owns.
+export async function retryKubectlWrite(write, { applied = alreadyCreated, ...options } = {}) {
   let dropped = false;
   return retryKubectlRead(async () => {
     try {
       return await write();
     } catch (error) {
-      if (dropped && /^Error from server \(AlreadyExists\): /m.test(String(error?.stderr ?? ""))) {
+      if (dropped && applied.test(String(error?.stderr ?? ""))) {
         return "";
       }
       dropped ||= isTransientKubectlFailure(error);

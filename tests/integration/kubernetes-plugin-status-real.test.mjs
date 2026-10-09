@@ -15,6 +15,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   createKubernetesClient,
+  namespaceAlreadyTerminating,
   retryKubectlRead,
   retryKubectlWrite,
   validateExplicitK3dLoopbackContext,
@@ -349,8 +350,10 @@ async function createStatusCandidate(label, context) {
       .retireRevision(candidate)
       .catch(() => {});
     // Finding 682: 'Unable to connect to the server: EOF' here failed a passing test.
-    await retryKubectlWrite(() =>
-      kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false"),
+    await retryKubectlWrite(
+      () =>
+        kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false"),
+      { applied: namespaceAlreadyTerminating },
     );
   });
   return {

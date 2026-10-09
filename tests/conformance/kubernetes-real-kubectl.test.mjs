@@ -10,6 +10,7 @@ import {
   assertProbeDenied,
   inlineProbeCommand,
   isTransientKubectlFailure,
+  namespaceAlreadyTerminating,
   PROBE_DENIED_EXIT_CODE,
   probeDenial,
   retryKubectlRead,
@@ -157,6 +158,47 @@ test("a dropped kubectl create counts AlreadyExists on its retry as done", async
   assert.equal(calls, 2);
   assert.deepEqual(sleeps, [500]);
   assert.equal(logs.length, 1);
+});
+
+test("a dropped Namespace delete counts the terminating Conflict on its retry as done", async () => {
+  const terminating =
+    'Error from server (Conflict): Operation cannot be fulfilled on namespaces "oce-1": The system is ensuring all content is removed from this namespace.  Upon completion, this namespace will automatically be purged by the system.\n';
+  let calls = 0;
+  const output = await retryKubectlWrite(
+    async () => {
+      calls += 1;
+      throw kubectlFailure(calls === 1 ? "Unable to connect to the server: EOF\n" : terminating);
+    },
+    { ...recordingOptions().options, applied: namespaceAlreadyTerminating },
+  );
+  assert.equal(output, "");
+  assert.equal(calls, 2);
+  // Without a dropped attempt, the Conflict is the delete's real answer.
+  const failure = kubectlFailure(terminating);
+  await assert.rejects(
+    retryKubectlWrite(
+      async () => {
+        throw failure;
+      },
+      { ...recordingOptions().options, applied: namespaceAlreadyTerminating },
+    ),
+    (error) => error === failure,
+  );
+});
+
+test("a dropped kubectl write still throws any other result of its retry", async () => {
+  const { sleeps, options } = recordingOptions();
+  const forbidden = kubectlFailure("Error from server (Forbidden): secrets is forbidden\n");
+  let calls = 0;
+  await assert.rejects(
+    retryKubectlWrite(async () => {
+      calls += 1;
+      throw calls === 1 ? kubectlFailure(createRequestDropped) : forbidden;
+    }, options),
+    (error) => error === forbidden,
+  );
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [500]);
 });
 
 test("a kubectl write retries a dropped connection and returns the next attempt's output", async () => {
