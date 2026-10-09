@@ -176,6 +176,16 @@ function validGatewayEndpoint(value: unknown): boolean {
   }
 }
 
+/** A `%` inside the first bracketed host, scanned linearly (no backtracking regex). */
+function hasIpv6ZoneId(value: string): boolean {
+  const open = value.indexOf("[");
+  if (open === -1) {
+    return false;
+  }
+  const close = value.indexOf("]", open);
+  return value.slice(open + 1, close === -1 ? undefined : close).includes("%");
+}
+
 /** Upper bound for one OpenShell RPC deadline; it bounds late credential-provider creates. */
 export const OPENSHELL_MAX_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -203,7 +213,7 @@ function validateOpenShellBackend(
     configuration;
   // WHATWG URL refuses an IPv6 zone ID (fe80::1%eth0) in either form, so the service
   // transport cannot dial one even where gRPC could; name the reason instead of the shape.
-  if (typeof endpoint === "string" && /\[[^\]]*%/.test(endpoint)) {
+  if (typeof endpoint === "string" && hasIpv6ZoneId(endpoint)) {
     throw new ScopeViolationError(
       path(id, "configuration.endpoint") + " must not include an IPv6 zone ID (%).",
     );
