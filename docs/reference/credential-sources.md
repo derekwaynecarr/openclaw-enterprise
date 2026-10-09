@@ -188,8 +188,8 @@ running process never confirms revocation. `AUTHORIZATION_DENIED` or
 send the withdraw request again to retry it on their own authority.
 `CREDENTIAL_WITHDRAWAL_MISCONFIGURED` or `CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT`
 means Compute cannot reach the revision's Sandbox as configured, or found an
-object it does not own; the attempt fails without retries. Correct the cause,
-then send the request again.
+object it does not own; the attempt fails without retries, even with
+maintenance. Correct the cause, then send the request again.
 
 The worker retries an unconfirmed withdrawal a few times with backoff
 (`OCC_WORKER_MAX_ATTEMPTS`; by default about 12 seconds). If those attempts run
@@ -240,8 +240,8 @@ requires exact `delete` and returns `204`:
 - It returns `409` while an Agent draft, active revision, or pending deployment
   references the source, or while a withdrawal attempt or retry series is queued
   for a revision that holds it. A withdrawal that never confirms keeps its
-  series queued for up to about an hour, even after a redeploy; deleting the
-  Agent drops its work at once.
+  series queued for up to about an hour, even after a redeploy; a completed
+  Agent deletion drops that work.
 - On an Installation with no Credential Gateway it returns
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
   did not register it returns `503`; neither changes the record.

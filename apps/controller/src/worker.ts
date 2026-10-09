@@ -353,11 +353,20 @@ function settleCredentialWithdrawal(
 /**
  * A pending withdrawal whose last attempt found its requester without `agent:operate` waits
  * for a replay: only an operator who still holds it can take it over and queue an attempt
- * that can succeed, so maintenance does not queue another denied attempt.
+ * that can succeed, so maintenance does not queue another denied attempt. One Compute refused
+ * (CredentialWithdrawalRefusedError) waits too: an operator corrects the cause, then replays.
  */
+const CREDENTIAL_WITHDRAWAL_REPLAY_REASONS: ReadonlySet<string> = new Set([
+  "AUTHORIZATION_DENIED",
+  "ACTOR_REVOKED",
+  "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+  "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+]);
+
 function credentialWithdrawalAwaitsReplay(withdrawal: Readonly<CredentialWithdrawal>): boolean {
   return (
-    withdrawal.lastReason === "AUTHORIZATION_DENIED" || withdrawal.lastReason === "ACTOR_REVOKED"
+    withdrawal.lastReason !== undefined &&
+    CREDENTIAL_WITHDRAWAL_REPLAY_REASONS.has(withdrawal.lastReason)
   );
 }
 
@@ -2598,13 +2607,24 @@ export class ControllerWorker {
         const unsettled = attempts.filter(
           ({ revoked, denial }) => !revoked && denial === undefined,
         );
-        if (terminalFailure && (unsettled.length > 0 || attempts.length === 0)) {
-          await this.appendCredentialWithdrawalAudit(unit, claim, {
-            actorId: claim.actorId,
-            outcome: "failure",
-            code: result.code,
-            credentialSourceIds: unsettled.map(({ credentialSourceId }) => credentialSourceId),
-          });
+        // A failure is audited against each unsettled withdrawal's requester, as a revocation
+        // is, so a withdrawal a replay took over is not attributed to the claim's actor.
+        if (terminalFailure) {
+          const failedBy = new Map<string, string[]>();
+          for (const { requestedBy, credentialSourceId } of unsettled) {
+            failedBy.set(requestedBy, [...(failedBy.get(requestedBy) ?? []), credentialSourceId]);
+          }
+          if (attempts.length === 0) {
+            failedBy.set(claim.actorId, []);
+          }
+          for (const [actorId, credentialSourceIds] of failedBy) {
+            await this.appendCredentialWithdrawalAudit(unit, claim, {
+              actorId,
+              outcome: "failure",
+              code: result.code,
+              credentialSourceIds,
+            });
+          }
         }
       }
       if (result.outcome === "success") {

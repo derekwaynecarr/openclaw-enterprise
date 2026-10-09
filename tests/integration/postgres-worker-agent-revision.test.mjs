@@ -1968,6 +1968,65 @@ for (const successor of [false, true]) {
   );
 }
 
+test(
+  "maintenance leaves a withdrawal Compute refused for a replay after the cause is corrected",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const owner = await fixture.agent("withdraw-refused-maintenance", {
+      auth: "credential_source",
+      nonModelSources: 1,
+    });
+    const [tool] = toolSources(owner).map(({ sourceId }) => sourceId);
+    let refuse = true;
+    let calls = 0;
+    const compute = {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      // What the Kubernetes Compute Driver throws when the gateway reports another source.
+      async withdrawCredentialSource(_revision, source) {
+        calls += 1;
+        if (refuse) {
+          throw new CredentialWithdrawalRefusedError(
+            "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+            "The Credential Gateway withdrew another credential source.",
+          );
+        }
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    const active = await fixture.revision(owner, 1);
+    await fixture.start(compute, {
+      convergenceTimeoutMs: 50,
+      transformDrivers: withCredentialGateway,
+    });
+    await fixture.work(active, "succeeded");
+    const request = withdrawalRequest(fixture, owner, tool);
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
+    const [attempt] = await withdrawalAttempts(fixture, active);
+    await fixture.work(attempt, "failed_permanent");
+
+    // Retrying cannot help, so maintenance queues no further attempt, pass after pass.
+    for (let pass = 0; pass < 2; pass += 1) {
+      await runMaintenancePass(fixture, active, "the revision's maintenance chain must continue");
+    }
+    assert.equal((await withdrawalAttempts(fixture, active)).length, 1);
+    assert.equal(calls, 1);
+    const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
+    const waiting = await read();
+    assert.equal(waiting.lastReason, "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT");
+    assert.equal(waiting.withdrawalInProgress, false);
+
+    // Once the cause is corrected, a replay revokes the source.
+    refuse = false;
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
+    const replay = (await withdrawalAttempts(fixture, active)).at(-1);
+    await fixture.work(replay, "succeeded");
+    await fixture.stop();
+    assert.equal((await read()).state, "revoked");
+  },
+);
+
 revisionTest(
   "a withdrawn Harness source fails a deployment admitted before the withdrawal",
   async (fixture) => {
