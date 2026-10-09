@@ -61,6 +61,18 @@ export class ChatGPTClient {
       resource.workspace_id !== this.workspaceId ||
       resource.enabled !== true
     ) {
+      // The create applied: this reply names the account it made, so remove exactly that
+      // one. Without an ID nothing proves which account is this request's, so nothing is
+      // deleted (a create whose reply is lost or unreadable is not compensated either).
+      if (nonempty(resource.id)) {
+        try {
+          await this.deleteServiceAccount(resource.id);
+        } catch {
+          throw new DependencyUnavailableError(
+            "ChatGPT returned an invalid service account that could not be removed.",
+          );
+        }
+      }
       throw new DependencyUnavailableError("ChatGPT returned an invalid service account.");
     }
     return { id: resource.id };

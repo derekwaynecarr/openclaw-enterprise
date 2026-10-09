@@ -73,7 +73,9 @@ for the complete setup.
 `tests/integration/occ-api.test.mjs` covers native references, immutable revision
 snapshots, and Namespace-scoped access.
 `tests/conformance/service-account-driver.test.mjs` covers authorized lifecycle,
-transaction-failure compensation, and execution-mode admission.
+transaction-failure compensation, and execution-mode admission. Against an
+in-memory Admin API, it checks that an invalid create reply removes only the account it
+names, a lost reply deletes nothing, and a retried delete completes.
 
 Its Backend regression uses built-in fetch and real HTTPS connections against a
 loopback TLS server with a test-owned certificate. An unfinished 429, 503 or
