@@ -256,6 +256,32 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "10443" }),
     /distinct from private Envoy HTTPS/,
   );
+  const longestLabel = "a".repeat(63);
+  const longestDomain = [longestLabel, longestLabel, longestLabel, "a".repeat(61)].join(".");
+  const overlongDomain = [longestLabel, longestLabel, longestLabel, "a".repeat(62)].join(".");
+  assert.equal(longestDomain.length, 253);
+  assert.equal(overlongDomain.length, 254);
+  const longest = await resources(
+    (await render({ ...sandboxValues, "gatewayRouting.sandbox.domain": longestDomain })).stdout,
+  );
+  assert.equal(
+    longest
+      .find((item) => item.kind === "Gateway")
+      .spec.listeners.find((item) => item.name === "sandbox").hostname,
+    `*.${longestDomain}`,
+  );
+  for (const domain of [
+    "a..b.com",
+    "example.com-",
+    "example.-com",
+    `${"a".repeat(64)}.test`,
+    overlongDomain,
+  ]) {
+    await assert.rejects(
+      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
+      /must be a DNS hostname/,
+    );
+  }
   await assert.rejects(
     render({
       ...sandboxValues,
