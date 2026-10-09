@@ -152,6 +152,11 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   assert.deepEqual(first.pendingNamespaces, [`team-a restored (${namespaceId})`]);
 
   await markReady(fixture, namespaceId);
+  // An earlier run created this Secret but stopped before saving its ID.
+  const interrupted = await created(fixture, `/namespaces/${namespaceId}/secrets`, {
+    name: "model-key",
+    value: "new-value",
+  });
   const second = await importTenants(fixture.api, bundle, values, { ...options, state: saved });
   assert.equal(second.complete, true);
   const namespaces = (await request(fixture.app, "/namespaces")).payload.data;
@@ -161,7 +166,7 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   const secrets = (await request(fixture.app, `${base}/secrets`)).payload.data;
   assert.deepEqual(
     secrets.map(({ id, name }) => ({ id, name })),
-    [{ id: saved.ids[seeded.secret.id], name: "model-key" }],
+    [{ id: interrupted.id, name: "model-key" }],
   );
   const configuration = (
     await request(fixture.app, `${base}/configurations/${saved.ids[seeded.configuration.id]}`)
@@ -195,21 +200,33 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   assert.equal((await request(fixture.app, `${base}/agents`)).payload.data.length, 1);
 });
 
-test("discard refuses a Namespace that gained resources after the export", async () => {
+test("discard refuses a stale bundle or one missing workspace files, before deleting", async () => {
   const fixture = await createFixture();
   const seeded = await seedTenant(fixture);
   const bundle = await exportTenants(fixture.api);
+  // This app has no Gateway to read workspace files from, as for a stopped Agent.
+  const exported = bundle.namespaces.find(({ name }) => name === "team-a");
+  assert.equal(exported.agents[0].unreadWorkspaceFiles.length, 4);
+  const discard = (options = {}) =>
+    discardTenants(fixture.api, bundle, { sleep: noSleep, intervalMs: 0, ...options });
+  await assert.rejects(
+    discard(),
+    /lacks workspace files of team-a\/a1; deploy those Agents and export again/u,
+  );
   await created(fixture, `/namespaces/${seeded.namespace.id}/secrets`, {
     name: "late",
     value: "x",
   });
   await assert.rejects(
-    discardTenants(fixture.api, bundle, { sleep: noSleep, intervalMs: 0 }),
+    discard({ allowUnreadWorkspaceFiles: true }),
     /team-a has resources the bundle lacks .*export again/u,
   );
   const agents = (await request(fixture.app, `/namespaces/${seeded.namespace.id}/agents`)).payload
     .data;
   assert.equal(agents.length, 1);
+  const secrets = (await request(fixture.app, `/namespaces/${seeded.namespace.id}/secrets`)).payload
+    .data;
+  assert.equal(secrets.length, 2);
 });
 
 test("remap replaces exact IDs only, and the retired ChatGPT method becomes a service-account PAT", () => {

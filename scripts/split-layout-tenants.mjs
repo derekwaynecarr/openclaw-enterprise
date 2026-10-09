@@ -3,7 +3,7 @@
 // namespaces across an upgrade: `export` them through OCC, `discard` them on the old release,
 // upgrade, then `import` them. See docs/guides/deploy/breaking-changes.md.
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, realpathSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export const BUNDLE_FORMAT = "oce-split-layout-tenants/v1";
@@ -12,6 +12,16 @@ export const WORKSPACE_FILE_NAMES = Object.freeze([
   "SOUL.md",
   "IDENTITY.md",
   "USER.md",
+]);
+// Access-binding resource kinds the current API accepts (Agent revisions are not carried over).
+const BINDING_RESOURCE_KINDS = Object.freeze([
+  "namespace",
+  "agent",
+  "configuration",
+  "credential_source",
+  "preset",
+  "secret",
+  "service_account",
 ]);
 const AGENT_FIELDS = Object.freeze([
   "name",
@@ -39,7 +49,7 @@ export function currentHarnessAuth(harnessAuth, namespaceId) {
 
 const usage = `Usage:
   node scripts/split-layout-tenants.mjs export --out FILE
-  node scripts/split-layout-tenants.mjs discard --bundle FILE --yes
+  node scripts/split-layout-tenants.mjs discard --bundle FILE --yes [--allow-unread-workspace-files]
   node scripts/split-layout-tenants.mjs import --bundle FILE --secret-values FILE --map FILE [--no-deploy]
 Environment: OCC_URL, OCC_SERVICE_KEY_FILE, optional OCC_CA_BUNDLE.`;
 
@@ -102,6 +112,12 @@ export async function exportTenants(api, { log = () => {} } = {}) {
           );
         }
       }
+      if (unreadWorkspaceFiles.length > 0) {
+        log(
+          `could not read workspace files of Agent ${namespace.name}/${agent.name}: ` +
+            `${unreadWorkspaceFiles.join(", ")}; deploy it and export again to keep them`,
+        );
+      }
       agents.push({ ...agent, workspaceFiles, unreadWorkspaceFiles });
     }
     const configurations = [];
@@ -162,8 +178,25 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function discardTenants(
   api,
   bundle,
-  { log = () => {}, timeoutMs = 600_000, intervalMs = 5_000, sleep = defaultSleep } = {},
+  {
+    log = () => {},
+    allowUnreadWorkspaceFiles = false,
+    timeoutMs = 600_000,
+    intervalMs = 5_000,
+    sleep = defaultSleep,
+  } = {},
 ) {
+  const unread = bundle.namespaces.flatMap((namespace) =>
+    namespace.agents
+      .filter((agent) => (agent.unreadWorkspaceFiles ?? []).length > 0)
+      .map((agent) => `${namespace.name}/${agent.name}`),
+  );
+  if (unread.length > 0 && !allowUnreadWorkspaceFiles) {
+    throw new SplitLayoutError(
+      `the bundle lacks workspace files of ${unread.join(", ")}; deploy those Agents and export ` +
+        "again, or add --allow-unread-workspace-files to discard them",
+    );
+  }
   for (const namespace of bundle.namespaces) {
     const base = ns(namespace.id);
     const exported = new Set([...namespace.agents, ...namespace.secrets].map(({ id }) => id));
@@ -203,7 +236,20 @@ export async function discardTenants(
         await api.expect("DELETE", `${base}/${kind}/${item.id}`, undefined, [200, 202, 204, 404]);
       }
     }
-    await api.expect("DELETE", base, undefined, [200, 202, 204, 404]);
+    const deleted = await api.call("DELETE", base);
+    if (deleted.status === 409) {
+      throw new SplitLayoutError(
+        `${namespace.name} (${namespace.id}) is not empty: ${deleted.error?.message ?? ""} ` +
+          "A Configuration no Agent references is not exported and blocks the delete; find it " +
+          "with `select id from occ.configurations where namespace_id = '<id>'`, delete it " +
+          "with `occ configuration delete`, then run discard again.",
+      );
+    }
+    if (![200, 202, 204, 404].includes(deleted.status)) {
+      throw new SplitLayoutError(
+        `DELETE ${base}: HTTP ${deleted.status} ${deleted.error?.code ?? "UNKNOWN"}`,
+      );
+    }
     log(`deleting Namespace ${namespace.name} (${namespace.id})`);
   }
   const ids = new Set(bundle.namespaces.map(({ id }) => id));
@@ -291,6 +337,7 @@ export async function importTenants(
   };
   const pending = [];
   const failedDeploys = [];
+  const skippedBindings = [];
 
   // Namespaces first: each needs its tenant RoleBindings before it becomes ready.
   const existing = await list(api, "/namespaces");
@@ -315,14 +362,25 @@ export async function importTenants(
     }
   }
   if (pending.length > 0) {
-    return { complete: false, pendingNamespaces: pending, failedDeploys };
+    return { complete: false, pendingNamespaces: pending, failedDeploys, skippedBindings };
   }
 
   for (const namespace of bundle.namespaces) {
     const base = ns(ids.get(namespace.id));
-    const create = async (oldId, kind, body, label) => {
+    // A named item that already exists here was created by an interrupted earlier run
+    // (or lives in a reused Namespace): adopt it rather than fail on its name.
+    const create = async (oldId, kind, body, label, name) => {
       if (ids.has(oldId)) {
         return ids.get(oldId);
+      }
+      const same =
+        name === undefined
+          ? undefined
+          : (await list(api, `${base}/${kind}`)).find((item) => item.name === name);
+      if (same) {
+        record(oldId, same.id);
+        log(`reusing existing ${label}: ${same.id} (left unchanged)`);
+        return same.id;
       }
       const { data } = await api.expect("POST", `${base}/${kind}`, body);
       record(oldId, data.id);
@@ -335,6 +393,7 @@ export async function importTenants(
         "secrets",
         { name: secret.name, value: secretValues[namespace.name][secret.name] },
         `Secret ${namespace.name}/${secret.name}`,
+        secret.name,
       );
     }
     for (const source of namespace.credentialSources) {
@@ -343,6 +402,7 @@ export async function importTenants(
         "credential-sources",
         remap(pick(source, ["name", "type", "config", "secrets"]), ids),
         `credential source ${namespace.name}/${source.name}`,
+        source.name,
       );
     }
     for (const configuration of namespace.configurations) {
@@ -354,11 +414,16 @@ export async function importTenants(
       );
     }
     for (const preset of namespace.presets) {
+      const template = structuredClone(preset.template);
+      if (template?.agent?.harnessAuth !== undefined) {
+        template.agent.harnessAuth = currentHarnessAuth(template.agent.harnessAuth, namespace.id);
+      }
       await create(
         preset.id,
         "presets",
-        remap(pick(preset, ["name", "template"]), ids),
+        remap({ name: preset.name, template }, ids),
         `Preset ${namespace.name}/${preset.name}`,
+        preset.name,
       );
     }
     const liveRoles = await list(api, `${base}/iam/roles`);
@@ -385,6 +450,7 @@ export async function importTenants(
         "service-accounts",
         { name: account.name },
         `service account ${namespace.name}/${account.name}`,
+        account.name,
       );
     }
     for (const agent of namespace.agents) {
@@ -409,42 +475,63 @@ export async function importTenants(
       if (Object.keys(agent.workspaceFiles ?? {}).length > 0) {
         body.initialWorkspaceFiles = agent.workspaceFiles;
       }
-      const { data } = await api.expect("POST", `${base}/agents`, body);
+      const same = (await list(api, `${base}/agents`)).find(({ name }) => name === agent.name);
+      const data = same
+        ? (await api.expect("GET", `${base}/agents/${same.id}`)).data
+        : (await api.expect("POST", `${base}/agents`, body)).data;
       if (agent.servicePrincipalId && data.servicePrincipalId) {
         ids.set(agent.servicePrincipalId, data.servicePrincipalId);
       }
       record(agent.id, data.id);
-      log(`created Agent ${namespace.name}/${agent.name}: ${data.id}`);
+      log(
+        `${same ? "reusing existing" : "created"} Agent ${namespace.name}/${agent.name}: ${data.id}`,
+      );
     }
-    const liveBindings = new Set((await list(api, `${base}/iam/access-bindings`)).map(bindingKey));
+    const liveBindings = new Map(
+      (await list(api, `${base}/iam/access-bindings`)).map((binding) => [
+        bindingKey(binding),
+        binding,
+      ]),
+    );
     for (const binding of namespace.accessBindings) {
       if (ids.has(binding.id)) {
         continue;
       }
-      if (binding.resourceKind === "agent_revision") {
-        log(`skipped access binding ${binding.id}: Agent revisions are not carried over`);
+      const skip =
+        binding.resourceKind === "agent_revision"
+          ? "Agent revisions are not carried over"
+          : binding.subjectKind !== "identity"
+            ? `subject kind ${binding.subjectKind} is not accepted here; re-create it by hand`
+            : !BINDING_RESOURCE_KINDS.includes(binding.resourceKind)
+              ? `resource kind ${binding.resourceKind ?? "(none)"} is not accepted here; re-create it by hand`
+              : undefined;
+      if (skip !== undefined) {
+        log(`skipped access binding ${binding.id}: ${skip}`);
         continue;
       }
       const body = remap(
         pick(binding, ["subjectKind", "subjectId", "roleId", "resourceKind", "resourceId"]),
         ids,
       );
-      if (liveBindings.has(bindingKey(body))) {
-        record(binding.id, binding.id);
+      const live = liveBindings.get(bindingKey(body));
+      if (live) {
+        record(binding.id, live.id);
         continue;
       }
-      if (!ids.has(binding.roleId)) {
-        log(
-          `skipped access binding ${binding.id}: its Role ${binding.roleId} is not in the bundle`,
+      try {
+        await create(
+          binding.id,
+          "iam/access-bindings",
+          body,
+          `access binding ${namespace.name}/${binding.id}`,
         );
-        continue;
+      } catch (error) {
+        if (!(error instanceof SplitLayoutError)) {
+          throw error;
+        }
+        // For example a binding to an Agent's own Role that the new Agent did not get.
+        skippedBindings.push(`${namespace.name}/${binding.id}: ${error.message}`);
       }
-      await create(
-        binding.id,
-        "iam/access-bindings",
-        body,
-        `access binding ${namespace.name}/${binding.id}`,
-      );
     }
     if (deploy) {
       for (const agent of namespace.agents) {
@@ -466,7 +553,7 @@ export async function importTenants(
       }
     }
   }
-  return { complete: true, pendingNamespaces: [], failedDeploys };
+  return { complete: true, pendingNamespaces: [], failedDeploys, skippedBindings };
 }
 
 function parseArgs(argv) {
@@ -474,7 +561,7 @@ function parseArgs(argv) {
   const options = { command };
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
-    if (flag === "--yes" || flag === "--no-deploy") {
+    if (["--yes", "--no-deploy", "--allow-unread-workspace-files"].includes(flag)) {
       options[flag.slice(2)] = true;
     } else if (
       ["--out", "--bundle", "--secret-values", "--map"].includes(flag) &&
@@ -527,7 +614,10 @@ export async function main(argv) {
         "discard deletes every Agent and Namespace in the bundle; add --yes",
       );
     }
-    await discardTenants(cliApi(), readBundle(options.bundle), { log });
+    await discardTenants(cliApi(), readBundle(options.bundle), {
+      log,
+      allowUnreadWorkspaceFiles: options["allow-unread-workspace-files"] === true,
+    });
     log("discarded; confirm no oce-gateways-* namespaces remain before upgrading");
   } else if (
     options.command === "import" &&
@@ -553,11 +643,14 @@ export async function main(argv) {
       );
       return 3;
     }
+    for (const skipped of result.skippedBindings) {
+      log(`access binding not re-created: ${skipped}`);
+    }
     for (const failure of result.failedDeploys) {
       log(`deploy failed: ${failure}`);
     }
     log(`imported; ID map in ${options.map}`);
-    if (result.failedDeploys.length > 0) {
+    if (result.failedDeploys.length + result.skippedBindings.length > 0) {
       return 4;
     }
   } else {
@@ -566,7 +659,10 @@ export async function main(argv) {
   return 0;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
   const bundle = process.env.OCC_CA_BUNDLE;
   if (bundle && process.env.NODE_EXTRA_CA_CERTS !== bundle) {
     // fetch reads extra trust roots only at process start.
