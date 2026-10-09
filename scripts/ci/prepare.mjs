@@ -954,7 +954,8 @@ async function reuseEngineImage(state, role, args, tag) {
     }
     image = id;
     // Under Docker's containerd image store the engine reports a manifest
-    // digest here instead, so the comparison fails safe and the lane builds.
+    // digest here instead, so the comparison fails safe, the log says
+    // "different", and the lane builds.
     let held;
     try {
       held = (

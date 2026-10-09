@@ -285,7 +285,12 @@ if (command === "docker" || command === "podman") {
     process.stderr.write("Error response from daemon: No such image: " + args[4] + "\n");
     process.exit(1);
   }
-  if (scenario === "engine-tag-failed" && args[0] === "tag" && args.length === 3) {
+  if (
+    scenario === "engine-tag-failed" &&
+    args[0] === "tag" &&
+    args.length === 3 &&
+    Object.values(heldImages).includes(args[1])
+  ) {
     process.stderr.write("Error response from daemon: synthetic tag failure\n");
     process.exit(1);
   }
@@ -1586,6 +1591,11 @@ for (const { scenario, outcome, env = {} } of [
         role,
       );
     }
+    // Only a probe that failed at the tag itself tried to tag.
+    assert.equal(
+      calls.filter(({ args }) => args[0] === "tag").length,
+      scenario === "engine-tag-failed" ? 2 : 0,
+    );
     if (env.RUNNER_TEMP !== undefined) {
       // No probe build ran without a metadata directory.
       assert.equal(
