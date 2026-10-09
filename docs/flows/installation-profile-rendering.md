@@ -166,7 +166,10 @@ Kubernetes Compute, Kubernetes Secrets, default Preset seeding, and the profile
 PluginDriver. Compute settings consume the runtime image, DNS peer, trusted
 proxy CIDRs, plugin-status proxy CIDRs, gateway routing identity, runtime
 storage class, node selectors, and transport Secret prefix. The Codex profile
-also consumes the reviewed `runtime.codexSeccompProfile` path. When optional
+also consumes the reviewed `runtime.codexSeccompProfile` path. Preflight applies
+the Compute driver's localhost-profile rule and refuses an absolute path, a
+backslash, an empty, `.`, or `..` segment, or a segment named `unconfined`,
+before writing `installation.yaml`. When optional
 managed ServiceAccount inputs are supplied, it emits the ChatGPT Backend and a
 matching ServiceAccount Driver; otherwise Codex Agents use the existing
 `codex_pat` token path configured at Agent creation. If the chart-managed Slack
@@ -258,6 +261,8 @@ activation, and repository registry creation need separate evidence.
 - 2026-10-09: Refuse a repository broker Service name the chart's DNS-1035 check refuses.
 
 - 2026-10-09: Refuse gateway and Envoy namespaces the Compute driver refuses.
+
+- 2026-10-09: Refuse Codex seccomp paths the Compute driver refuses.
 
 - 2026-10-08: Refuse database CA keys the chart refuses.
 

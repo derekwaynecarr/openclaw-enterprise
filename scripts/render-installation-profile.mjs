@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isIP } from "node:net";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isKubernetesNamespaceName } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
 
@@ -297,6 +297,23 @@ function ipv4HostKept(raw, url) {
   return (
     written === url.hostname && /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(url.hostname)
   );
+}
+
+// KubernetesComputeDriver.validateCodexSeccompProfile. A localhost profile is a
+// relative path: no absolute path or backslash, no empty, "." or ".." segment,
+// and no segment named unconfined in any case.
+function isCodexSeccompProfile(value) {
+  if (isAbsolute(value) || value.includes("\\")) {
+    return false;
+  }
+  return value.split("/").every((segment) => {
+    return (
+      segment.length > 0 &&
+      segment !== "." &&
+      segment !== ".." &&
+      segment.toLowerCase() !== "unconfined"
+    );
+  });
 }
 
 function observabilityDestination(value) {
@@ -1400,6 +1417,11 @@ function buildRendered(profile, parsed, diagnostics) {
                     runtime,
                     ["runtime", "codexSeccompProfile"],
                     diagnostics,
+                    {
+                      validate: isCodexSeccompProfile,
+                      description:
+                        "a relative localhost profile path without traversal or unconfined mode",
+                    },
                   ),
                 }
               : {}),

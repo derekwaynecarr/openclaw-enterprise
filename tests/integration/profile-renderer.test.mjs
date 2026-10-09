@@ -1595,3 +1595,23 @@ test("profiles refuse gateway namespaces the compute driver refuses", () => {
   assert.match(output.installation, new RegExp(`envoyNamespace: ${envoyNamespace}`));
   assert.doesNotThrow(() => admit({ ...routing, gatewayNamespace: namespace, envoyNamespace }));
 });
+
+test("preflight rejects Codex seccomp paths the compute driver refuses", () => {
+  const message =
+    /runtime\.codexSeccompProfile must be a relative localhost profile path without traversal or unconfined mode/;
+  for (const codexSeccompProfile of [
+    "/profiles/codex.json",
+    "../codex.json",
+    "profiles/../codex.json",
+    "profiles//codex.json",
+    "unconfined",
+    "profiles/unconfined",
+    "profiles\\codex.json",
+  ]) {
+    assertPreflightFailure("codex", codexInput({ runtime: { codexSeccompProfile } }), message);
+  }
+  const accepted = render("codex", codexInput());
+  const installation = loadYaml(accepted.installation);
+  KubernetesComputeDriver.validateConfiguration(installation.drivers.compute.configuration);
+  assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
+});
