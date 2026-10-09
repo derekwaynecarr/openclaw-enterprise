@@ -2841,6 +2841,7 @@ for (const slowCall of [1, 2]) {
           "three lease renewals during the pending health update",
           async () => {
             const current = await lease();
+            assert.ok(current.live, "the lease must not lapse while the health update is pending");
             if (current.lease_expires_at.getTime() > expiresAt) {
               renewals += 1;
               expiresAt = current.lease_expires_at.getTime();
@@ -2850,23 +2851,21 @@ for (const slowCall of [1, 2]) {
           30_000,
         );
         assert.deepEqual(
-          {
-            claim_token: renewed.claim_token,
-            attempt_count: renewed.attempt_count,
-            live: renewed.live,
-          },
-          { claim_token: original.claim_token, attempt_count: 1, live: true },
+          { claim_token: renewed.claim_token, attempt_count: renewed.attempt_count },
+          { claim_token: original.claim_token, attempt_count: 1 },
         );
         assert.equal(healthCalls, slowCall, "health updates must not overlap");
-        assert.equal(
-          events.some(({ code }) => code === "CLAIM_LOST"),
-          false,
-        );
       } finally {
         releaseHealth.resolve();
         releaseCompute.resolve();
       }
-      await fixture.work(candidate, "succeeded");
+      // A worker that gave up the claim reports it only once Compute returns.
+      const done = await fixture.work(candidate, "succeeded");
+      assert.equal(done.attempt_count, 1);
+      assert.equal(
+        events.some(({ code }) => code === "CLAIM_LOST"),
+        false,
+      );
       const active = await fixture.currentAgent(owner);
       assert.equal(active.activeRevisionId, candidate.id);
     },
@@ -4434,12 +4433,15 @@ test(
     await fixture.work(active, "succeeded");
     await fixture.stop();
 
-    // Two pending withdrawals, and an attempt for them that is queued but held back.
-    await recordPendingWithdrawal(fixture, owner, active, denied);
+    // An operator who is offboarded before the worker runs requests the first withdrawal. Its
+    // attempt is held back, so the second request queues none.
+    const requester = `withdraw-preference-requester-${randomUUID()}`;
+    await fixture.copyActorGrants(requester);
     await fixture.controller.withdrawAgentCredentialSource(
-      fixture.actor.id,
-      withdrawalRequest(fixture, owner, outage),
+      requester,
+      withdrawalRequest(fixture, owner, denied),
     );
+    await removeAccessBindings(fixture, requester);
     const [held] = await withdrawalAttempts(fixture, active);
     const holdUntil = (interval) =>
       fixture.observerPool.query(
@@ -4448,6 +4450,17 @@ test(
         [held.idempotencyKey, interval],
       );
     await holdUntil("1 day");
+    await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      withdrawalRequest(fixture, owner, outage),
+    );
+    const listed = await fixture.state.read((view) =>
+      view.credentialSources.listCredentialWithdrawals(fixture.namespace.id, active.id),
+    );
+    assert.deepEqual(
+      listed.map(({ credentialSourceId }) => credentialSourceId),
+      [denied, outage],
+    );
     await fixture.start(compute, options);
     const runMaintenance = () =>
       runMaintenancePass(fixture, active, "the active revision's maintenance chain must continue");
@@ -4460,17 +4473,13 @@ test(
       "maintenance must not queue an attempt beside an outstanding one",
     );
 
-    // The attempt runs out during the gateway outage, and the first withdrawal then awaits a
-    // replay, as a denied requester's attempt leaves it. Maintenance still re-queues the other.
+    // The attempts are denied for the first withdrawal, which then awaits a replay, and run out
+    // during the gateway outage for the second. Maintenance still re-queues the second.
     await holdUntil("0 seconds");
     await fixture.work(held, "failed_permanent", 30_000);
-    await fixture.state.transact((unit) =>
-      unit.credentialSources.recordCredentialWithdrawalAttempt(
-        fixture.namespace.id,
-        active.id,
-        denied,
-        { reason: "AUTHORIZATION_DENIED", at: new Date().toISOString() },
-      ),
+    assert.equal(
+      (await findWithdrawal(fixture, active, denied)).lastReason,
+      "AUTHORIZATION_DENIED",
     );
     revoke = true;
     await runMaintenance();
@@ -4480,7 +4489,11 @@ test(
       2,
       "maintenance must re-queue the withdrawal not awaiting a replay",
     );
-    await fixture.work(attempts[1], "succeeded");
+    // That attempt revokes the second; the first still awaits an authorized replay.
+    await fixture.work(attempts[1], "failed_permanent");
+    const waiting = await findWithdrawal(fixture, active, denied);
+    assert.equal(waiting.state, "pending");
+    assert.equal(waiting.lastReason, "AUTHORIZATION_DENIED");
     assert.equal((await findWithdrawal(fixture, active, outage)).state, "revoked");
   },
 );

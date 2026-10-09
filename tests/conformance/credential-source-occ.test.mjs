@@ -1050,7 +1050,7 @@ for (const [failure, gatewayOptions] of [
   });
 }
 
-test("withdrawal is recorded for the active revision and queued for the worker once", async () => {
+test("withdrawal is recorded for the active revision and queued once, and the read prefers a stalled successor withdrawal", async () => {
   const {
     controller,
     dedicatedAgent,
