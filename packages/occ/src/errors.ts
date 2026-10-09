@@ -330,17 +330,31 @@ function configurationFieldMessage(path: string, message: (path: string) => stri
 }
 
 /**
- * Builds a message that names the Configuration setting `agents.entries.<key>`. A submitted
- * key can hold any character: control, format, line and paragraph separator characters show
- * as ?, a key that is not a plain Agent ID is quoted, and a long key shortens the path to fit
- * the 256-character cap.
+ * Builds a message that names the Configuration setting `<parent>.<key>`. A submitted key can
+ * hold any character: control, format, line and paragraph separator characters show as ?, a
+ * key that is not a plain ID is quoted, and a long key shortens the path to fit the
+ * 256-character cap.
  */
-export function agentEntryMessage(key: string, message: (path: string) => string): string {
+function keyedSettingMessage(
+  parent: string,
+  key: string,
+  message: (path: string) => string,
+): string {
   const shown = key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
   const path = /^[A-Za-z0-9_-]+$/.test(shown)
-    ? `agents.entries.${shown}`
-    : `agents.entries[${JSON.stringify(shown)}]`;
+    ? `${parent}.${shown}`
+    : `${parent}[${JSON.stringify(shown)}]`;
   return configurationFieldMessage(path, message);
+}
+
+/** Builds a message that names the Configuration setting `agents.entries.<key>`. */
+export function agentEntryMessage(key: string, message: (path: string) => string): string {
+  return keyedSettingMessage("agents.entries", key, message);
+}
+
+/** Builds a message that names the Configuration setting `models.providers.<key>`. */
+export function modelProviderMessage(key: string, message: (path: string) => string): string {
+  return keyedSettingMessage("models.providers", key, message);
 }
 
 const modelCredentialMessage = (path: string): string =>
