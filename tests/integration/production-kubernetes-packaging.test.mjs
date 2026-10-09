@@ -3159,6 +3159,7 @@ test(
     for (const image of [
       `registry.example/controller@sha256:${"A".repeat(64)}`,
       `registry.example/controller@SHA256:${"a".repeat(64)}`,
+      `registry.example.invalid/foo+bar@sha256:${"a".repeat(64)}`,
     ]) {
       await assert.rejects(
         render({ "images.controller": image }),
@@ -3170,6 +3171,8 @@ test(
         image,
       );
     }
+    const underscored = `registry.example.invalid/foo_bar@sha256:${"a".repeat(64)}`;
+    assert.match((await render({ "images.controller": underscored })).stdout, /foo_bar@sha256:/);
   },
 );
 
