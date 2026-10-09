@@ -110,7 +110,11 @@ ChatGPT Backend mounting, optional logging collector, and optional repository
 credential sidecar. Gateway routing is always enabled. Native admin is enabled
 unless `controlPlane.github`, `controlPlane.google` or `controlPlane.oidc` renders external sign-in
 with `auth.recoveryUserId`, which Helm requires with native admin off. An
-optional `controlPlane.trustedProxy` renders `api.trustedProxy`.
+optional `controlPlane.trustedProxy` renders `api.trustedProxy`. Its CIDRs were
+already checked in step 3 with the API's `parseCidr` rules
+(`apps/controller/src/auth/client-address.ts`): a prefix of 1 through 32 for an
+IPv4-mapped address, and no range that covers every IPv4 peer. Like the chart,
+preflight also refuses a zone ID, which the API accepts.
 
 When `channels.managedSlackProxy` is true, the values also enable the
 chart-managed Slack proxy Service. The chart allows that proxy public IPv4 HTTPS
@@ -175,6 +179,8 @@ activation, and repository registry creation need separate evidence.
 
 - Run `node --test tests/integration/profile-renderer.test.mjs` to exercise the
   CLI and inspect generated profile output.
+- `tests/integration/profile-preflight-chart-parity.test.mjs` runs each trusted
+  proxy CIDR case through the renderer, `helm template` and the API parser.
 - Inspect `<out-dir>/preflight.json` first. `ok:false` means required input is
   missing or unsupported input was supplied; `values.yaml` and
   `installation.yaml` are intentionally absent.
