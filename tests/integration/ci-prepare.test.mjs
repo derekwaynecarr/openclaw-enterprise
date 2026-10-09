@@ -319,6 +319,15 @@ if (command === "docker" || command === "podman") {
     state.runtime = args[args.indexOf("-t") + 1];
     finish();
   }
+  // The main image cache warm job keeps its runtime image under a fixed local tag.
+  if (args[0] === "tag" && args[2] === "localhost/openclaw-ci-main/runtime:warm") {
+    assert.deepEqual(args, ["tag", state.runtime, "localhost/openclaw-ci-main/runtime:warm"]);
+    state.kept = args[2];
+    finish();
+  }
+  if (state.kept && equals(args, ["image", "inspect", "--format", "{{.Id}}", state.kept])) {
+    finish(configId + "\n");
+  }
   if (equals(args.slice(0, 3), ["build", "--pull=false", "-t"]) && args.length === 5) {
     // The fixture build overlaps cluster creation, so its tag cannot name the cluster.
     assert.match(args[3], /^localhost\/openclaw-ci-image-[a-z0-9-]+\/fixture:local$/);
@@ -1657,8 +1666,33 @@ test("the main image cache warm job builds the packaging images and exports both
     JSON.stringify(builds) + state + warmed.stdout + warmed.stderr,
     /synthetic-cache-credential/,
   );
+  // The runtime image stays tagged under a fixed local name that cleanup does not own,
+  // so the runners' shared image cache keeps main's image for the image lanes.
+  const kept = "localhost/openclaw-ci-main/runtime:warm";
+  const calls = await commands.commands();
+  const runtimeBuild = calls.findIndex(
+    ({ args }) => args[0] === "buildx" && !args.includes("--target"),
+  );
+  const tagged = calls.findIndex(({ args }) => args[0] === "tag" && args[2] === kept);
+  assert.ok(runtimeBuild >= 0 && tagged > runtimeBuild);
+  assert.match(calls[tagged].args[1], /^localhost\/openclaw-ci-image-[a-z0-9-]+\/runtime:local$/);
+  assert.match(
+    warmed.stderr,
+    new RegExp(`"stage":"runtime-image-kept","image":"sha256:${"b".repeat(64)}"`),
+  );
+  assert.doesNotMatch(state, /openclaw-ci-main/);
   const cleaned = commands.cleanup();
   assert.equal(cleaned.status, 0, cleaned.stderr);
+  const removed = (await commands.commands()).filter(
+    ({ args }) => args[0] === "image" && args[1] === "rm",
+  );
+  assert.deepEqual(
+    removed.map(({ args }) => args.at(-1)).sort(),
+    [
+      calls[tagged].args[1],
+      builds.find(({ args }) => args.includes("--target")).args.at(-2),
+    ].sort(),
+  );
 });
 
 test("the image cache warm job prints a failed build's output and fails", async (t) => {
@@ -1674,6 +1708,8 @@ test("the image cache warm job prints a failed build's output and fails", async 
     warmed.stderr,
     /^\[image-cache-warm\] controller build\n#7 \[runtime 3\/9\] synthetic controller step$/m,
   );
+  // A failed warm build keeps nothing.
+  assert.equal((await commands.commands()).filter(({ args }) => args[0] === "tag").length, 0);
   assert.doesNotMatch(warmed.stdout + warmed.stderr, /synthetic-cache-credential/);
   const cleaned = commands.cleanup();
   assert.equal(cleaned.status, 0, cleaned.stderr);

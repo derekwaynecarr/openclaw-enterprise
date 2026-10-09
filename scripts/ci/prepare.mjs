@@ -2886,6 +2886,10 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
   };
 }
 
+// main's runtime image stays tagged under this name on the warm job's runner (see
+// warmImageCache). It is outside cleanup's owned names and is never pushed.
+const warmRuntimeImageTag = "localhost/openclaw-ci-main/runtime:warm";
+
 // Builds the Images and Packaging controller and runtime images only to write
 // main's hosted BuildKit cache (ci-image-cache.yml). It uses that lane's state,
 // inputs and build arguments, so the cache keys are the ones the CI image lanes
@@ -2907,17 +2911,32 @@ async function warmImageCache({ statePath }) {
   await writeState(resolvedStatePath, state);
   const nodeBaseImage = effectiveLaneEnv(lane).NODE_BASE_IMAGE;
   // The two builds are independent; in parallel their exports land sooner.
-  await timedPreparation("image-cache-warm", "controller-runtime-image-build", () =>
-    prepareTogether([
-      () =>
-        buildRuntimeImages(resolvedStatePath, state, {
-          controller: true,
-          nodeBaseImage,
-          cacheWarm: true,
-        }),
-      () => buildRuntimeImages(resolvedStatePath, state, { runtime: true, cacheWarm: true }),
-    ]),
+  const [, runtime] = await timedPreparation(
+    "image-cache-warm",
+    "controller-runtime-image-build",
+    () =>
+      prepareTogether([
+        () =>
+          buildRuntimeImages(resolvedStatePath, state, {
+            controller: true,
+            nodeBaseImage,
+            cacheWarm: true,
+          }),
+        () => buildRuntimeImages(resolvedStatePath, state, { runtime: true, cacheWarm: true }),
+      ]),
   );
+  // The hosted runners' Docker data comes from a shared image cache, which keeps
+  // the images a job leaves tagged. Cleanup removes this run's owned tag, so also
+  // tag main's runtime image under a fixed local name that no cleanup owns: image
+  // lanes then find the ID their restored cache resolves to (reuseEngineImage)
+  // instead of downloading and loading it. The tag is never pushed; the next warm
+  // run moves it to that run's image.
+  const image = runtime.env.OCC_TEST_RUNTIME_IMAGE;
+  await boundedImageCommand(["tag", image, warmRuntimeImageTag]);
+  const id = (
+    await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", warmRuntimeImageTag])
+  ).stdout.trim();
+  progress("image-cache-warm", JSON.stringify({ stage: "runtime-image-kept", image: id }));
 }
 
 async function main() {
