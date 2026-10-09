@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-09
-last_updated_session: authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52
+last_updated_session: 01a12099-b8bf-7523-b52e-c7a160e191ec
 ---
 
 # Installation Profile Rendering Flow
@@ -105,7 +105,8 @@ trailing whitespace and no control characters or line or paragraph separators.
 
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
-with the API's `tldts` list), repository Service names, and paired metrics
+with the API's `tldts` list), Google hosted domains (at most 253 characters,
+last label starting with a letter), repository Service names, and paired metrics
 scraper selectors. Invalid values therefore fail before `values.yaml` or
 `installation.yaml` is written.
 
@@ -228,11 +229,15 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
-- 2026-10-09 19:42: Validate control-plane placement labels before writing profile output. (authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52 - 3a1e29fb461d2ad61a9276ae4af432bcf2d04c88)
+- 2026-10-09 20:43: Preserve Google hosted-domain and repository Service-name checks after the main merge. (01a12099-b8bf-7523-b52e-c7a160e191ec - 31a682eba8a8e4e0e0b80fe48cb71ab86db7e985)
 
 - 2026-10-09: Accept empty control-plane placement label values, as Kubernetes does.
 
+- 2026-10-09 19:42: Validate control-plane placement labels before writing profile output. (authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52 - 3a1e29fb461d2ad61a9276ae4af432bcf2d04c88)
+
 - 2026-10-09 08:40: Integrate database CA-key validation with current renderer guards and regressions. (authoring-run/4108453c-660a-45ca-87c8-ff328a767f38 - 1f8c782e69d5d097b622ba13b964d87f1088a2ff)
+
+- 2026-10-09: Refuse Google hosted domains the chart and API refuse.
 
 - 2026-10-09: Refuse a repository broker Service name the chart's DNS-1035 check refuses.
 
