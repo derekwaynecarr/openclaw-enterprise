@@ -58,6 +58,8 @@ GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime
 GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime/logs?source=gateway&tailLines=200
 ```
 
+Container timestamps are returned in UTC, preserving their available nanosecond precision.
+
 `runtime/logs` accepts only `source` (`gateway`, `agent` or `sandbox`), `pod`, `previous`,
 `tailLines` (1 to 1000, default 200), `sinceSeconds` (1 to 86400), `cursor`,
 `download` and `minLevel` (`error`, `warn`, `info` or `debug`: drop lines below it;

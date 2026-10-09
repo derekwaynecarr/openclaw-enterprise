@@ -5,7 +5,10 @@ import { createRequire } from "node:module";
 import { isIP } from "node:net";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isKubernetesNamespaceName } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
+import {
+  isKubernetesNamespaceName,
+  isKubernetesResourceName,
+} from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
 
 import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 
@@ -354,6 +357,39 @@ function simpleBasename(value) {
   return value !== "." && value !== ".." && /^[A-Za-z0-9._-]+$/.test(value);
 }
 
+function validateDatabaseCaMount(values, diagnostics) {
+  if (!values.database.caSecretName) {
+    return;
+  }
+  // Profiles use the chart's bootstrap mount and private gateway CA, with no
+  // executionCluster override. Match the active database-client mounts only.
+  const reserved = new Set([
+    "/etc/openclaw/installation",
+    "/run/openclaw-worker",
+    "/var/lib/openclaw/bootstrap",
+    "/etc/openclaw/gateway-api-key",
+    "/etc/openclaw/gateway-ca",
+  ]);
+  if (values.repositoryCredentials.enabled) {
+    for (const path of [
+      "/etc/openclaw/repository-registry",
+      "/etc/openclaw/repository-ca",
+      "/var/run/secrets/kubernetes.io/serviceaccount",
+      "/run/openclaw/repository-control",
+    ]) {
+      reserved.add(path);
+    }
+  }
+  if (values.backend?.chatgpt.enabled) {
+    reserved.add("/etc/openclaw/chatgpt");
+  }
+  if (reserved.has(values.database.caMountPath)) {
+    diagnostics.errors.push(
+      "controlPlane.databaseCa.mountPath must be distinct from other active mounts in the production database clients.",
+    );
+  }
+}
+
 function optionalString(source, path, diagnostics, { pattern, validate, description } = {}) {
   const value = source[path.at(-1)];
   if (value === undefined) {
@@ -400,32 +436,28 @@ function optionalPositiveInteger(source, path, diagnostics, { max } = {}) {
   return value;
 }
 
-function labelMap(source, path, diagnostics, { nonempty = true, emptyValues = false } = {}) {
+function labelMap(source, path, diagnostics) {
   const value = source[path.at(-1)];
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     diagnostics.errors.push(`${path.join(".")} must be an object of Kubernetes labels.`);
     return {};
   }
-  if (nonempty && Object.keys(value).length === 0) {
+  if (Object.keys(value).length === 0) {
     diagnostics.errors.push(`${path.join(".")} must contain at least one Kubernetes label.`);
   }
   for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry !== "string" || (!emptyValues && entry.length === 0)) {
-      diagnostics.errors.push(
-        `${path.join(".")}.${key} must be a ${emptyValues ? "" : "nonempty "}string.`,
-      );
+    if (typeof entry !== "string") {
+      diagnostics.errors.push(`${path.join(".")}.${key} must be a string.`);
     }
   }
   return value;
 }
 
-// Kubernetes node selector labels: the chart and prepare-bootstrap-volume apply this rule to
-// controlPlane.nodeSelector, and Kubernetes applies it to every Pod's nodeSelector, so the
-// runtime selectors in Installation configuration follow it too. Kubernetes allows empty
-// label values, as in `node-role.kubernetes.io/infra: ""`.
-function nodeSelector(source, path, diagnostics) {
-  const labels = labelMap(source, path, diagnostics, { emptyValues: true });
-  const labelName = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
+const labelName = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
+
+// Kubernetes label syntax: a name of at most 63 characters with an optional prefix, and a
+// value that is empty or follows the name rule. `isPrefix` decides the prefix rule.
+function labelSyntax(labels, path, diagnostics, isPrefix) {
   for (const [key, value] of Object.entries(labels)) {
     const parts = key.split("/");
     const name = parts.at(-1);
@@ -434,10 +466,7 @@ function nodeSelector(source, path, diagnostics) {
       parts.length > 2 ||
       name.length > 63 ||
       labelName.exec(name)?.[0] !== name ||
-      (prefix !== undefined &&
-        (prefix.length > 253 ||
-          dnsSubdomain.exec(prefix)?.[0] !== prefix ||
-          prefix.split(".").some((label) => label.length > 63)))
+      (prefix !== undefined && !isPrefix(prefix))
     ) {
       diagnostics.errors.push(`${path.join(".")} keys must be Kubernetes label keys.`);
     }
@@ -450,6 +479,24 @@ function nodeSelector(source, path, diagnostics) {
     }
   }
   return labels;
+}
+
+// Kubernetes node selector labels: the chart and prepare-bootstrap-volume apply this rule to
+// controlPlane.nodeSelector, and Kubernetes applies it to every Pod's nodeSelector, so the
+// runtime selectors in Installation configuration follow it too. Kubernetes allows empty
+// label values, as in `node-role.kubernetes.io/infra: ""`. The chart also caps each prefix
+// label at 63 characters.
+function nodeSelector(source, path, diagnostics) {
+  const labels = labelMap(source, path, diagnostics);
+  return labelSyntax(labels, path, diagnostics, isDnsSubdomainName);
+}
+
+// NetworkPolicy peer selectors (DNS, API clients, metrics scrapers). Compute's validatePeer
+// applies this rule to every peer at startup, and Kubernetes to every NetworkPolicy: empty
+// values are allowed and the key prefix is a DNS subdomain of at most 253 characters.
+function peerSelector(source, path, diagnostics) {
+  const labels = labelMap(source, path, diagnostics);
+  return labelSyntax(labels, path, diagnostics, isKubernetesResourceName);
 }
 
 function stringArray(
@@ -587,7 +634,7 @@ function clientSelectors(source, diagnostics) {
         diagnostics,
         namespaceRule,
       ),
-      podLabels: labelMap(
+      podLabels: peerSelector(
         current,
         ["controlPlane", "apiClients", String(index), "podLabels"],
         diagnostics,
@@ -1342,7 +1389,7 @@ function buildRendered(profile, parsed, diagnostics) {
     },
     dns: {
       namespace: asString(dns, ["controlPlane", "dns", "namespace"], diagnostics, namespaceRule),
-      podLabels: labelMap(dns, ["controlPlane", "dns", "podLabels"], diagnostics),
+      podLabels: peerSelector(dns, ["controlPlane", "dns", "podLabels"], diagnostics),
     },
     gatewayRouting: {
       enabled: true,
@@ -1359,7 +1406,7 @@ function buildRendered(profile, parsed, diagnostics) {
       ...(metrics.scraperNamespaceLabels === undefined
         ? {}
         : {
-            scraperNamespaceLabels: labelMap(
+            scraperNamespaceLabels: peerSelector(
               metrics,
               ["controlPlane", "metrics", "scraperNamespaceLabels"],
               diagnostics,
@@ -1368,7 +1415,7 @@ function buildRendered(profile, parsed, diagnostics) {
       ...(metrics.scraperPodLabels === undefined
         ? {}
         : {
-            scraperPodLabels: labelMap(
+            scraperPodLabels: peerSelector(
               metrics,
               ["controlPlane", "metrics", "scraperPodLabels"],
               diagnostics,
@@ -1690,6 +1737,7 @@ function buildRendered(profile, parsed, diagnostics) {
   }
 
   signInSecretsDedicated(values, diagnostics);
+  validateDatabaseCaMount(values, diagnostics);
 
   diagnostics.prerequisites.push(
     "Default ReadWriteOnce storage class available for dedicated Codex workspace claims.",

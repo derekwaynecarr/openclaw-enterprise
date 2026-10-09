@@ -302,6 +302,12 @@ Skip both configuration-generation branches and continue at the
 The runbook covers Secret creation, Helm installation, bootstrap key retrieval,
 and authenticated API verification.
 
+If `controlPlane.databaseCa` supplies a CA Secret, omit `mountPath` to use
+`/etc/openclaw/database-ca`, or choose a path distinct from the other active
+database-client mounts. Preflight rejects collisions with platform mounts and,
+when enabled, repository credentials or managed ChatGPT account mounts before
+writing deployment files. See the [rendering flow](../../flows/installation-profile-rendering.md#4-build-helm-values).
+
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and `runtime.gatewayNodeSelector`
 require Kubernetes label keys and label values that are empty or a label name of
 at most 63 characters, matching Helm, bootstrap-volume preparation and Pod

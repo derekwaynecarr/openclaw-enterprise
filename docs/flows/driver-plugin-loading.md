@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-10-09
-last_updated_session: fix-949-950
+last_updated_session: fix-962-964
 ---
 
 # Installation Driver Package Loading Flow
@@ -77,9 +77,14 @@ unmatched conditions can select a later array entry; a matched null condition
 ends that condition branch. The selected target is resolved as a URL inside the
 package and percent-decoded; it must name an existing file exactly, with no
 extension, directory index or `main` lookup, and an encoded separator or
-directory is refused. Compiled ESM checks, package containment, and import must
-then succeed before Driver construction. Missing files and import failures do
-not select another target.
+directory is refused. Package containment, the compiled ESM check, and import
+must then succeed before Driver construction. The entry must be `.mjs`, or `.js`
+whose nearest `package.json` (searched from the entry's directory up to the
+package root, stopping at a `node_modules` directory, as Node's import does)
+declares `"type": "module"`. The refusal names that `package.json`, or says the
+entry is neither `.mjs` nor `.js`. Unlike Node, the check never detects ESM
+syntax in a `.js` file outside a module scope. Missing files and import failures
+do not select another target.
 
 For packageless Compute, the exact id `compute-ssh` selects `SshComputeDriver`
 with implementation `occ/ssh`. Every other packageless id retains Kubernetes
@@ -168,6 +173,10 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 17:39: Name the deciding `package.json` in the compiled ESM refusal. (fix-962-964)
+
+- 2026-10-09 16:21: Decide a `.js` Driver entry is ESM from its nearest `package.json` scope, as Node's import does, instead of the package root manifest. (fix-956)
 
 - 2026-10-09 15:42: Resolve the Driver package root export as Node's `import()` does (top-level `"."` only, default conditions, exact existing file) and restore the worker entry in Source. (fix-949-950)
 

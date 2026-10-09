@@ -178,7 +178,7 @@ func (app *application) printServiceKey(value any) error {
 }
 
 func (app *application) printAgent(value any, collection bool) error {
-	return app.printItems(value, collection, []column{
+	return app.printBrowsingItems(value, collection, []column{
 		{title: "ID", key: "id"},
 		{title: "NAME", key: "name"},
 		{title: "SERVICE PRINCIPAL", key: "servicePrincipalId"},
@@ -207,7 +207,7 @@ func (app *application) printAgentRevisionList(rows []any) error {
 		}
 		table = append(table, row)
 	}
-	return printTable(app.out, table, []column{
+	return app.printBrowsingItems(table, true, []column{
 		{title: "ACTIVE", key: "active"},
 		{title: "ID", key: "id"},
 		{title: "REVISION", key: "revision"},
@@ -290,6 +290,40 @@ func (app *application) printItems(value any, collection bool, columns []column)
 		}
 	}
 	return printTable(app.out, items, columns)
+}
+
+// printBrowsingItems keeps metadata readable while making saved-settings errors visible.
+// Structured output preserves the API's typed error; tables add a column only when needed.
+func (app *application) printBrowsingItems(value any, collection bool, columns []column) error {
+	if app.output != "table" {
+		return app.printItems(value, collection, columns)
+	}
+	items := []any{value}
+	if collection {
+		var ok bool
+		items, ok = value.([]any)
+		if !ok {
+			return fmt.Errorf("OCC returned an invalid resource collection")
+		}
+	}
+	rows := make([]any, 0, len(items))
+	hasError := false
+	for _, item := range items {
+		resource, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("OCC returned an invalid resource")
+		}
+		row := maps.Clone(resource)
+		if readError, ok := resource["configurationReadError"].(map[string]any); ok {
+			row["configurationReadError"] = fmt.Sprintf("%s (%s)", displayValue(readError["code"]), displayValue(readError["field"]))
+			hasError = true
+		}
+		rows = append(rows, row)
+	}
+	if hasError {
+		columns = append(columns, column{title: "CONFIGURATION ERROR", key: "configurationReadError"})
+	}
+	return printTable(app.out, rows, columns)
 }
 
 func (app *application) printStructured(value any) error {
