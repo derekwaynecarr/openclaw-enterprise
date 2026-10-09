@@ -51,7 +51,7 @@ On the host, `lsmod | grep '^iptable_nat'` prints nothing while the module is
 unloaded. Load the legacy modules K3s uses and keep them across reboots:
 
 ```bash
-sudo modprobe iptable_nat iptable_filter iptable_mangle br_netfilter
+sudo modprobe --all iptable_nat iptable_filter iptable_mangle br_netfilter
 sudo tee /etc/modules-load.d/oce-k3d-legacy-iptables.conf >/dev/null <<'EOF'
 iptable_nat
 iptable_filter
@@ -60,8 +60,9 @@ br_netfilter
 EOF
 ```
 
-After a failed creation, wait until startup exits, run its printed cleanup command
-with the same state directory, and start the profile again.
+A failed creation preserves the state directory and reports it for `occ dev down`.
+Wait until that startup exits, then run `./scripts/dev-down` from the repository root
+with the same profile and state directory, and start the profile again.
 `lsmod | grep -E '^iptable_(nat|filter)'` lists both modules, and startup reaches
 `OpenClaw Enterprise development stack is ready.` A host whose kernel ships no
 `iptable_nat` module cannot run these profiles.
