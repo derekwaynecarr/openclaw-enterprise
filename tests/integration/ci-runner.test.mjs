@@ -1674,7 +1674,7 @@ test("run records a timed-out file's interrupted test and output tail in the dia
   );
   // Node can exit mid-line after the interruption; the test runner process here
   // always does, and the runner must skip that cut line.
-  const cutAtExit = join(root, "scripts/ci/cut-at-exit.mjs");
+  const cutAtExit = join(root, "scripts/ci/cut-at-exit.cjs");
   await writeFile(
     cutAtExit,
     'if (process.execArgv.includes("--test")) process.on("exit", () => process.stdout.write(\'{"type":"test:output","data":{"lines":["cut\'));\n',
@@ -1683,7 +1683,7 @@ test("run records a timed-out file's interrupted test and output tail in the dia
     version: 1,
     lanes: {
       hang: {
-        env: { NODE_OPTIONS: `--import=${cutAtExit}` },
+        env: { NODE_OPTIONS: `--require=${cutAtExit}` },
         files: [{ path: "tests/integration/hang.test.mjs" }],
       },
     },
@@ -1723,6 +1723,68 @@ test("run records a timed-out file's interrupted test and output tail in the dia
   assert.equal(record.output.omittedLines, 103);
   assert.equal(record.output.lines.at(-1), "stdout: waiting for a reply that never comes");
   assert.match(record.output.lines[0], /^stdout: bulk 101 v+\.\.\. \[truncated\]$/);
+});
+
+test("each job attempt uploads its own diagnostics report", async () => {
+  // A passing rerun must not replace a failed attempt's report. This reads the
+  // composite action; it is not a GitHub Actions execution.
+  const action = await readFile(
+    join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"),
+    "utf8",
+  );
+  const upload = action.match(/- name: Upload cluster diagnostics\n[\s\S]*?\n {4}- /u)?.[0] ?? "";
+  assert.match(
+    upload,
+    /\n\s+name: diagnostics-\$\{\{ inputs\.artifact-prefix \}\}-\$\{\{ inputs\.lane \}\}-attempt-\$\{\{ github\.run_attempt \}\}\n/u,
+  );
+});
+
+test("run records a timeout that came before any test started", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/stuck.json");
+  await writeFile(
+    join(root, "tests/integration/stuck.test.mjs"),
+    'import test from "node:test";\nawait new Promise(() => setInterval(() => {}, 1_000));\ntest("never registered", () => {});\n',
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { stuck: { files: [{ path: "tests/integration/stuck.test.mjs" }] } },
+    groups: { ci: ["stuck"] },
+  });
+
+  const result = run(
+    root,
+    [
+      "run",
+      "stuck",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      join(root, "results/stuck.json"),
+    ],
+    { CI_RUNNER_TEST_TIMEOUT_MS: "2000" },
+  );
+
+  assert.equal(result.status, 1);
+  const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
+  assert.deepEqual(
+    { ...record, capturedAt: undefined, elapsedMs: undefined },
+    {
+      file: "tests/integration/stuck.test.mjs",
+      capturedAt: undefined,
+      reason: "timeout",
+      timeoutMs: 2000,
+      elapsedMs: undefined,
+      tests: [],
+      omittedTests: 0,
+      output: { lines: [], omittedLines: 0 },
+    },
+  );
+  assert(record.elapsedMs >= 2000, String(record.elapsedMs));
 });
 
 test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {
