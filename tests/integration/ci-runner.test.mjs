@@ -771,7 +771,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
           'import test from "node:test";',
           'test("hangs with the signal ignored", async () => {',
           `  process.on(${JSON.stringify(signal)}, () => {});`,
-          '  const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });',
+          '  const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "ignore" });',
           '  const pgid = (pid) => Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\\) /su, "").split(" ")[2]);',
           "  const record = process.env.CI_RUNNER_ORPHAN_RECORD;",
           "  writeFileSync(`${record}.partial`, JSON.stringify({",
@@ -779,7 +779,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
           "    pgid: pgid(process.pid), grandchildPgid: pgid(grandchild.pid),",
           "  }));",
           "  renameSync(`${record}.partial`, record);",
-          "  await new Promise((resolve) => setTimeout(resolve, 60_000));",
+          "  await new Promise((resolve) => setTimeout(resolve, 30_000));",
           "});",
           "",
         ].join("\n"),
@@ -811,7 +811,7 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
           detached: true,
           stdio: ["ignore", "ignore", "pipe"],
           env: runnerEnv({
-            CI_RUNNER_TEST_TIMEOUT_MS: "60000",
+            CI_RUNNER_TEST_TIMEOUT_MS: "30000",
             CI_RUNNER_ORPHAN_RECORD: recordPath,
           }),
         },
@@ -829,12 +829,18 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
       let pids;
       // Never leave processes behind, whatever the outcome: only the pid this test
       // spawned, and the exact pids the fixture recorded while still in its group.
-      t.after(() => {
+      t.after(async () => {
         if (exit === undefined) {
-          try {
-            process.kill(ciRunner.pid, "SIGKILL");
-          } catch {
-            // Already gone.
+          // Let run-tests.mjs end its test groups first: they may not have recorded pids.
+          for (const lastResort of ["SIGTERM", "SIGKILL"]) {
+            try {
+              process.kill(ciRunner.pid, lastResort);
+            } catch {
+              // Already gone.
+            }
+            if (await waitFor(() => exit !== undefined, 2_000)) {
+              break;
+            }
           }
         }
         for (const pid of [pids?.runner, pids?.file, pids?.grandchild]) {
