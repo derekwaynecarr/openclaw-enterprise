@@ -12,7 +12,22 @@ const profilesDir = resolve(repoRoot, "deploy/profiles");
 const allowedProfiles = new Set(["openclaw", "codex"]);
 const helmReleaseName = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
 const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
-const proxyUrl = /^https?:\/\/(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$/;
+// The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
+// The shape check alone still matches 192.0.2.999 and port 99999.
+function isLiteralIpv4ProxyUrl(value) {
+  const match =
+    /^https?:\/\/((?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}):([1-9][0-9]{0,4})$/.exec(
+      value,
+    );
+  if (!match) {
+    return false;
+  }
+  if (match[1].split(".").some((octet) => Number(octet) > 255)) {
+    return false;
+  }
+  const port = Number(match[2]);
+  return Number.isInteger(port) && port <= 65535;
+}
 const dnsHostname =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
@@ -1087,7 +1102,7 @@ function buildRendered(profile, parsed, diagnostics) {
               ["channels", "directoryProxyUrl"],
               diagnostics,
               {
-                pattern: proxyUrl,
+                validate: isLiteralIpv4ProxyUrl,
                 description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
               },
             ),
@@ -1307,7 +1322,7 @@ function buildRendered(profile, parsed, diagnostics) {
                 : {
                     channels: {
                       proxyUrl: asString(channels, ["channels", "runtimeProxyUrl"], diagnostics, {
-                        pattern: proxyUrl,
+                        validate: isLiteralIpv4ProxyUrl,
                         description: "an HTTP(S) literal IPv4 endpoint with an explicit port",
                       }),
                     },
