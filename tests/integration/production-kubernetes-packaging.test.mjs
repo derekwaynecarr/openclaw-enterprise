@@ -4207,7 +4207,7 @@ test(
 );
 
 test("execution chart refuses a harness hostname Compute refuses", tooling, async () => {
-  await assert.rejects(
+  const template = (...values) =>
     execute(
       helm,
       [
@@ -4215,16 +4215,91 @@ test("execution chart refuses a harness hostname Compute refuses", tooling, asyn
         "oce",
         "deploy/helm/openclaw-execution",
         "--set",
-        "routing.hostname=Bad_Host",
-        "--set",
         "routing.gatewayClassName=private-envoy-gateway",
         "--set",
         "routing.tlsSecretName=agents-tls",
         "--set-json",
         'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+        ...values,
       ],
-      { cwd: repository },
-    ),
+      { cwd: repository, maxBuffer: 2_000_000 },
+    );
+  await assert.rejects(
+    template("--set", "routing.hostname=Bad_Host"),
     /routing\.hostname must be a DNS hostname without a port or path/,
   );
+  // --set reads these as a number and a boolean; the chart names the field instead of failing in len.
+  for (const hostname of ["123", "true"]) {
+    await assert.rejects(
+      template("--set", `routing.hostname=${hostname}`),
+      /routing\.hostname must be a string: quote a hostname YAML reads as a number or boolean, or pass it with --set-string/,
+      hostname,
+    );
+  }
+  for (const hostname of ["123", "agents.example.invalid"]) {
+    const { stdout } = await template("--set-string", `routing.hostname=${hostname}`);
+    const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
+    assert.equal(gateway?.spec.listeners[0].hostname, hostname);
+  }
 });
+
+test(
+  "execution chart refuses an Envoy HTTPS port or DNS namespace the cluster refuses",
+  tooling,
+  async () => {
+    const template = (...values) =>
+      execute(
+        helm,
+        [
+          "template",
+          "oce",
+          "deploy/helm/openclaw-execution",
+          "--set",
+          "routing.hostname=agents.example.invalid",
+          "--set",
+          "routing.gatewayClassName=private-envoy-gateway",
+          "--set",
+          "routing.tlsSecretName=agents-tls",
+          "--set-json",
+          'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+          ...values,
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+    const proxyPolicy = async (stdout) =>
+      (await resources(stdout)).find(
+        (object) => object.kind === "NetworkPolicy" && object.metadata.name === "oce-harness-proxy",
+      );
+    // Compute validatePort takes integers from 1 to 65535; Sprig int would truncate 10443.5.
+    // Sprig int turns a value too big for 64 bits into 0, which the lower bound catches.
+    for (const port of ["0", "65536", "10443.5", "-1", "true", "99999999999999999999"]) {
+      await assert.rejects(
+        template("--set", `routing.envoyHttpsTargetPort=${port}`),
+        /routing\.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535/,
+        port,
+      );
+    }
+    for (const port of [1, 65535]) {
+      const policy = await proxyPolicy(
+        (await template("--set", `routing.envoyHttpsTargetPort=${port}`)).stdout,
+      );
+      assert.equal(policy?.spec.ingress[0].ports[0].port, port);
+    }
+    // The DNS egress rule selects kubernetes.io/metadata.name, which holds a Namespace name.
+    for (const namespace of ["Kube-System", "kube.system", "-dns", "a".repeat(64)]) {
+      await assert.rejects(
+        template("--set-string", `dns.namespace=${namespace}`),
+        /dns\.namespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
+        namespace,
+      );
+    }
+    const namespace = "a".repeat(63);
+    const policy = await proxyPolicy(
+      (await template("--set-string", `dns.namespace=${namespace}`)).stdout,
+    );
+    assert.equal(
+      policy?.spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
+      namespace,
+    );
+  },
+);

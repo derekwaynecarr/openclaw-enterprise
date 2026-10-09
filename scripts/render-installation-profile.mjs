@@ -548,6 +548,13 @@ function validateNativeAdminDomains(domain, sharedCookieDomain, authBaseUrl, dia
   }
 }
 
+// A Kubernetes Namespace name: a DNS label of at most 63 characters. The chart selects API
+// client and DNS peers by kubernetes.io/metadata.name, which only ever holds such a name.
+const namespaceRule = {
+  validate: isKubernetesNamespaceName,
+  description: "a Kubernetes namespace name (a DNS label of at most 63 characters)",
+};
+
 function clientSelectors(source, diagnostics) {
   if (!Array.isArray(source.apiClients) || source.apiClients.length === 0) {
     diagnostics.errors.push("controlPlane.apiClients must be a nonempty list.");
@@ -561,6 +568,7 @@ function clientSelectors(source, diagnostics) {
         current,
         ["controlPlane", "apiClients", String(index), "namespace"],
         diagnostics,
+        namespaceRule,
       ),
       podLabels: labelMap(
         current,
@@ -1029,10 +1037,12 @@ function buildRendered(profile, parsed, diagnostics) {
     validate: (value) => value.length <= 53 && dnsSubdomain.test(value),
     description: "a valid Helm release name of at most 53 characters",
   });
-  const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics, {
-    validate: isKubernetesNamespaceName,
-    description: "a Kubernetes namespace name (a DNS label of at most 63 characters)",
-  });
+  const namespace = asString(
+    controlPlane,
+    ["controlPlane", "namespace"],
+    diagnostics,
+    namespaceRule,
+  );
   // The bootstrap Job applies isName to installation.name, and the chart mirrors that rule.
   const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics, {
     validate: isName,
@@ -1103,10 +1113,8 @@ function buildRendered(profile, parsed, diagnostics) {
     };
   }
   const envoyNamespace =
-    optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, {
-      validate: isKubernetesNamespaceName,
-      description: "a Kubernetes namespace name (a DNS label of at most 63 characters)",
-    }) ?? "envoy-gateway-system";
+    optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, namespaceRule) ??
+    "envoy-gateway-system";
   const repositoryEnabled = asBoolean(repository, ["repository", "enabled"], diagnostics, false);
   const managedSlackProxyEnabled = asBoolean(
     channels,
@@ -1250,7 +1258,7 @@ function buildRendered(profile, parsed, diagnostics) {
         : { nodeSelector: controlPlaneNodeSelector(controlPlane, diagnostics) }),
     },
     dns: {
-      namespace: asString(dns, ["controlPlane", "dns", "namespace"], diagnostics),
+      namespace: asString(dns, ["controlPlane", "dns", "namespace"], diagnostics, namespaceRule),
       podLabels: labelMap(dns, ["controlPlane", "dns", "podLabels"], diagnostics),
     },
     gatewayRouting: {
