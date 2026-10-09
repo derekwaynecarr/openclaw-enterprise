@@ -3973,12 +3973,12 @@ test(
   "the chart refuses control-plane node selectors the volume helper refuses",
   tooling,
   async () => {
-    const valueMessage =
-      /controlPlane\.nodeSelector values must be nonempty Kubernetes label values/;
+    const valueMessage = /controlPlane\.nodeSelector values must be Kubernetes label values/;
     const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
     for (const [key, value, message] of [
       ["oce-role", "not valid", valueMessage],
-      ["oce-role", "", valueMessage],
+      ["oce-role", "-control", valueMessage],
+      ["oce-role", "control.", valueMessage],
       ["oce-role", "a".repeat(64), valueMessage],
       ["a-", "control", keyMessage],
       ["bad key", "control", keyMessage],
@@ -4006,10 +4006,15 @@ test(
         strings: {
           "controlPlane.nodeSelector.oce-role": "control",
           "controlPlane.nodeSelector.topology\\.kubernetes\\.io/zone": "east",
+          "controlPlane.nodeSelector.node-role\\.kubernetes\\.io/infra": "",
+          "controlPlane.nodeSelector.edge": "a_b.c-d",
         },
       },
     );
     assert.match(stdout, /oce-role: control/);
     assert.match(stdout, /topology\.kubernetes\.io\/zone: east/);
+    // Kubernetes allows empty label values; charts before #1848 rendered them.
+    assert.match(stdout, /node-role\.kubernetes\.io\/infra: ""/);
+    assert.match(stdout, /edge: a_b\.c-d/);
   },
 );
