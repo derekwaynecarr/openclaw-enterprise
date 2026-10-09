@@ -126,7 +126,7 @@ issue a credential for a new account.
   deleting an account:** the Installation has no ChatGPT Backend (`GET /backends`
   lists none). Complete step 1, then retry. Deleting an account that holds an
   issued token needs the same Backend (same `backendId`) to revoke that token.
-  If that Backend is gone for good,
+  If that Backend is gone for good and no ChatGPT Backend is configured,
   [force the delete](../../reference/service-accounts.md#force-delete-when-the-backend-is-gone)
   and revoke the token at the provider.
 - **`503 DEPENDENCY_UNAVAILABLE` when issuing:** the selected ServiceAccount

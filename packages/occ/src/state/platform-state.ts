@@ -449,6 +449,7 @@ export interface ServiceAccountRepository extends ServiceAccountReadRepository {
     | Readonly<{
         readonly backendId: string;
         readonly workspaceId: string;
+        readonly externalAccountId: string;
         readonly credentialId: string;
       }>
     | undefined

@@ -100,7 +100,7 @@ query observes active pointers and pending work together during worker cutover.
 With no ServiceAccount Driver selected (no ChatGPT Backend), an account holding
 an issued access token answers `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`
 naming the fix and stays, since nothing can revoke its token. With `?force=true`
-OCC instead reads the binding's Backend, workspace, and credential IDs, removes
+OCC instead reads the binding's Backend, workspace, account, and credential IDs, removes
 the token Secret through `KubernetesComputeDriver.deleteServiceAccountCredential`
 and the account, and audits `revocation: "skipped"`; with a Driver selected,
 force is ignored and revocation runs.

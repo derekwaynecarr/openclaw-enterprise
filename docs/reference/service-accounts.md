@@ -99,19 +99,24 @@ state; the operator owns the referenced source Secret.
 
 ### Force-delete when the Backend is gone
 
-If that Backend is retired for good, force the delete with the same `delete`
-grant: `DELETE .../service-accounts/:serviceAccountId?force=true`, or
+If that Backend is retired for good and the Installation has no ChatGPT
+Backend, force the delete with the same `delete` grant:
+`DELETE .../service-accounts/:serviceAccountId?force=true`, or
 `occ service-account delete ID --force`. OCC removes the account, its
 access-token Secret, and its private Backend binding, and answers `200` with
-`revocation: "skipped"`. The token stays valid at the provider until it expires
-or an administrator revokes it there (the provider credential is named
-`occ-<serviceAccountId>`). The audit event records `force: true`,
-`revocation: "skipped"`, the actor, and the binding's `backendId`,
-`workspaceId`, and provider `credentialId`, never the token.
+`revocation: "skipped"`. The token and the provider account (named
+`<name>-<serviceAccountId>`, credential `occ-<serviceAccountId>`) stay at the
+provider until an administrator deletes them there or the token expires. The
+audit event records `force: true`, `revocation: "skipped"`, the actor, and the
+binding's `backendId`, `workspaceId`, `externalAccountId`, and provider
+`credentialId`, never the token.
 
-Force changes nothing else. With a ChatGPT Backend configured it is ignored:
-the token is revoked and the answer is the usual `204`, so retried scripts stay
-safe. Accounts without an issued token, and referenced accounts, behave as
+Force changes nothing else. With a ChatGPT Backend configured it is ignored
+(the audit event still records `force: true`): the token is revoked and the
+answer is the usual `204`, so retried scripts stay safe. If a different ChatGPT
+Backend replaced the old one, deletion still answers `503` because the binding
+names another Backend; configure the old Backend again, or remove the ChatGPT
+Backend, before deleting. Accounts without an issued token, and referenced accounts, behave as
 without force. Callers without `delete` get the same `403` or `404`. The
 choice is made on the locked account row, so a token issued meanwhile is
 reported, not missed. An API Pod still running without the Backend during a

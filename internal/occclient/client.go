@@ -195,7 +195,7 @@ func (client *Client) DeleteServiceAccount(namespaceID, serviceAccountID string,
 		var envelope responseEnvelope
 		var data any
 		if json.Unmarshal(responseBody, &envelope) != nil || len(envelope.Data) == 0 ||
-			json.Unmarshal(envelope.Data, &data) != nil {
+			len(envelope.Meta) == 0 || json.Unmarshal(envelope.Data, &data) != nil {
 			return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
 		}
 		return data, nil

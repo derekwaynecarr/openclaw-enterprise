@@ -116,11 +116,16 @@ export const serviceAccountHandlers = {
             id: params.serviceAccountId as string,
             namespaceId,
           },
-          // Audit redaction blanks keys naming a token or credential unless they end in "Id",
-          // so the outcome is `revocation: "skipped"`, not a `tokenRevoked` flag.
-          unrevoked === undefined
+          // A requested force is recorded even when a Driver revoked as usual. Audit redaction
+          // blanks keys naming a token or credential unless they end in "Id", so the outcome is
+          // `revocation: "skipped"`, not a `tokenRevoked` flag.
+          !force
             ? removed
-            : { ...removed, force: true, revocation: "skipped", ...unrevoked },
+            : {
+                ...removed,
+                force: true,
+                ...(unrevoked === undefined ? {} : { revocation: "skipped", ...unrevoked }),
+              },
         ),
       );
       return deleted;

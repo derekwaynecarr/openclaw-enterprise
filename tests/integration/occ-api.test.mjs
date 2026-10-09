@@ -3778,7 +3778,9 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
     (event) => event.action === "openclaw.service_accounts.delete",
   );
   assert.equal(nativeEvent.resource.id, native.id);
-  assert.equal(Object.hasOwn(nativeEvent.details ?? {}, "revocation"), false);
+  // The requested force is recorded, but nothing was skipped.
+  assert.equal(nativeEvent.details.force, true);
+  assert.equal(Object.hasOwn(nativeEvent.details, "revocation"), false);
 });
 
 test("native ServiceAccounts keep private credential references and cannot admit Harness authentication", async () => {

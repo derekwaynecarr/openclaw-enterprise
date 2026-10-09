@@ -163,7 +163,7 @@ export const DeploymentParams = Type.Object(
   { additionalProperties: false },
 );
 
-/** Query strings are not coerced; numeric and boolean values are exact decimal text. */
+/** Query strings are not coerced; boolean values are exact text. */
 export const ServiceAccountDeleteQuery = Type.Object(
   {
     force: Type.Optional(
@@ -176,6 +176,7 @@ export const ServiceAccountDeleteQuery = Type.Object(
   { additionalProperties: false },
 );
 
+/** Query strings are not coerced; numeric and boolean values are exact decimal text. */
 export const AgentRuntimeLogsQuery = Type.Object(
   {
     source: Type.Union([Type.Literal("gateway"), Type.Literal("agent"), Type.Literal("sandbox")]),

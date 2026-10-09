@@ -542,6 +542,8 @@ export interface ServiceAccountDeletion {
   readonly unrevokedCredential?: {
     readonly backendId?: string;
     readonly workspaceId?: string;
+    /** The provider account the credential belongs to; the provider revokes by both IDs. */
+    readonly externalAccountId?: string;
     readonly credentialId?: string;
   };
 }
@@ -4576,23 +4578,19 @@ export class OpenClawController {
     credential: ServiceAccountCredential,
   ): Promise<void> {
     const compute = this.selectedDriver("compute");
-    if (compute.deleteServiceAccountCredential === undefined) {
+    const deleteSecret = compute.deleteServiceAccountCredential?.bind(compute);
+    if (deleteSecret === undefined) {
       return;
     }
-    try {
-      await compute.deleteServiceAccountCredential({
-        namespaceId: account.namespaceId,
-        serviceAccountId: account.id,
-        secretRef: credential.secretRef,
-      });
-    } catch (error) {
-      if (error instanceof DependencyUnavailableError || error instanceof ResourceConflictError) {
-        throw error;
-      }
-      throw new DependencyUnavailableError(
-        "The selected Compute Driver could not remove the ServiceAccount credential Secret.",
-      );
-    }
+    await this.driverOperation(
+      () =>
+        deleteSecret({
+          namespaceId: account.namespaceId,
+          serviceAccountId: account.id,
+          secretRef: credential.secretRef,
+        }),
+      "Compute",
+    );
   }
 
   async getConfiguration(
@@ -9621,7 +9619,7 @@ export class OpenClawController {
 
   private async driverOperation<T>(
     operation: () => Promise<T>,
-    capability: "Configuration" | "ServiceAccount" = "Configuration",
+    capability: "Configuration" | "ServiceAccount" | "Compute" = "Configuration",
   ): Promise<T> {
     try {
       return await operation();

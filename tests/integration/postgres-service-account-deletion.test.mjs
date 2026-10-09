@@ -293,7 +293,7 @@ test(
     const bindingOf = async (account) =>
       (
         await pool.query(
-          `SELECT backend_id, workspace_id, external_credential_id
+          `SELECT backend_id, workspace_id, external_account_id, external_credential_id
            FROM occ.service_account_driver_bindings WHERE service_account_id = $1`,
           [account.id],
         )
@@ -313,6 +313,7 @@ test(
         unrevokedCredential: {
           backendId,
           workspaceId,
+          externalAccountId: binding.external_account_id,
           credentialId: binding.external_credential_id,
         },
       },
@@ -341,6 +342,7 @@ test(
       }),
     );
     await seedBackendBinding(pool, racing, { credentialIssued: false });
+    const racingBinding = await bindingOf(racing);
     const issuer = await pool.connect();
     let forced;
     try {
@@ -389,6 +391,7 @@ test(
     assert.deepEqual((await forced).unrevokedCredential, {
       backendId,
       workspaceId,
+      externalAccountId: racingBinding.external_account_id,
       credentialId: "external-credential-raced",
     });
     assert.equal(deletedSecrets.length, 2);
