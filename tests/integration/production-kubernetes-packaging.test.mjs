@@ -615,6 +615,82 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   assert.equal(bootstrapClaim.spec.resources.requests.storage, "1Gi");
 });
 
+test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "openclaw-system",
+        "--values",
+        "deploy/examples/production/values.yaml",
+        "--set",
+        "gatewayRouting.gatewayName=Bad_Name",
+      ],
+      { cwd: repository },
+    ),
+    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
+  );
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "openclaw-system",
+        "--values",
+        "deploy/examples/production/values.yaml",
+        "--set-string",
+        "gatewayRouting.gatewayName= oce-agent-gateways ",
+      ],
+      { cwd: repository },
+    ),
+    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
+  );
+  const sixtyFour = "a".repeat(64);
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "openclaw-system",
+        "--values",
+        "deploy/examples/production/values.yaml",
+        "--set-string",
+        `gatewayRouting.gatewayName=${sixtyFour}`,
+      ],
+      { cwd: repository },
+    ),
+    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
+  );
+  const sixtyThree = "a".repeat(63);
+  const { stdout } = await execute(
+    helm,
+    [
+      "template",
+      "oce",
+      "deploy/helm/openclaw-enterprise",
+      "--namespace",
+      "openclaw-system",
+      "--values",
+      "deploy/examples/production/values.yaml",
+      "--set-string",
+      `gatewayRouting.gatewayName=${sixtyThree}`,
+    ],
+    { cwd: repository, maxBuffer: 2_000_000 },
+  );
+  const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
+  assert.equal(gateway?.metadata.name, sixtyThree);
+});
+
 test("production Helm values example renders the backendless default chart", tooling, async () => {
   const { stdout } = await execute(
     helm,
