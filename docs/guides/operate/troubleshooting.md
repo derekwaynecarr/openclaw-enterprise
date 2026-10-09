@@ -48,9 +48,9 @@ tell the kernel has not loaded the modules, it stops before cluster creation wit
 `the host kernel has not loaded the legacy iptables modules (ip_tables, iptable_nat)
 that the local k3d node needs`, followed by the `modprobe` command below. A kernel
 that ships no `iptable_nat` module stops with `provides no legacy iptables nat table
-(iptable_nat)` instead; see the end of this section. If it cannot tell, it prints `Warning: could not confirm that the host kernel provides
-the legacy iptables nat table (iptable_nat)` and continues, and the timeout above
-still applies.
+(iptable_nat)` instead; see the end of this section. If it cannot tell, it prints
+`Warning: could not confirm that the host kernel provides the legacy iptables nat
+table (iptable_nat)` and continues, and the timeout above still applies.
 
 In a second terminal, while that wait is still running, read the node log.
 `<cluster>` is the cluster name from the startup output.
