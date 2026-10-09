@@ -2950,6 +2950,39 @@ test("the chart refuses administrator emails the bootstrap Job refuses", tooling
   }
 });
 
+test("the chart refuses bootstrap claim names the volume helper refuses", tooling, async () => {
+  const message =
+    /bootstrap\.password\.claimName must be a DNS subdomain of at most 253 characters/;
+  const longLabel = "a".repeat(64);
+  const longest = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
+  for (const claimName of [
+    "Bootstrap",
+    "claim_name",
+    "claim-",
+    `.claim`,
+    longLabel,
+    `${"a".repeat(254)}`,
+  ]) {
+    await assert.rejects(
+      render({}, { strings: { "bootstrap.password.claimName": claimName } }),
+      ({ code, stderr }) => code !== 0 && message.test(stderr),
+      JSON.stringify(claimName),
+    );
+  }
+  const { stdout } = await render({}, { strings: { "bootstrap.password.claimName": longest } });
+  const objects = await resources(stdout);
+  const job = objects.find(
+    (object) =>
+      object.kind === "Job" &&
+      object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+  );
+  const claim = job.spec.template.spec.volumes.find(
+    (volume) => volume.name === "bootstrap-password-output",
+  ).persistentVolumeClaim.claimName;
+  assert.equal(claim, longest);
+  assert.equal(longest.length, 253);
+});
+
 test(
   "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
   tooling,
