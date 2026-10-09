@@ -19,9 +19,9 @@ message, on shapes the older loader accepted:
 
 - A `.js` entry whose nearest `package.json` lacks `"type": "module"`, even when
   the package root has it, such as `dist/index.js` beside a `dist/package.json`
-  without `type`. Node 24 and later can still import that file by detecting ESM
-  syntax; the controller does not. Its refusal now names the `package.json`
-  that decided the format.
+  without `type`. Node can still import that file by detecting ESM syntax; the
+  controller does not. Its refusal now names the `package.json` that decided the
+  format.
 - A nested `package.json` that is not valid JSON or not an object
   (`has invalid package scope metadata`); the older loader ignored it.
 - An export target that is extensionless (`./dist/index`), a directory, or has
