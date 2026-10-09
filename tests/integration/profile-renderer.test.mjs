@@ -1126,10 +1126,10 @@ function checkoutWithoutDependencies() {
     "deploy/profiles",
     "apps/controller/package.json",
     "apps/controller/src",
-    ...readdirSync(join(repository, "packages")).flatMap((name) => [
-      `packages/${name}/package.json`,
-      `packages/${name}/src`,
-    ]),
+    ...readdirSync(join(repository, "packages"))
+      // Skip leftovers of a branch switch, such as a directory holding only node_modules.
+      .filter((name) => existsSync(join(repository, "packages", name, "package.json")))
+      .flatMap((name) => [`packages/${name}/package.json`, `packages/${name}/src`]),
   ];
   for (const source of sources) {
     cpSync(join(repository, source), join(root, source), {
