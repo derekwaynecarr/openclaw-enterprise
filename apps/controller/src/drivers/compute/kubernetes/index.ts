@@ -1506,6 +1506,13 @@ const SANDBOX_DOMAIN_MAX_LENGTH = 253 - "agent-.".length - 32;
 
 function validateSandboxDomain(value: string): void {
   validateDnsHostname(value, "Sandbox domain");
+  // Like the chart, require two labels: browsers and Node refuse a wildcard certificate
+  // directly under a single label (*.localhost), so such a domain could never serve previews.
+  if (!value.includes(".")) {
+    throw new ConfigurationFailure(
+      "Sandbox domain must have at least two DNS labels, such as previews.example.com.",
+    );
+  }
   if (value.length > SANDBOX_DOMAIN_MAX_LENGTH) {
     throw new ConfigurationFailure(
       `Sandbox domain must not exceed ${SANDBOX_DOMAIN_MAX_LENGTH} characters, leaving room for the agent-<32 hex>. prefix of dedicated Agent hostnames.`,
