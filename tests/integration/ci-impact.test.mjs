@@ -2294,6 +2294,39 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   }
 });
 
+test("a test-only selection without Checks and Conformance 1 passes the gate", (t) => {
+  const f = fixture(t, editTest("tests/integration/postgres-a.test.mjs"), suiteFiles());
+  const bootstrap = shallowBootstrap(t, f);
+  const selected = bootstrap.run("select");
+  assert.equal(selected.status, 0, selected.stderr);
+  const lanes = /\nlanes=(.*)\n$/.exec(selected.output)[1];
+  assert.equal(lanes, '["postgres"]');
+  assert.equal(bootstrap.run("verify", "tests", { EXPECTED_LANES: lanes }).status, 0);
+  const raw = join(bootstrap.checkout, "raw-needs.json");
+  writeFileSync(
+    raw,
+    JSON.stringify({
+      impact: { result: "success", outputs: { mode: "tests", lanes } },
+      audit: { result: "success", outputs: {} },
+      "static-checks": { result: "success", outputs: {} },
+      "pr-safe": { result: "success", outputs: {} },
+      "runtime-image-fixture": { result: "skipped", outputs: {} },
+    }),
+  );
+  const expanded = join(bootstrap.checkout, "needs.json");
+  const gated = spawnSync(
+    process.execPath,
+    [gate, "--needs", raw, "--mode", "tests", "--output", expanded, "--lanes", lanes],
+    { encoding: "utf8" },
+  );
+  assert.equal(gated.status, 0, gated.stderr);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(expanded, "utf8"))), [
+    "impact",
+    "audit",
+    "postgres",
+  ]);
+});
+
 test("tests mode flows through the gate to a source-bound aggregate of only its lanes", (t) => {
   const f = fixture(
     t,
