@@ -2607,6 +2607,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     validatePeer(options.network.dns, "DNS peer");
     validatePort(options.network.gatewayPort, "Gateway port");
+    if (
+      options.runtime !== undefined &&
+      options.network.gatewayPort === PLUGIN_RUNTIME_STATUS_PORT
+    ) {
+      throw new ConfigurationFailure(
+        "Gateway port cannot use the reserved runtime status port 18791.",
+      );
+    }
     trustedProxyCidrSet(options.network.gatewayTrustedProxyCidrs, "Trusted proxy CIDR");
     if (options.network.pluginStatusProxySourceCidrs !== undefined) {
       if (!Array.isArray(options.network.pluginStatusProxySourceCidrs)) {
@@ -2811,6 +2819,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         validatePort(options.network.gatewayPort + 1, "Gateway sandbox port");
         if (options.runtime === undefined) {
           throw new ConfigurationFailure("Sandbox routing requires a native Gateway runtime.");
+        }
+        if (options.network.gatewayPort + 1 === PLUGIN_RUNTIME_STATUS_PORT) {
+          throw new ConfigurationFailure(
+            "Gateway sandbox port cannot use the reserved runtime status port 18791.",
+          );
         }
       }
     }
