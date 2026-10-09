@@ -1530,6 +1530,20 @@ function validateKubernetesResourceName(value: string, description: string): voi
   }
 }
 
+// Gateway API allows a 253-character Gateway name, but Envoy Gateway labels the proxy Pods
+// with it (gateway.envoyproxy.io/owning-gateway-name), and the NetworkPolicies select on that
+// label. A label value stops at 63 characters, so a longer name could never be applied.
+const GATEWAY_NAME_MAX_LENGTH = 63;
+
+function validateGatewayName(value: string): void {
+  validateKubernetesResourceName(value, "Gateway routing Gateway name");
+  if (value.length > GATEWAY_NAME_MAX_LENGTH) {
+    throw new ConfigurationFailure(
+      `Gateway routing Gateway name must not exceed ${GATEWAY_NAME_MAX_LENGTH} characters, because it is also a Kubernetes label value.`,
+    );
+  }
+}
+
 function validateCodexSeccompProfile(value: unknown): string {
   const profile = required(value, "Codex seccomp localhost profile");
   const segments = profile.split("/");
@@ -2734,10 +2748,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
       validatePort(routing.endpointPort ?? 443, "Gateway routing endpoint port");
-      validateKubernetesResourceName(
-        required(routing.gatewayName, "Gateway routing Gateway name"),
-        "Gateway routing Gateway name",
-      );
+      validateGatewayName(required(routing.gatewayName, "Gateway routing Gateway name"));
       validateKubernetesResourceName(
         required(routing.gatewayNamespace, "Gateway routing Gateway namespace"),
         "Gateway routing Gateway namespace",
