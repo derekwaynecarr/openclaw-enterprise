@@ -12,7 +12,7 @@ real Installation.
 
 ## 2026-10-09: peer namespaces must be Kubernetes namespace names
 
-**What breaks.** Since #PRNUM, the controller refuses to start with
+**What breaks.** Since #1914, the controller refuses to start with
 `DNS peer namespace must be a Kubernetes namespace name: a DNS label of at most
 63 characters.` (or the same message for a gateway client, the repository
 credential gateway, the provider Harness gateway or the managed channel proxy)
