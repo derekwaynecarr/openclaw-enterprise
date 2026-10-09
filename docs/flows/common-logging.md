@@ -202,7 +202,10 @@ and its bounded failure (such as `TimeoutError`) as `occ.device_authorization.fa
 `agent_runtime_credentials.cluster_denied` keeps only `request.id`; the denied verb,
 resource and Kubernetes namespace stay local. `agent_provisioning.compute_refused` (the
 Compute Driver refused a provisioning plan for a reason the caller cannot fix) keeps only
-`request.id`; the Driver's reason stays local. `native_admin.websocket_audit_failed`
+`request.id`; the Driver's reason stays local. `http.dependency_unavailable` (the cause
+of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) is not
+exported: its error class, message and cause codes stay in the API's local log.
+`native_admin.websocket_audit_failed`
 keeps the Namespace, Agent and revision IDs, and `native_admin.websocket_denial_audit_failed`
 carries none. `authentication.activation-warning`, `authentication.password-sign-in-warning`
 and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
@@ -263,6 +266,7 @@ for panels, correlation, and authorization limits.
 
 ## Changelog
 
+- 2026-10-09 14:00: The API logs a local `http.dependency_unavailable` WARN naming the cause of a dependency error answered as `503 DEPENDENCY_UNAVAILABLE`, by request ID; it is not exported. (fix-529-938)
 - 2026-10-08 10:17: Document Collector quantity syntax checks in the accompanying chart change. (authoring-run/95ed7983-818c-4af2-8875-1330333f5e41 - 1fce0eef361dd584212cc3f2ac4d75ab92eb8ff7)
 
 - 2026-10-06 13:30: Export `agent_provisioning.compute_refused`, the API warning that names a Compute provisioning refusal by request ID.

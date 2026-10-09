@@ -136,6 +136,23 @@ function safeString(value: string): string | undefined {
   return value;
 }
 
+// A URL with user information (`scheme://user:password@host`).
+const URL_USER_INFO = /\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]*@/i;
+export const WITHHELD_ERROR_TEXT = "The message was withheld because it resembles a credential.";
+
+/**
+ * Error text for a local operator log: one line of at most 512 characters, or fixed text when it
+ * looks like it carries a credential. Callers log only messages written by OCC code; this is a
+ * second line of defense, not a sanitizer for provider or request text.
+ */
+export function loggedErrorText(value: string): string | undefined {
+  const text = [...value.replace(/[\s\p{Cc}]+/gu, " ").trim()].slice(0, 512).join("");
+  if (text === "") {
+    return undefined;
+  }
+  return SECRET_VALUE.test(text) || URL_USER_INFO.test(text) ? WITHHELD_ERROR_TEXT : text;
+}
+
 function safePath(value: unknown): string | undefined {
   return typeof value === "string" && SAFE_PATH.test(value) && !SECRET_VALUE.test(value)
     ? value

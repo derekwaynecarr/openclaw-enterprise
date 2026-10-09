@@ -176,7 +176,7 @@ provider, not IAM, Compute, OCC, or the Harness.
   failed, the account stays in OCC and a retried delete completes.
 - Invalid credential reply: a reply that names a credential under the requested
   account in this workspace revokes that credential before failing; if that fails,
-  the `503` says it could not be removed.
+  it answers `503`, and the API log says the credential could not be removed.
 - Unknown Secret outcome: a failed token Secret create deletes the account-owned
   Secret holding this request's token, so issuance can be retried. If it cannot
   read or delete that Secret, it answers `503`. The leftover Secret then blocks
@@ -187,6 +187,12 @@ provider, not IAM, Compute, OCC, or the Harness.
   still revokes its token.
 - Expired token: Execution fails closed; automated refresh and rotation are
   not implemented.
+
+Every `503 DEPENDENCY_UNAVAILABLE` above answers the generic "A required platform
+dependency is unavailable." The specific cause, such as "could not be removed" or
+"outcome is unknown", is in the API log only: a WARN `http.dependency_unavailable`
+record with the response's `meta.requestId`, the route, the error class and message,
+and its causes' class and code.
 
 ## Evidence and related references
 
