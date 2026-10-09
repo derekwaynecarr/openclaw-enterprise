@@ -160,7 +160,11 @@ repositoryCredentials:
     - "<approved GitHub upstream CIDR>"
 ```
 
-Supply current operator-approved ranges for GitHub HTTPS destinations. The chart
+`backendId` must follow the Backend ID rule: 1 to 200 characters, with no
+leading or trailing whitespace and no control characters or line or paragraph
+separators. The chart refuses any other spelling, the same rule Installation
+startup applies before it saves the GitHub Backend. Supply current
+operator-approved ranges for GitHub HTTPS destinations. The chart
 adds worker-Pod egress on port 443 and ingress from tenant embedded gateways and
 dedicated Agent Pods on port 8443. Compute grants corresponding egress only to
 the repository consumer; see the
