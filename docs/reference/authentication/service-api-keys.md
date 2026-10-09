@@ -46,8 +46,8 @@ curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
 `occ service-key create --service-principal ID --name NAME --out FILE`, with
 `--namespace` for a Namespace principal, makes the same request and writes the
 response to a new `0600` file without printing the key. The name is 1 to 32
-characters and must contain a non-whitespace character, the same rule as the
-API. The CLI refuses any other name before it creates the key file or sends
+characters, counted as Unicode code points (an emoji counts once), and must
+contain a non-whitespace character, the same rule as the API. The CLI refuses any other name before it creates the key file or sends
 the request. For an Installation principal, unset `OCC_NAMESPACE`, which the
 CLI also sends as `namespaceId`.
 
