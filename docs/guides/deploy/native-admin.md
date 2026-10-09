@@ -255,8 +255,8 @@ With or without preview routing, OpenClaw binds its MCP Apps sandbox listener on
 an Agent's `mcp.apps.sandboxPort`, else the Gateway port plus one. TCP/18791 is
 the private runtime status port, so Compute refuses a `sandboxPort` of 18791,
 and enabled MCP Apps without a `sandboxPort` when `network.gatewayPort` is
-18790. With that Gateway port, set `sandboxPort` for canvas and board previews
-too.
+`18790`. With that Gateway port, set `sandboxPort` for canvas and board
+previews too.
 
 Open a generated HTML file from the native chat. Verify it renders on the preview
 domain, the request carries no OCE session cookie, and the preview host cannot
