@@ -1114,6 +1114,8 @@ async function ensureK3dCluster(statePath, state) {
       `127.0.0.1:${apiPort}`,
       "--kubeconfig-update-default=false",
       "--kubeconfig-switch-context=false",
+      "--lb-config-override",
+      `settings.workerConnections=${k3dLoadBalancerWorkerConnections}`,
       // Keep failed fixture containers for diagnostics; registered cleanup
       // owns their deletion after collection, including partial creation.
       ...(crossNodePluginStatus ? ["--no-rollback"] : []),
@@ -1198,6 +1200,14 @@ async function ensureK3dCluster(statePath, state) {
   await markResourceReady(statePath, state, resource);
   return resource;
 }
+
+// k3d's serverlb (nginx) in front of the API server allows 1024 connections per
+// worker, and each proxied API connection counts twice. The connections appear to
+// land on one worker: drops started once the serverlb held about 1,024. The k3d
+// Fixture and Configuration lane peaked at 1,050-1,080 on the 32vcpu runner
+// (530-760 on ubuntu-22.04), and kubectl reported "Unable to connect to the
+// server: EOF" (finding 682). With this limit it peaks at about 2,000.
+const k3dLoadBalancerWorkerConnections = 8192;
 
 // Hosted CI creates a cluster, node image pull included, in 26-48 s (284 runs,
 // 2026-10-08: p50 27 s, p99 44 s). A create that never returns once held a lane
