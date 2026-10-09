@@ -531,6 +531,21 @@ export interface ControllerOptions {
   readonly nativeWorkerSupport?: NativeWorkerSupport;
 }
 
+/** The result of a ServiceAccount deletion. */
+export interface ServiceAccountDeletion {
+  readonly removedAccessBindings: readonly RemovedAccessBinding[];
+  /**
+   * Set only when a forced deletion removed an account whose issued access token no
+   * ServiceAccount Driver could revoke. The token itself is never read. Its Backend binding
+   * is absent when OCC has no record of it.
+   */
+  readonly unrevokedCredential?: {
+    readonly backendId?: string;
+    readonly workspaceId?: string;
+    readonly credentialId?: string;
+  };
+}
+
 /** One shipped version of a bundled default Preset (`deploy/presets/archive/versions.json`). */
 export interface BundledPresetVersion {
   readonly name: string;
@@ -4477,11 +4492,19 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * `force` matters only for an account holding an issued access token while this API selects
+   * no ServiceAccount Driver (no ChatGPT Backend): instead of refusing, it removes the
+   * account-owned token Secret and the account, and reports the token as unrevoked. With a
+   * Driver selected, force is ignored and the token is revoked as usual, so a revocation that
+   * can run is never skipped. Grants, the account lookup, and reference checks are unchanged.
+   */
   async deleteServiceAccount(
     principalId: string,
     namespaceId: string,
     serviceAccountId: string,
-  ): Promise<readonly RemovedAccessBinding[]> {
+    options: { readonly force?: boolean } = {},
+  ): Promise<ServiceAccountDeletion> {
     this.serviceAccountIdentity(namespaceId, serviceAccountId);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespaceForPolicyDelete(state, principalId, {
@@ -4501,13 +4524,28 @@ export class OpenClawController {
           "An Agent draft, active revision, pending deployment, or pending Agent provisioning request still references the ServiceAccount. Remove those references, or let provisioning finish, first.",
         );
       }
+      // Decided once, on the locked account row: Driver selection is fixed when the API
+      // starts, and issuance takes the same row lock, so no token can appear after this read.
       const driver = this.serviceAccountDriver();
+      let unrevokedCredential: ServiceAccountDeletion["unrevokedCredential"];
       if (account.credential?.kind === "access_token" && driver === undefined) {
-        // Only the Backend's Driver can revoke the issued token, so deletion waits for it.
-        // Only the worker sets a configured Driver id, so the API always answers the 409.
-        throw this.configuredServiceAccountDriverId === undefined
-          ? new ServiceAccountDriverNotConfiguredError("delete")
-          : new DependencyUnavailableError("The selected ServiceAccount Driver is unavailable.");
+        // Only the Backend's Driver can revoke the issued token, so deletion waits for it
+        // unless the caller forces it. Only the worker sets a configured Driver id, so the API
+        // always answers the 409 (or forces).
+        if (this.configuredServiceAccountDriverId !== undefined) {
+          throw new DependencyUnavailableError(
+            "The selected ServiceAccount Driver is unavailable.",
+          );
+        }
+        if (options.force !== true) {
+          throw new ServiceAccountDriverNotConfiguredError("delete");
+        }
+        const binding = await state.serviceAccounts.findIssuedCredentialBinding(
+          namespace.id,
+          account.id,
+        );
+        await this.deleteUnrevokedCredentialSecret(account, account.credential);
+        unrevokedCredential = binding === undefined ? {} : { ...binding };
       }
       if (driver !== undefined) {
         await this.driverOperation(() => driver.delete(account), "ServiceAccount");
@@ -4521,8 +4559,40 @@ export class OpenClawController {
       if (!(await state.serviceAccounts.deleteServiceAccount(namespace.id, account.id))) {
         throw new ResourceStateConflictError("The ServiceAccount changed during deletion.");
       }
-      return removed;
+      return {
+        removedAccessBindings: removed,
+        ...(unrevokedCredential === undefined ? {} : { unrevokedCredential }),
+      };
     });
+  }
+
+  /**
+   * A forced deletion still removes OCC's copy of the unrevoked token: the account-owned
+   * Secret the ChatGPT Driver would have removed after revoking it. The Compute Driver that
+   * stored it owns that Secret; one without the operation never stored account tokens.
+   */
+  private async deleteUnrevokedCredentialSecret(
+    account: Readonly<ServiceAccount>,
+    credential: ServiceAccountCredential,
+  ): Promise<void> {
+    const compute = this.selectedDriver("compute");
+    if (compute.deleteServiceAccountCredential === undefined) {
+      return;
+    }
+    try {
+      await compute.deleteServiceAccountCredential({
+        namespaceId: account.namespaceId,
+        serviceAccountId: account.id,
+        secretRef: credential.secretRef,
+      });
+    } catch (error) {
+      if (error instanceof DependencyUnavailableError || error instanceof ResourceConflictError) {
+        throw error;
+      }
+      throw new DependencyUnavailableError(
+        "The selected Compute Driver could not remove the ServiceAccount credential Secret.",
+      );
+    }
   }
 
   async getConfiguration(
