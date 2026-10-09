@@ -8,6 +8,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
+
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const controllerRequire = createRequire(
@@ -423,27 +425,12 @@ test("prepare-bootstrap-volume preserves YAML-scalar node selector keys and valu
   assert.deepEqual(manifest.spec.nodeSelector, Object.fromEntries(keys.map((key) => [key, key])));
 });
 
-// Bash regex ranges such as [a-z0-9] follow the locale: under en_US.UTF-8
-// they also match letters like ä, é and ß. Pick that locale when the host
-// has it, so the check is exercised where the old helper accepted them.
-async function utf8Locale() {
-  try {
-    const { stdout } = await execute("locale", ["-a"]);
-    const available = stdout.split("\n").map((name) => name.trim().toLowerCase());
-    if (available.includes("en_us.utf8") || available.includes("en_us.utf-8")) {
-      return "en_US.UTF-8";
-    }
-  } catch {
-    // `locale` is missing on some minimal hosts; C.UTF-8 is built into glibc.
-  }
-  return "C.UTF-8";
-}
-
 test("prepare-bootstrap-volume refuses non-ASCII names under a UTF-8 locale", async (t) => {
   const { directory, kubeconfig, statePath } = await fixture(t);
-  const locale = await utf8Locale();
-  if (locale !== "en_US.UTF-8") {
-    t.diagnostic("en_US.UTF-8 is not installed; C.UTF-8 does not reproduce the range bug");
+  const locale = await rangeWideningLocale();
+  if (!locale) {
+    t.skip("en_US.UTF-8 is not installed; other locales do not widen bash ranges");
+    return;
   }
   const base = {
     cwd: repository,

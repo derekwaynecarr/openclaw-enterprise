@@ -7,6 +7,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
+
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const upgradeScript = fileURLToPath(
@@ -459,20 +461,10 @@ test("production image upgrades refuse uppercase or wrong-length digests before 
 test("production image upgrades refuse non-ASCII inputs under a UTF-8 locale", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-locale-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  // Bash regex ranges such as [a-f0-9] follow the locale: under en_US.UTF-8
-  // they also match letters like é and digits like ٣. Use that locale when
-  // the host has it; C.UTF-8 does not reproduce the range bug.
-  let locale = "C.UTF-8";
-  try {
-    const { stdout } = await execute("locale", ["-a"]);
-    if (/^en_US\.utf-?8$/imu.test(stdout)) {
-      locale = "en_US.UTF-8";
-    }
-  } catch {
-    // `locale` is missing on some minimal hosts.
-  }
-  if (locale !== "en_US.UTF-8") {
-    t.diagnostic("en_US.UTF-8 is not installed; C.UTF-8 does not reproduce the range bug");
+  const locale = await rangeWideningLocale();
+  if (!locale) {
+    t.skip("en_US.UTF-8 is not installed; other locales do not widen bash ranges");
+    return;
   }
   const options = { cwd: repository, env: { ...process.env, LANG: locale, LC_ALL: locale } };
   const argumentsFor = ({
