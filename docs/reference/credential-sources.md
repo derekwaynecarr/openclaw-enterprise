@@ -237,11 +237,16 @@ or another authentication method.
 `DELETE /namespaces/:namespaceId/credential-sources/:credentialSourceId`
 requires exact `delete` and returns `204`:
 
-- It returns `409` while an Agent draft, active revision, or pending deployment
-  references the source, or while a withdrawal attempt or retry series is queued
-  for a revision that holds it. A withdrawal that never confirms keeps its
-  series queued for up to about an hour, even after a redeploy; a completed
-  Agent deletion drops that work.
+- It returns `409 RESOURCE_CONFLICT` while an Agent draft, active revision, or
+  pending deployment references the source. Remove it from those Agents and
+  redeploy, or delete them.
+- When only a withdrawal attempt or retry series, queued or running for a
+  revision that held the source, blocks it, the `409` is
+  `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`. A withdrawal that never confirms keeps
+  its series queued for up to about an hour, even after a redeploy, and the
+  withdraw request no longer applies once the active revision drops the
+  source. Wait for the series to finish, or delete the Agent: a completed Agent
+  deletion drops that work.
 - On an Installation with no Credential Gateway it returns
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
   did not register it returns `503`; neither changes the record.
