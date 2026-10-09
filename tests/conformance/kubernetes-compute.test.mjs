@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +30,7 @@ import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   createKubernetesComputeDriver,
+  harnessStateRemovalScript,
   harnessWorkspacePreparationScript,
   KubernetesComputeDriver,
   kubernetesNamespaceName,
@@ -5184,31 +5195,54 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
       defaults: { ...revision.configuration.agents.defaults, ...defaults },
     },
   });
-  for (const agents of [
-    { entries: { helper: { workspace: "/home/node/helper" } } },
+  // Each refusal names the setting and the rule it breaks (finding 885).
+  const ownerRefusal = (owner) =>
+    `Dedicated OpenClaw serves the main Agent: set agents.defaults.${owner}.agentId to main, or remove it.`;
+  for (const [agents, message] of [
+    [
+      { entries: { helper: { workspace: "/home/node/helper" } } },
+      "Dedicated OpenClaw serves the main Agent: add agents.entries.main, or rename an entry to main.",
+    ],
     // OpenClaw's schema admits a leading underscore, but it is not a canonical id.
-    { ownership: "explicit", entries: { main: {}, _main: {} } },
-    {
-      ownership: "explicit",
-      entries: { main: {}, helper: {} },
-      defaults: { sessionStore: { agentId: "helper" } },
-    },
-    {
-      ownership: "explicit",
-      entries: { main: {}, helper: {} },
-      defaults: { systemAgent: { agentId: "helper" } },
-    },
+    [
+      { ownership: "explicit", entries: { main: {}, _main: {} } },
+      "Dedicated OpenClaw rejects the Agent ID in agents.entries._main: use up to 64 letters, digits, _ or -, starting with a letter or digit.",
+    ],
+    [
+      {
+        ownership: "explicit",
+        entries: { main: {}, helper: {} },
+        defaults: { sessionStore: { agentId: "helper" } },
+      },
+      ownerRefusal("sessionStore"),
+    ],
+    [
+      {
+        ownership: "explicit",
+        entries: { main: {}, helper: {} },
+        defaults: { systemAgent: { agentId: "helper" } },
+      },
+      ownerRefusal("systemAgent"),
+    ],
   ]) {
     assert.throws(
       () => driver.validateHarnessAuth(revision.harness, revision.harnessAuth, withAgents(agents)),
-      (error) =>
-        error instanceof ConfigurationHarnessError &&
-        /serves the main Agent: agents\.entries needs canonical keys including main/.test(
-          error.message,
-        ),
+      (error) => error instanceof ConfigurationHarnessError && error.message === message,
       JSON.stringify(agents),
     );
   }
+  // main in any case, as OpenClaw matches it, satisfies every rule.
+  assert.doesNotThrow(() =>
+    driver.validateHarnessAuth(
+      revision.harness,
+      revision.harnessAuth,
+      withAgents({
+        ownership: "explicit",
+        entries: { Main: {}, helper: {} },
+        defaults: { sessionStore: { agentId: "MAIN" }, systemAgent: { agentId: "main" } },
+      }),
+    ),
+  );
   // A stored revision re-prepared after this check reports the refusal, not a generic failure.
   let refusal;
   try {
@@ -9990,6 +10024,92 @@ test("Harness workspace preparation creates private directories and resumes an i
   assert.deepEqual(await readdir(`${root}/.workspace.kubelet-created`), ["notes.md"]);
 });
 
+test(
+  "Harness workspace preparation moves read-only directories and removes read-only state",
+  // Root ignores directory modes, so only a non-root run exercises these paths.
+  { skip: process.getuid?.() === 0 && "root ignores directory permissions" },
+  async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "oce-harness-read-only-"));
+    const run = (script) => spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
+    t.after(() => {
+      run(harnessStateRemovalScript(root));
+      return rm(root, { recursive: true, force: true });
+    });
+    const prepare = () => {
+      const result = run(
+        harnessWorkspacePreparationScript([`${root}/workspace`, `${root}/generated-images`]),
+      );
+      assert.equal(result.status, 0, result.stderr);
+      return result.stderr;
+    };
+    const mode = async (path) => (await lstat(path)).mode & 0o7777;
+
+    // A tenant made a top-level directory read-only before the upgrade: moving it into the
+    // new parent needs write on the directory, so the init adds u+w for the rename and then
+    // restores its mode (finding 884). The init resumes after a crash mid-move: workspace
+    // already holds a moved entry, and generated-images was renamed aside but not recreated.
+    await mkdir(`${root}/workspace`, { mode: 0o700 });
+    await writeFile(`${root}/workspace/moved.md`, "moved");
+    await mkdir(`${root}/.workspace.kubelet-created/read-only`, { recursive: true });
+    await writeFile(`${root}/.workspace.kubelet-created/read-only/kept.md`, "kept");
+    await writeFile(`${root}/.workspace.kubelet-created/notes.md`, "notes");
+    await chmod(`${root}/.workspace.kubelet-created/read-only`, 0o555);
+    await mkdir(`${root}/.generated-images.kubelet-created/images`, { recursive: true });
+    await writeFile(`${root}/.generated-images.kubelet-created/images/a.png`, "png");
+    await chmod(`${root}/.generated-images.kubelet-created/images`, 0o500);
+    assert.equal(prepare(), "");
+    assert.deepEqual((await readdir(root)).sort(), ["generated-images", "workspace"]);
+    assert.deepEqual((await readdir(`${root}/workspace`)).sort(), [
+      "moved.md",
+      "notes.md",
+      "read-only",
+    ]);
+    assert.equal(await readFile(`${root}/workspace/read-only/kept.md`, "utf8"), "kept");
+    assert.equal(await mode(`${root}/workspace/read-only`), 0o555);
+    assert.equal(await mode(`${root}/generated-images/images`), 0o500);
+    assert.equal(await mode(`${root}/workspace`), 0o700);
+    await chmod(`${root}/workspace/read-only`, 0o700);
+    await chmod(`${root}/generated-images/images`, 0o700);
+
+    // An entry the init cannot move names its owner and the chown that frees it.
+    await mkdir(`${root}/.workspace.kubelet-created`);
+    await writeFile(`${root}/.workspace.kubelet-created/locked.md`, "locked");
+    await chmod(`${root}/.workspace.kubelet-created`, 0o500);
+    const blocked = run(harnessWorkspacePreparationScript([`${root}/workspace`]));
+    await chmod(`${root}/.workspace.kubelet-created`, 0o700);
+    assert.notEqual(blocked.status, 0);
+    assert.match(
+      blocked.stderr,
+      new RegExp(
+        `EACCES.*; uid ${process.getuid()} cannot move .*locked\\.md \\(owner uid ${process.getuid()}\\): chown it to uid ${process.getuid()} on the node, and its parent directory if uid ${process.getuid()} cannot write there`,
+      ),
+    );
+    await rm(`${root}/.workspace.kubelet-created`, { recursive: true });
+
+    // State removal empties read-only directories at any depth and never follows a link.
+    const outside = `${root}/outside`;
+    await mkdir(outside);
+    await writeFile(`${outside}/kept.md`, "kept");
+    await chmod(outside, 0o555);
+    await mkdir(`${root}/codex-home/sessions/2026/10`, { recursive: true });
+    await writeFile(`${root}/codex-home/sessions/2026/10/rollout.jsonl`, "{}");
+    await mkdir(`${root}/codex-home/empty`);
+    await symlink(outside, `${root}/codex-home/link`);
+    await chmod(`${root}/codex-home/sessions/2026/10`, 0o555);
+    await chmod(`${root}/codex-home/sessions`, 0o500);
+    await chmod(`${root}/codex-home/empty`, 0o000);
+    await chmod(`${root}/codex-home`, 0o555);
+    const removal = run(harnessStateRemovalScript(`${root}/codex-home`));
+    assert.equal(removal.status, 0, removal.stderr);
+    assert.deepEqual((await readdir(root)).sort(), ["generated-images", "outside", "workspace"]);
+    assert.equal(await mode(outside), 0o555);
+    assert.equal(await readFile(`${outside}/kept.md`, "utf8"), "kept");
+    await chmod(outside, 0o700);
+    // A missing directory is not an error.
+    assert.equal(run(harnessStateRemovalScript(`${root}/codex-home`)).status, 0);
+  },
+);
+
 test("Harness claim reuse retains owned RWO storage without mutation and rejects RWX, foreign or invalid claims", async () => {
   const driver = createKubernetesComputeDriver(options());
   const ownership = { namespaceId: tenant.id, agentId: "agent-workspace-ownership" };
@@ -12447,9 +12567,11 @@ for (const dualCluster of [false, true]) {
       native.volumeMounts.some(({ subPath }) => subPath === "codex-sessions"),
       false,
     );
-    assert.match(
-      pod.initContainers.find(({ name }) => name === "prepare-private-state").args[0],
-      /rmSync\("\/harness-workspace-state\/codex-sessions", \{ recursive: true, force: true \}\)/,
+    assert.equal(
+      pod.initContainers
+        .find(({ name }) => name === "prepare-private-state")
+        .args[0].includes(harnessStateRemovalScript("/harness-workspace-state/codex-sessions")),
+      true,
     );
     const claimName = pod.volumes.find(({ name }) => name === authMount.name).persistentVolumeClaim
       .claimName;
@@ -12604,7 +12726,12 @@ for (const embedded of [true, false]) {
       );
       // Leaving OAuth removes the persisted personal login before the non-OAuth Harness starts.
       const privateState = pod.initContainers.find(({ name }) => name === "prepare-private-state");
-      assert.match(privateState.args[0], /rmSync\("\/harness-workspace-state\/codex-home"/);
+      assert.equal(
+        privateState.args[0].includes(
+          harnessStateRemovalScript("/harness-workspace-state/codex-home"),
+        ),
+        true,
+      );
     }
     const initializer = pod.initContainers.find(({ name }) => name === "initialize-workspace");
     assert.equal(initializer.image, driver.options.images.gateway);
