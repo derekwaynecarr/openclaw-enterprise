@@ -1,8 +1,13 @@
+import { createHash } from "node:crypto";
+import type { AgentOptions } from "node:https";
 import type {
+  Cluster,
+  KubeConfig,
   ObservableMiddleware,
   RequestContext,
   ResponseContext,
 } from "@kubernetes/client-node";
+import { Agent, type buildConnector, type Dispatcher } from "undici";
 import { currentComputeAbortSignal } from "../compute/operation-context.ts";
 import type { KubernetesAuthentication } from "./authentication.ts";
 
@@ -31,6 +36,7 @@ export async function createKubernetesClientConfiguration(
   }
 
   const configuration = new sdk.KubeConfig();
+  reuseRequestDispatcher(configuration);
   if (authentication.mode === "inCluster") {
     configuration.loadFromCluster();
   } else {
@@ -99,6 +105,58 @@ export async function createKubernetesClientConfiguration(
     middleware: [cancellationMiddleware],
   });
   return { sdk, clientConfiguration, kubeConfig: configuration, server: cluster.server };
+}
+
+/** The private KubeConfig method that builds each API request's dispatcher. */
+type KubeConfigDispatcherFactory = {
+  createDispatcher(cluster: Cluster | null, agentOptions: AgentOptions): Dispatcher | undefined;
+};
+
+/**
+ * @kubernetes/client-node 2.0.0 builds a new undici Agent for every API request
+ * (`applySecurityAuthentication` calls `createDispatcher` each time), so every
+ * request opened its own TLS connection, which then idled about four seconds
+ * before closing. A busy process held a connection per recent request and paid
+ * a TLS handshake for each call (finding 890). This keeps one dispatcher per
+ * KubeConfig and reuses it while the TLS material is unchanged. When that
+ * material changes (a rotated client certificate or CA), it builds a new
+ * dispatcher and closes the old one once its in-flight requests finish.
+ * Requests use HTTP/1.1, as before 2.0.0: undici would otherwise negotiate
+ * HTTP/2 and multiplex every call over one shared connection.
+ */
+export function reuseRequestDispatcher(configuration: KubeConfig): void {
+  const factory = configuration as unknown as KubeConfigDispatcherFactory;
+  if (typeof factory.createDispatcher !== "function") {
+    throw new Error("The Kubernetes client no longer exposes its request dispatcher factory.");
+  }
+  const createLibraryDispatcher = factory.createDispatcher.bind(configuration);
+  let current: { readonly fingerprint: string; readonly dispatcher: Dispatcher } | undefined;
+  factory.createDispatcher = (cluster, agentOptions) => {
+    const options = configuration.createDispatcherOptions(cluster, agentOptions);
+    if (options.type === "none") {
+      return undefined;
+    }
+    const fingerprint = createHash("sha256").update(JSON.stringify(options)).digest("hex");
+    if (current?.fingerprint === fingerprint) {
+      return current.dispatcher;
+    }
+    const dispatcher =
+      options.type === "agent"
+        ? new Agent({
+            allowH2: false,
+            // The same options client-node passes to this constructor; its
+            // tls.ConnectionOptions type is only looser about optional fields.
+            connect: options.connect as Partial<buildConnector.BuildOptions>,
+          })
+        : createLibraryDispatcher(cluster, agentOptions);
+    if (dispatcher === undefined) {
+      return undefined;
+    }
+    const previous = current?.dispatcher;
+    current = { fingerprint, dispatcher };
+    previous?.close().catch(() => undefined);
+    return dispatcher;
+  };
 }
 
 /**
