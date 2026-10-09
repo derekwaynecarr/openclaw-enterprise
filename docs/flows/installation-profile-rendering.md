@@ -96,8 +96,9 @@ branch writes only `preflight.json`, leaving no deployable artifacts.
 
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
-with the API's `tldts` list), and paired metrics scraper selectors. Invalid
-values therefore fail before `values.yaml` or `installation.yaml` is written.
+with the API's `tldts` list), repository Service names, and paired metrics
+scraper selectors. Invalid values therefore fail before `values.yaml` or
+`installation.yaml` is written.
 
 ### 4. Build Helm values
 
@@ -118,8 +119,10 @@ egress, excluding private and reserved ranges, and the proxy authorizes Slack
 hostnames. Repository values render only when the input explicitly sets
 `repository.enabled: true`. Repository provider CIDRs pass through unchanged,
 so operators can keep their existing GitHub ranges without DNS snapshots. The
-renderer copies `repository.serviceName` only when the input sets it, so the
-chart's upgrade guard still requires an explicit current broker Service name.
+renderer copies `repository.serviceName` only when the input sets it, and only
+when that name is a DNS-1035 Service label of at most 63 characters. The
+chart's upgrade guard still requires an explicit current broker Service name,
+and the same DNS-1035 check cannot fail after a successful preflight.
 
 ### 5. Build Installation startup YAML
 
@@ -200,6 +203,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09: Refuse a repository broker Service name the chart's DNS-1035 check refuses.
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 

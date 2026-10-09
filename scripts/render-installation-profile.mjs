@@ -11,6 +11,9 @@ const repoRoot = resolve(scriptDir, "..");
 const profilesDir = resolve(repoRoot, "deploy/profiles");
 const allowedProfiles = new Set(["openclaw", "codex"]);
 const helmReleaseName = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+// Kubernetes Service names are DNS-1035 labels. The chart refuses any other
+// repositoryCredentials.serviceName.
+const dns1035Label = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
 const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
 const proxyUrl = /^https?:\/\/(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$/;
 const dnsHostname =
@@ -1363,7 +1366,10 @@ function buildRendered(profile, parsed, diagnostics) {
       appKeySecretName: asString(repository, ["repository", "appKeySecretName"], diagnostics),
       tlsSecretName: asString(repository, ["repository", "tlsSecretName"], diagnostics),
       publicCaSecretName: asString(repository, ["repository", "publicCaSecretName"], diagnostics),
-      serviceName: optionalString(repository, ["repository", "serviceName"], diagnostics),
+      serviceName: optionalString(repository, ["repository", "serviceName"], diagnostics, {
+        validate: (value) => value.length <= 63 && dns1035Label.test(value),
+        description: "a Kubernetes Service DNS-1035 label of at most 63 characters",
+      }),
       upstreamCidrs: stringArray(repository, ["repository", "upstreamCidrs"], diagnostics, {
         validate: isIpv4Cidr,
         description: "an IPv4 CIDR",

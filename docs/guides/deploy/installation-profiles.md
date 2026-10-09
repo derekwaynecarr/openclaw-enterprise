@@ -235,7 +235,10 @@ If you opt in to repositories, add the broker inputs:
 upgrade fails until you set it. When upgrading an installation whose broker
 Service has another name, set `serviceName` to that current name so TLS and
 active repository sessions keep working, then switch it deliberately after
-sessions drain.
+sessions drain. A set name must be a DNS-1035 label of at most 63 characters:
+a lowercase letter, then lowercase letters, digits, or hyphens, ending in a
+letter or digit. Preflight refuses any other spelling, which the chart also
+refuses.
 
 ## Render files
 

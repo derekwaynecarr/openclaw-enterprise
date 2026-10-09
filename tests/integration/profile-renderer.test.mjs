@@ -595,6 +595,17 @@ test("repository opt-in is explicit and keeps the two-stage placeholders separat
   );
 });
 
+test("preflight rejects a repository serviceName the chart refuses", () => {
+  const repositoryInput = repositoryConfiguration();
+  for (const serviceName of ["1git", "git.openclaw-system.svc", "a".repeat(64), "Git"]) {
+    assertPreflightFailure(
+      "codex",
+      codexInput({ repository: { ...repositoryInput, serviceName } }),
+      /repository\.serviceName must be a Kubernetes Service DNS-1035 label of at most 63 characters/,
+    );
+  }
+});
+
 test("repository serviceName is left to the chart so its upgrade guard applies", () => {
   const repositoryInput = repositoryConfiguration();
   const omitted = render("codex", codexInput({ repository: repositoryInput }));
