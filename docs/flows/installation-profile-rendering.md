@@ -134,7 +134,10 @@ repository broker Secrets when enabled, and every provider checked before it.
 Kubernetes label-key and label-value rules (values may be empty). Compute copies
 the runtime selectors into Pod specs, where Kubernetes applies the same rule.
 Invalid placement labels fail preflight without deployment files; legal YAML
-lookalike values remain strings. The bootstrap password claim name must be a DNS
+lookalike values remain strings. `peerSelector` applies Compute's
+`validatePeer` rule to the DNS, API client and metrics scraper selectors: the
+same key and value rules, empty values allowed, and a key prefix that is any DNS
+subdomain of at most 253 characters. The chart checks only that each is nonempty. The bootstrap password claim name must be a DNS
 subdomain, and a repository Backend ID must follow the Backend ID rule within
 200 UTF-16 code units, as in the chart.
 
@@ -265,6 +268,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09: Check DNS, API client and metrics scraper selectors with Compute's peer label rule, allowing empty values.
 
 - 2026-10-09: Apply the chart's sign-in Secret, runtime node selector, claim name and Backend ID rules, and escape characters Helm's YAML parser changes.
 
