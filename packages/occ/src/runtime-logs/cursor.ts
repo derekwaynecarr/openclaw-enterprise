@@ -115,7 +115,9 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
     !Number.isSafeInteger(record.i) ||
     (record.fc !== undefined && typeof record.fc !== "boolean") ||
     (record.fn !== undefined &&
-      (!Number.isSafeInteger(record.fn) || (record.fn as number) < hashes.length)) ||
+      (!Number.isSafeInteger(record.fn) ||
+        (record.fn as number) < hashes.length ||
+        (record.t === null && record.fn !== 0))) ||
     (hasPem &&
       (typeof record.po !== "boolean" ||
         (record.pt !== null &&

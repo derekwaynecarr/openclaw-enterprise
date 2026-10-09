@@ -310,6 +310,8 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
         (resume.lastHashes.length < RUNTIME_LOG_MAX_FRONTIER_HASHES
           ? resume.lastHashes.length
           : undefined));
+  // Whether this read skipped the frontier's delivered lines by position.
+  let positional = false;
   if (resume !== undefined && !replacedDuringRead) {
     const lastTime = resume.lastTime!;
     // The hashes cover every line delivered at `lastTime` only while the count fits.
@@ -330,24 +332,30 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       leading.push(runtimeLogGap("window_exceeded", observedStream, earliest));
     }
     // A complete frontier delivered its timestamp group from the group's first line,
-    // in log order. When this read is ordered and also holds the group's first line
-    // (it starts earlier, or is a short uncut page), the first `resumeCount` lines at
-    // `lastTime` are the delivered ones whatever their text, so a group larger than
-    // the hash history neither replays nor hides later lines. The remembered hashes
-    // must match the end of that run; otherwise hashes decide, as below.
-    const group = completeLines.filter(
-      (line) => line.time !== null && compareRuntimeLogTime(line.time, lastTime) === 0,
-    );
-    const positional =
+    // in log order. When this read also holds the group's first line (it starts
+    // earlier, or is a short uncut page) and its timed lines are in order through
+    // that time, the first `resumeCount` lines at `lastTime` are the delivered ones
+    // whatever their text, so a group larger than the hash history neither replays
+    // nor hides later lines. The remembered hashes must match the end of that run;
+    // otherwise hashes decide, as below.
+    let groupEnd = -1;
+    for (const [index, line] of completeLines.entries()) {
+      if (line.time !== null && compareRuntimeLogTime(line.time, lastTime) === 0) {
+        groupEnd = index;
+      }
+    }
+    const timed = completeLines.slice(0, groupEnd + 1).filter((line) => line.time !== null);
+    const group = timed.filter((line) => compareRuntimeLogTime(line.time!, lastTime) === 0);
+    positional =
       resume.frontierComplete === true &&
       resumeCount !== undefined &&
       group.length >= resumeCount &&
       ((earliest !== null && compareRuntimeLogTime(earliest, lastTime) < 0) ||
         (chunk.lines.length < query.tailLines && !chunk.truncated)) &&
-      completeLines.every(
+      timed.every(
         (line, index) =>
           validRuntimeLogFrontierTime(line.time) &&
-          (index === 0 || compareRuntimeLogTime(line.time, completeLines[index - 1]!.time!) >= 0),
+          (index === 0 || compareRuntimeLogTime(line.time, timed[index - 1]!.time!) >= 0),
       ) &&
       resume.lastHashes.every(
         (hash, index) =>
@@ -507,7 +515,15 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   let lastTime = kept ? resume.lastTime : null;
   let lastHashes = kept ? [...resume.lastHashes] : [];
   let frontierComplete = kept ? resume.frontierComplete === true : false;
-  let frontierCount = kept ? resumeCount : 0;
+  // Lines matched by hash at the kept frontier need not follow the counted run, so
+  // the count no longer proves positions.
+  const hashMatchedAtFrontier =
+    kept &&
+    !positional &&
+    delivered.some(
+      (line) => line.time !== null && compareRuntimeLogTime(line.time, resume.lastTime!) === 0,
+    );
+  let frontierCount = !kept ? 0 : hashMatchedAtFrontier ? undefined : resumeCount;
   if (last !== undefined) {
     if (lastTime === null || compareRuntimeLogTime(last.time!, lastTime) !== 0) {
       lastHashes = [];

@@ -1717,6 +1717,36 @@ test("runtime log polling suppresses a forgotten timestamp group when completene
   ]);
 });
 
+test("runtime log polling checks a counted timestamp group against its hashes", async () => {
+  const reader = pollReader();
+  const group = Array.from({ length: 10 }, (_, index) => timedLog(`worker ${index} ready`, 0));
+  assert.equal(messages(await reader.poll([timedLog("boot", -1), ...group])).length, 11);
+  // Rotation removed the start of the group; a short page no longer begins with it.
+  const fresh = Array.from({ length: 5 }, (_, index) => timedLog(`worker ${index} joined`, 0));
+  assert.deepEqual(
+    messages(await reader.poll([...group.slice(5), ...fresh])),
+    fresh.map(({ raw }) => raw),
+  );
+  assert.deepEqual(messages(await reader.poll([...group.slice(5), ...fresh])), []);
+});
+
+test("runtime log polling stops counting by position after tail-clipped polls", async () => {
+  const reader = pollReader();
+  const group = [timedLog("worker 0 ready", 0)];
+  const seen = messages(await reader.poll([timedLog("boot", -1), ...group]));
+  assert.equal(seen.length, 2);
+  for (let index = 1; index < 25; index += 1) {
+    group.push(timedLog(`worker ${index} ready`, 0));
+  }
+  // The view's tail changes between polls, so some polls cannot see the group start.
+  for (const tailLines of [4, 20, 1000]) {
+    const lines = [timedLog("boot", -1), ...group].slice(-tailLines);
+    seen.push(...messages(await reader.poll(lines, { query: { tailLines } })));
+  }
+  assert.equal(new Set(seen).size, seen.length, "no line is delivered twice");
+  assert.deepEqual(messages(await reader.poll([timedLog("boot", -1), ...group])), []);
+});
+
 test("runtime log cursor without a frontier count keeps legacy cursors usable", async () => {
   const strip = (reader) => {
     const { frontierCount: _count, ...position } = reader.codec.decode(
