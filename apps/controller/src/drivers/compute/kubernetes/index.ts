@@ -2125,7 +2125,8 @@ function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): vo
 // its own workspace, while the Gateway, file transfer and workspace files address main. A
 // refusal, not a rewrite: OCC skips this on status reads. Each refusal names the setting and
 // the rule it breaks, as requireOpenClawRoster's do. It runs after requireOpenClawRoster, so
-// agents and agents.entries are objects and an explicit roster has at least one entry.
+// agents and agents.entries are objects when present, and an explicit roster has at least one
+// entry.
 function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocument): void {
   const agents = asRecord(configuration.agents);
   const defaults = asRecord(agents?.defaults);
@@ -2140,8 +2141,8 @@ function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocum
     }
   }
   const entries = Object.entries(asRecord(agents?.entries) ?? {});
-  // OpenClaw reads a missing roster, or an empty one without explicit ownership, as
-  // `{ main: {} }`.
+  // OpenClaw reads a missing or empty roster as `{ main: {} }` unless ownership is explicit,
+  // which requireOpenClawRoster refuses.
   if (entries.length === 0) {
     return;
   }
