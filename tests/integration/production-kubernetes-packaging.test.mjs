@@ -4094,3 +4094,26 @@ test(
     assert.match(stdout, /edge: a_b\.c-d/);
   },
 );
+
+test("execution chart refuses a harness hostname Compute refuses", tooling, async () => {
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-execution",
+        "--set",
+        "routing.hostname=Bad_Host",
+        "--set",
+        "routing.gatewayClassName=private-envoy-gateway",
+        "--set",
+        "routing.tlsSecretName=agents-tls",
+        "--set-json",
+        'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+      ],
+      { cwd: repository },
+    ),
+    /routing\.hostname must be a DNS hostname without a port or path/,
+  );
+});

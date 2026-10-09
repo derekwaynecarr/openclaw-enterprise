@@ -108,7 +108,9 @@ cluster-local `.svc` address crosses the cluster boundary.
 
 Create a TLS Secret in the DP system namespace. Install
 `deploy/helm/openclaw-execution` with `routing.hostname`, `gatewayClassName`,
-`tlsSecretName`, and `controlPlaneCidrs`. For k3d, `serviceType: LoadBalancer`
+`tlsSecretName`, and `controlPlaneCidrs`. `routing.hostname` must be a DNS
+hostname without a port or path, the same rule Compute applies to
+`executionCluster.harnessRouting.hostname`. For k3d, `serviceType: LoadBalancer`
 uses its service load balancer. The chart creates component ServiceAccounts,
 namespace-level ClusterRoles and bindings, tenant-role definitions, Gateway API
 resources, and the exact Envoy NetworkPolicy. It does not grant tenant access
