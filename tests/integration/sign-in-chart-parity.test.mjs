@@ -1470,9 +1470,11 @@ test(
         "//console.oce.example.internal",
         "ftp://console.oce.example.internal",
         "https://console.oce.example.internal:65536",
-        // Go keeps everything before the last colon in the host name; Node refuses the port.
+        // Go keeps everything before the last colon in the host name and accepts an IPv6 zone
+        // ID; Node refuses both.
         "https://console.oce.example.internal:80:1",
         "https://192.0.2.10:80:1",
+        "https://[fe80::1%25eth0]",
         "https://",
         "http://localhost/occ",
       ].map((baseUrl) => ({ baseUrl, chart: notOrigin, api: false, job: false })),
