@@ -36,6 +36,7 @@ import type {
   CredentialSourceMetadata,
   CredentialSourceSnapshot,
   CredentialSourceStatus,
+  CredentialWithdrawal,
   CredentialWithdrawalStatus,
   CredentialSourceType,
   AuditEvent,
@@ -151,6 +152,10 @@ import {
   ComputeProvisioningRefusedError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceDriverError,
+  CredentialSourceTypeNotOfferedError,
+  CredentialWithdrawalInProgressError,
+  HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
   NamespaceNotEmptyError,
@@ -159,6 +164,7 @@ import {
   NoActiveAgentRevisionError,
   NotImplementedError,
   PluginPolicyValidationError,
+  ProvisioningSecretDriverError,
   RepositoryOptionsUnavailableError,
   ResourceConflictError,
   ResourceStateConflictError,
@@ -167,8 +173,12 @@ import {
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
   ScopeViolationError,
+  SecretBindingDriverError,
+  ServiceAccountDriverNotConfiguredError,
   SecretBindingValidationError,
+  SecretDriverOwnershipError,
   SecretReferencedError,
+  SecretStorageDriverError,
   SecretValueError,
 } from "./errors.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
@@ -253,6 +263,7 @@ export type { RemovedAccessBinding } from "./iam-policy-cleanup.ts";
 export {
   ActivationFailedError,
   ActivationPendingError,
+  agentEntryMessage,
   AgentCredentialSourceBindingError,
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
@@ -269,6 +280,12 @@ export {
   ComputeProvisioningRefusedError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceDriverError,
+  CredentialSourceRevisionError,
+  CredentialSourceTypeNotOfferedError,
+  CredentialWithdrawalInProgressError,
+  CredentialWithdrawalRefusedError,
+  HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
@@ -280,6 +297,7 @@ export {
   NoActiveAgentRevisionError,
   NotImplementedError,
   PluginPolicyValidationError,
+  ProvisioningSecretDriverError,
   RepositoryOptionsUnavailableError,
   ResourceConflictError,
   ResourceStateConflictError,
@@ -289,7 +307,11 @@ export {
   RuntimeLogsSandboxNotFoundError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
+  SecretBindingDriverError,
+  ServiceAccountDriverNotConfiguredError,
   SecretBindingValidationError,
+  SecretDriverOwnershipError,
+  SecretStorageDriverError,
   SecretValueError,
   TransientDependencyError,
   type ActivationFailedCode,
@@ -707,7 +729,8 @@ export type ReconciliationOperation = PlatformOperation;
 export type AgentProvisioningWorkerOutcome =
   | { readonly outcome: "succeeded"; readonly revisionId: string }
   | {
-      readonly outcome: "retry" | "permanent";
+      /** `pending` waits out a settle window without spending an attempt. */
+      readonly outcome: "retry" | "permanent" | "pending";
       readonly code: string;
       /** A Compute refusal's reason for the operator log; status keeps the fixed text. */
       readonly reason?: string;
@@ -750,6 +773,14 @@ const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
  */
 const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_000;
 /**
+ * How long after a provisioning Configuration create was recorded an absent Configuration may
+ * still be a late create in flight (finding 911). The Kubernetes Driver gives up on a write after
+ * 10 s, and the API server ends a request it accepted within its request timeout (60 s by
+ * default), so a create that has not appeared 90 s after the effect began (database clock) is
+ * sent again. A late original then meets an existing ConfigMap and fails AlreadyExists.
+ */
+const PROVISIONING_CONFIGURATION_SETTLE_MS = 90_000;
+/**
  * The most references a Secret read or delete examines. Each one costs authorization work,
  * so the bound keeps both the response and the IAM work small. Delete makes those decisions
  * while it holds the Namespace and Secret locks, so the bound also limits that lock window.
@@ -772,6 +803,61 @@ const SECRET_CONSUMER_FIELDS: Readonly<
   credential_source: "credentialSources",
   provisioning_request: "provisioningRequests",
 });
+
+/**
+ * Revisions other than `active` that may still run with the sources they were admitted with,
+ * and so need their own withdrawal of a source withdrawn from the Agent: earlier revisions not
+ * yet retired, newest first, then every later admitted revision, which may still deploy. The
+ * worker publishes a revision as active before it retires the earlier ones, and completes the
+ * deployment only after that, so until the active revision's deployment has activated it, its
+ * predecessor keeps serving. The walk stops at the newest revision whose deployment succeeded,
+ * which means it activated: the worker completes that work only after retiring everything
+ * before it. The in-memory store reports all work as queued, so there the walk always reaches
+ * the first revision.
+ */
+export async function credentialWithdrawalCompanionRevisions(
+  state: { readonly operations: Pick<PlatformReadView["operations"], "findWork"> },
+  revisions: readonly Readonly<AgentRevision>[],
+  active: Readonly<AgentRevision>,
+  now: Date,
+): Promise<readonly Readonly<AgentRevision>[]> {
+  const ordered = revisions
+    .filter((candidate) => candidate.revision <= active.revision)
+    .sort((left, right) => right.revision - left.revision);
+  const companions: Readonly<AgentRevision>[] = [];
+  for (const candidate of ordered) {
+    if (candidate.id !== active.id) {
+      companions.push(candidate);
+    }
+    const work = await state.operations.findWork(`agent_revision:${candidate.id}:reconcile`);
+    if (
+      work !== undefined &&
+      work.namespaceId === candidate.namespaceId &&
+      work.revisionId === candidate.id &&
+      controllerWorkDeploymentStatus(work, now) === "succeeded"
+    ) {
+      break;
+    }
+  }
+  companions.push(
+    ...revisions
+      .filter((candidate) => candidate.revision > active.revision)
+      .sort((left, right) => left.revision - right.revision),
+  );
+  return companions;
+}
+
+/** The revision was admitted with the source, as its Harness authentication or in its list. */
+function revisionHoldsCredentialSource(
+  revision: Readonly<AgentRevision>,
+  credentialSourceId: string,
+): boolean {
+  return (
+    (revision.harnessAuth.method === "credential_source" &&
+      revision.harnessAuth.sourceId === credentialSourceId) ||
+    (revision.credentialSources ?? []).some(({ sourceId }) => sourceId === credentialSourceId)
+  );
+}
 
 /** Rejects unknown and missing catalog fields before any Credential Gateway effect. */
 function credentialSourceFieldsMatch(
@@ -826,19 +912,36 @@ function fittedList(prefix: string, items: readonly string[], suffix: string): s
 }
 
 /**
- * The provisioning status message for a worker failure. Only the shared duplicate-name and
- * Compute refusal texts and the plugin-policy, native-support and Configuration Harness
- * refusals pass through; other error messages stay internal. Those refusals name only
- * Installation configuration, the work's own plugin selection and settings in its own
- * Configuration, and HTTP returns them verbatim. The status contract caps
- * `error.message` at 256 characters.
+ * A pending provisioning Configuration create is not visible yet but may still be in flight, so
+ * the attempt defers for the rest of the settle window instead of spending a retry (finding 911).
+ */
+class ProvisioningConfigurationSettlingError extends DependencyUnavailableError {
+  readonly retryAfterMs: number;
+
+  constructor(retryAfterMs: number) {
+    super("The pending Configuration provisioning effect outcome is unknown.");
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/**
+ * The provisioning status message for a worker failure. Only the shared duplicate-name,
+ * Compute refusal, Secret Driver ownership and missing ChatGPT Backend texts and the
+ * plugin-policy, native-support and Configuration Harness refusals pass through; other error
+ * messages stay internal. Those refusals name only Installation configuration, the work's own
+ * plugin selection and settings in its own Configuration, and HTTP returns them verbatim. The
+ * status contract caps `error.message` at 256 characters.
  */
 function provisioningFailureMessage(code: string, error: unknown): string {
   if (code === "PROVISIONING_REJECTED") {
     if (
       (error instanceof ResourceStateConflictError && error.message === AGENT_NAME_CONFLICT) ||
       error instanceof ComputeGatewaySettingError ||
-      error instanceof ComputeProvisioningRefusedError
+      error instanceof ComputeProvisioningRefusedError ||
+      // Fixed, id-free text that names the fix (save replacement Secrets, submit a new request).
+      error instanceof SecretDriverOwnershipError ||
+      // Fixed, id-free text naming the missing ChatGPT Backend.
+      error instanceof ServiceAccountDriverNotConfiguredError
     ) {
       return error.message;
     }
@@ -2021,8 +2124,10 @@ export class OpenClawController {
         `Agent provisioning needs ${provisioningModes.join(" or ")} execution; this request uses ${executionMode} execution. Set executionMode.`,
       );
     }
+    // A rule about the request body, checked after the Namespace grants: name it (400) instead
+    // of hiding it as a scope miss.
     if (harnessAuth === null || harnessAuth.method === "runtime") {
-      throw new ScopeViolationError(
+      throw new SecretBindingValidationError(
         "Agent provisioning requires dedicated Harness authentication.",
       );
     }
@@ -2069,7 +2174,12 @@ export class OpenClawController {
         configurationInput.secretBindings,
         harnessAuth,
       );
-      await this.validateChannelCredentials(principalId, input.namespaceId, configurationInput);
+      await this.validateChannelCredentials(
+        principalId,
+        input.namespaceId,
+        configurationInput,
+        () => new ProvisioningSecretDriverError(),
+      );
     }
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, input.namespaceId);
@@ -2285,6 +2395,10 @@ export class OpenClawController {
       return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_FAILED" });
     }
     try {
+      // Inspect an external write that an earlier attempt left unsettled before this attempt's
+      // first fence, so a permanent refusal fails the work instead of retrying it as an unknown
+      // outcome (finding 815). reconcileProvisioningEffect says why that order is safe.
+      record = await this.reconcileProvisioningEffect(record, runEffect);
       record = await this.checkpointAgentProvisioning(claim, {
         completedPhase: record.completedPhase,
         status: "running",
@@ -2383,24 +2497,33 @@ export class OpenClawController {
       ) {
         code = "PROVISIONING_OUTCOME_UNKNOWN";
       } else if (
-        !(error instanceof DependencyUnavailableError) &&
-        (error instanceof ScopeViolationError ||
-          error instanceof ResourceConflictError ||
-          error instanceof AuthorizationDeniedError ||
-          error instanceof AgentDeletingError ||
-          error instanceof NamespaceNotReadyError ||
-          // An Installation change (Plugin Driver, runtime image) refuses the stored plan
-          // the same way on every attempt, as HTTP retry does with a 400. A Compute plan
-          // refusal arrives as a ResourceConflictError (409) and is rejected the same way.
-          error instanceof PluginPolicyValidationError ||
-          error instanceof NativeWorkerSupportError)
+        // A Secret stored through a Secret Driver the Installation no longer selects is
+        // refused the same way on every attempt, as request, status and retry answer it
+        // with a fixed 503. A missing or unusable driver stays a retryable outage.
+        error instanceof SecretDriverOwnershipError ||
+        (!(error instanceof DependencyUnavailableError) &&
+          (error instanceof ScopeViolationError ||
+            error instanceof ResourceConflictError ||
+            error instanceof AuthorizationDeniedError ||
+            error instanceof AgentDeletingError ||
+            error instanceof NamespaceNotReadyError ||
+            // An Installation change (Plugin Driver, runtime image) refuses the stored plan
+            // the same way on every attempt, as HTTP retry does with a 400. A Compute plan
+            // refusal arrives as a ResourceConflictError (409) and is rejected the same way.
+            error instanceof PluginPolicyValidationError ||
+            error instanceof NativeWorkerSupportError))
       ) {
         code = "PROVISIONING_REJECTED";
       }
+      const deferMs =
+        error instanceof ProvisioningConfigurationSettlingError ? error.retryAfterMs : undefined;
       const disposition =
-        code === "PROVISIONING_DEPENDENCY_UNAVAILABLE" || code === "PROVISIONING_OUTCOME_UNKNOWN"
-          ? "retry"
-          : "permanent";
+        deferMs !== undefined && code === "PROVISIONING_OUTCOME_UNKNOWN"
+          ? "defer"
+          : code === "PROVISIONING_DEPENDENCY_UNAVAILABLE" ||
+              code === "PROVISIONING_OUTCOME_UNKNOWN"
+            ? "retry"
+            : "permanent";
       const authorizationDenied =
         error instanceof AuthorizationDeniedError && !(error instanceof DependencyUnavailableError);
       const message = provisioningFailureMessage(code, error);
@@ -2418,7 +2541,9 @@ export class OpenClawController {
               error: { code, message },
             },
           },
-          { disposition, code, message },
+          disposition === "defer"
+            ? { disposition, code, message, delayMs: deferMs! }
+            : { disposition, code, message },
         );
         await state.audit.append({
           id: `aud_${crypto.randomUUID()}`,
@@ -2447,7 +2572,7 @@ export class OpenClawController {
         });
       });
       return Object.freeze({
-        outcome: disposition,
+        outcome: disposition === "defer" ? ("pending" as const) : disposition,
         code,
         ...(error instanceof ComputeProvisioningRefusedError ? { reason: error.reason } : {}),
       });
@@ -3729,7 +3854,10 @@ export class OpenClawController {
       if (!secret) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
       }
-      const driver = this.secretDriver(secret.driverId);
+      const driver = this.ownedSecretDriver(
+        secret.driverId,
+        () => new SecretStorageDriverError("update"),
+      );
       // No prior value is read or retained for rollback. Success means stored, not delivered.
       await this.secretOperation(() => driver.update(secret, input.value));
       return this.secretMetadata(secret);
@@ -3761,7 +3889,10 @@ export class OpenClawController {
         throw new SecretReferencedError(consumers);
       }
       const removed = await accessBindingsTargeting(state, namespace.id, "secret", secret.id);
-      const driver = this.secretDriver(secret.driverId);
+      const driver = this.ownedSecretDriver(
+        secret.driverId,
+        () => new SecretStorageDriverError("delete"),
+      );
       await this.secretOperation(() => driver.delete(secret));
       if (!(await state.secrets.deleteSecret(namespace.id, secret.id))) {
         throw new ResourceStateConflictError("The Secret changed during deletion.");
@@ -3912,6 +4043,8 @@ export class OpenClawController {
         namespaceId: input.namespaceId,
       });
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // An Installation property, so it is reported before any Namespace or source state.
+      this.assertCredentialGatewaySelected();
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -3927,7 +4060,7 @@ export class OpenClawController {
       if (source.state !== "ready") {
         throw new ResourceStateConflictError("Only a ready credential source can be updated.");
       }
-      const gateway = this.credentialGatewayDriver(source.driverId);
+      const gateway = this.ownedCredentialGatewayDriver(source.driverId);
       const type = await this.credentialSourceType(gateway, source.type);
       const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
       credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
@@ -4027,14 +4160,21 @@ export class OpenClawController {
     });
     let status: CredentialSourceStatus;
     try {
-      const gateway = this.credentialGatewayDriver(source.driverId);
+      const gateway = this.ownedCredentialGatewayDriver(source.driverId);
       status = await gateway.sourceStatus({
         namespace: await this.credentialNamespace(namespace),
         source,
         signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       });
-    } catch {
-      status = { state: "failed", reason: "The Credential Gateway status is unavailable." };
+    } catch (error) {
+      // After the grant and the lookup, so naming a driver change reveals nothing new.
+      status = {
+        state: "failed",
+        reason:
+          error instanceof CredentialSourceDriverError
+            ? "A Credential Gateway Driver that is no longer selected registered the source."
+            : "The Credential Gateway status is unavailable.",
+      };
     }
     return this.credentialSourceMetadata(source, status);
   }
@@ -4063,7 +4203,9 @@ export class OpenClawController {
 
   /**
    * Deletion is caller-retried: the record stays `deleting` until the gateway copy is gone,
-   * which keeps the Namespace nonempty and blocks new bindings in the meantime.
+   * which keeps the Namespace nonempty and blocks new bindings in the meantime. The record moves
+   * to `deleting`, which is one-way, only once the selected gateway registered it, so a refusal
+   * after a gateway change leaves the source as it was.
    */
   async deleteCredentialSource(
     principalId: string,
@@ -4073,12 +4215,14 @@ export class OpenClawController {
   ): Promise<void> {
     this.assertCredentialSourceTransactionBoundary();
     this.namespaceIdentity(namespaceId);
-    const { namespace, source } = await this.mutate(async (state) => {
+    const { namespace, source, gateway } = await this.mutate(async (state) => {
       const locked = await this.lockNamespaceForPolicyDelete(state, principalId, {
         kind: "credential_source",
         id: credentialSourceId,
         namespaceId,
       });
+      // An Installation property, so it is reported before any source lookup.
+      this.assertCredentialGatewaySelected();
       const found = await state.credentialSources.lockCredentialSource(
         locked.id,
         credentialSourceId,
@@ -4088,11 +4232,17 @@ export class OpenClawController {
           "The credential source does not belong to the exact Namespace.",
         );
       }
-      if (await state.credentialSources.hasReferences(locked.id, found.id)) {
+      const blocking = await state.credentialSources.findBlockingReference(locked.id, found.id);
+      if (blocking === "reference") {
         throw new ResourceStateConflictError(
           "An Agent, active revision, or pending deployment still references the credential source. Delete those Agents, or deploy them without it, first.",
         );
       }
+      if (blocking === "withdrawal_work") {
+        // No active revision or pending work holds the source, so only waiting or Agent deletion helps.
+        throw new CredentialWithdrawalInProgressError();
+      }
+      const owner = this.ownedCredentialGatewayDriver(found.driverId);
       const deleting =
         found.state === "deleting"
           ? found
@@ -4100,9 +4250,8 @@ export class OpenClawController {
       if (deleting === undefined) {
         throw new ResourceStateConflictError("The credential source changed during deletion.");
       }
-      return { namespace: locked, source: deleting };
+      return { namespace: locked, source: deleting, gateway: owner };
     });
-    const gateway = this.credentialGatewayDriver(source.driverId);
     const placed = await this.credentialNamespace(namespace);
     await this.credentialGatewayOperation(() =>
       gateway.removeSource({
@@ -4179,10 +4328,28 @@ export class OpenClawController {
         ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
         createdAt: configuration.createdAt,
       });
+      // Registered before the write: a create that applied but answered with an error (a
+      // timeout, a lost response) would otherwise leave a ConfigMap without metadata (finding
+      // 916). The rollback deletes only this exact Configuration (identity, generation, creation
+      // time and values); an absent one means the create never applied, and a Driver that cannot
+      // inspect it is compensated only after a create it saw succeed.
+      let created = false;
+      this.registerRollback(async () => {
+        if (driver.inspectExact === undefined) {
+          if (!created) {
+            return;
+          }
+        } else if (
+          (await this.driverOperation(() => driver.inspectExact!(configuration))) === undefined
+        ) {
+          return;
+        }
+        await this.driverOperation(() =>
+          driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
+        );
+      });
       const result = await this.driverOperation(() => driver.create(configuration));
-      this.registerRollback(async () =>
-        driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
-      );
+      created = true;
       return this.exactConfiguration(result, metadata);
     });
   }
@@ -4244,7 +4411,7 @@ export class OpenClawController {
       }
       const driver = this.serviceAccountDriver();
       if (driver === undefined) {
-        throw new DependencyUnavailableError("The selected ServiceAccount Driver is unavailable.");
+        throw new ServiceAccountDriverNotConfiguredError("issue");
       }
       const credential = await this.driverOperation(
         () => driver.createCredential(account),
@@ -4335,7 +4502,11 @@ export class OpenClawController {
       }
       const driver = this.serviceAccountDriver();
       if (account.credential?.kind === "access_token" && driver === undefined) {
-        throw new DependencyUnavailableError("The selected ServiceAccount Driver is unavailable.");
+        // Only the Backend's Driver can revoke the issued token, so deletion waits for it.
+        // Only the worker sets a configured Driver id, so the API always answers the 409.
+        throw this.configuredServiceAccountDriverId === undefined
+          ? new ServiceAccountDriverNotConfiguredError("delete")
+          : new DependencyUnavailableError("The selected ServiceAccount Driver is unavailable.");
       }
       if (driver !== undefined) {
         await this.driverOperation(() => driver.delete(account), "ServiceAccount");
@@ -4439,10 +4610,16 @@ export class OpenClawController {
       });
       validateModelProviderSettings(values);
       await driver.validate(configuration);
-      const updated = await this.driverOperation(() => driver.update(configuration));
+      // Registered before the write: a replace that applied but answered with an error (a
+      // timeout, a lost response) would otherwise leave the stored Configuration one generation
+      // ahead of the rolled-back metadata (finding 911). A write that never applied is left alone.
       this.registerRollback(async () => {
-        await driver.update(previous);
+        const stored = await driver.read({ id: previous.id, namespaceId: previous.namespaceId });
+        if (stored.generation !== previous.generation) {
+          await driver.update(previous);
+        }
       });
+      const updated = await this.driverOperation(() => driver.update(configuration));
       return this.exactConfiguration(updated, advanced);
     });
   }
@@ -4490,12 +4667,28 @@ export class OpenClawController {
         ),
         configuration,
       );
+      // Registered before the write: a delete that applied but answered with an error would
+      // otherwise leave the metadata without its ConfigMap (finding 916). The rollback recreates
+      // the previous Configuration only when it is gone; one still stored exactly means the
+      // delete never applied. A Driver that cannot inspect it is compensated only after a delete
+      // it saw succeed.
+      let deleted = false;
+      this.registerRollback(async () => {
+        if (driver.inspectExact === undefined) {
+          if (!deleted) {
+            return;
+          }
+        } else if (
+          (await this.driverOperation(() => driver.inspectExact!(previous))) !== undefined
+        ) {
+          return;
+        }
+        await this.driverOperation(() => driver.create(previous));
+      });
       await this.driverOperation(() =>
         driver.delete({ id: configuration.id, namespaceId: namespace.id }),
       );
-      this.registerRollback(async () => {
-        await driver.create(previous);
-      });
+      deleted = true;
       const removed = await accessBindingsTargeting(
         state,
         namespace.id,
@@ -5556,6 +5749,10 @@ export class OpenClawController {
       } else if (requestedAuth !== undefined) {
         this.assertHarnessSourceListed(agent.credentialSources ?? [], requestedAuth);
       }
+      // Unlike the Agent's own bindings above, the named Configuration's Secret bindings get the
+      // full check even when `configurationId` is unchanged: deploy needs them usable, and only a
+      // Configuration write (or naming another Configuration) can replace them, so loosening this
+      // would not unblock the Agent. SecretBindingDriverError names that fix.
       const secretBindings = this.bindings(configuration.secretBindings);
       await this.authorizeBindings(state, principalId, namespace.id, secretBindings);
       const backendId = this.backendId(input.backendId, agent.backendId);
@@ -5603,6 +5800,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     configuration: Pick<Configuration, "values" | "secretBindings">,
+    driverFailure: () => SecretDriverOwnershipError,
   ): Promise<void> {
     const driver = this.selections.get("channel")?.driver as ChannelDriver | undefined;
     if (driver?.validateCredentials === undefined) {
@@ -5630,7 +5828,7 @@ export class OpenClawController {
       if (secret === undefined) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
       }
-      const storage = this.secretDriver(secret.driverId);
+      const storage = this.ownedSecretDriver(secret.driverId, driverFailure);
       if (storage.withValue === undefined) {
         throw new ChannelCredentialError("unavailable", path);
       }
@@ -5688,7 +5886,12 @@ export class OpenClawController {
       await this.driverOperation(() => this.configurationDriver().read(metadata)),
       metadata,
     );
-    return this.validateChannelCredentials(principalId, input.namespaceId, configuration);
+    return this.validateChannelCredentials(
+      principalId,
+      input.namespaceId,
+      configuration,
+      () => new SecretBindingDriverError(),
+    );
   }
 
   async deployAgentWithAuthorization(
@@ -6008,8 +6211,15 @@ export class OpenClawController {
 
   /**
    * Records a withdrawal of `credentialSourceId` from the Agent's active revision and queues
-   * worker work to revoke it. A replay of a pending withdrawal queues another attempt only when
-   * no earlier attempt is still queued or running; a revoked withdrawal is returned unchanged.
+   * worker work to revoke it. Every admitted successor revision that holds the source gets its
+   * own withdrawal too, so a deployment still in flight cannot attach it again, and so does
+   * each predecessor that may still run until the active revision's deployment retires it.
+   * A replay of a pending withdrawal makes the replaying operator its requester, so its next
+   * attempt runs on their authority. It queues another attempt only when no earlier attempt is
+   * still queued or running, and otherwise lets a queued one run now; a revoked withdrawal is
+   * left unchanged. The response describes the active revision's withdrawal, or, once that is
+   * revoked, a pending one of another revision that may still run with the source (see
+   * readAgentCredentialWithdrawal).
    */
   async withdrawAgentCredentialSource(
     principalId: string,
@@ -6033,44 +6243,119 @@ export class OpenClawController {
         );
       }
       const revision = await this.activeCredentialSourceRevision(state, agent, input);
-      const withdrawal = await state.credentialSources.requestCredentialWithdrawal(
-        Object.freeze({
-          namespaceId: agent.namespaceId,
-          agentId: agent.id,
-          revisionId: revision.id,
-          credentialSourceId: input.credentialSourceId,
-          state: "pending",
-          requestedBy: principalId,
-          requestedAt: this.timestamp(),
-        }),
+      const withdrawal = await this.requestRevisionCredentialWithdrawal(
+        state,
+        principalId,
+        revision,
+        input.credentialSourceId,
       );
-      if (
-        withdrawal.state === "pending" &&
-        !(await state.operations.hasOutstandingCredentialWithdrawalWork(
-          agent.namespaceId,
-          revision.id,
-        ))
-      ) {
-        await this.record(state, {
-          kind: "agent_revision",
-          action: "reconcile",
-          target: "credentials_withdrawn",
-          namespaceId: agent.namespaceId,
-          resourceId: revision.id,
-          actorId: principalId,
-          operationId: crypto.randomUUID(),
-        });
+      const others = (
+        await credentialWithdrawalCompanionRevisions(
+          state,
+          await state.revisions.listRevisions(agent.namespaceId, agent.id),
+          revision,
+          this.clock(),
+        )
+      ).filter((candidate) => revisionHoldsCredentialSource(candidate, input.credentialSourceId));
+      const pendingOthers: Readonly<CredentialWithdrawal>[] = [];
+      for (const other of others) {
+        const recorded = await this.requestRevisionCredentialWithdrawal(
+          state,
+          principalId,
+          other,
+          input.credentialSourceId,
+        );
+        if (recorded.state === "pending") {
+          pendingOthers.push(recorded);
+        }
       }
-      // A pending withdrawal now has an attempt queued or running, either earlier or just now.
-      // Like the read, this reflects the queue at commit: a claim that expired on its last
+      // Every pending withdrawal now has an attempt queued or running, either earlier or just
+      // now. Like the read, this reflects the queue at commit: a claim that expired on its last
       // attempt counts until recoverStale fails it.
-      return Object.freeze({ ...withdrawal, withdrawalInProgress: withdrawal.state === "pending" });
+      const reported =
+        withdrawal.state === "pending" ? withdrawal : (pendingOthers[0] ?? withdrawal);
+      return Object.freeze({ ...reported, withdrawalInProgress: reported.state === "pending" });
     });
   }
 
   /**
-   * A `pending` withdrawal whose attempts ran out has no outstanding work, whether the last
-   * attempt failed or its claim expired, so `withdrawalInProgress` is read from the queue.
+   * Inserts or returns the revision's withdrawal of the source. A pending one makes the caller
+   * its requester. Without outstanding work it queues an attempt; otherwise the queued attempt
+   * runs now instead of at its scheduled time, so one chain still serves the withdrawal.
+   */
+  private async requestRevisionCredentialWithdrawal(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    revision: Readonly<AgentRevision>,
+    credentialSourceId: string,
+  ): Promise<Readonly<CredentialWithdrawal>> {
+    let withdrawal = await state.credentialSources.requestCredentialWithdrawal(
+      Object.freeze({
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        credentialSourceId,
+        state: "pending",
+        requestedBy: principalId,
+        requestedAt: this.timestamp(),
+      }),
+    );
+    if (withdrawal.state !== "pending") {
+      return withdrawal;
+    }
+    // The worker rechecks `agent:operate` for the recorded requester. An earlier requester
+    // may have lost it since, so the next attempt, queued now or earlier, runs on the authority
+    // just checked by the caller; otherwise nobody could ever complete the withdrawal. The
+    // request's own audit event records the caller; earlier events keep their actors.
+    if (withdrawal.requestedBy !== principalId) {
+      const reassigned = await state.credentialSources.reassignCredentialWithdrawal(
+        withdrawal.namespaceId,
+        withdrawal.revisionId,
+        withdrawal.credentialSourceId,
+        principalId,
+      );
+      if (reassigned === undefined) {
+        throw new ResourceStateConflictError(
+          "The credential withdrawal changed during the request.",
+        );
+      }
+      withdrawal = reassigned;
+    }
+    // A queued attempt (a retry backing off, or a later series of the worker's recovery chain)
+    // runs now rather than up to five minutes later. A running one reads the new requester
+    // when it settles (the worker's finalizeCredentialWithdrawal).
+    if (
+      await state.operations.hasOutstandingCredentialWithdrawalWork(
+        revision.namespaceId,
+        revision.id,
+      )
+    ) {
+      await state.operations.expediteCredentialWithdrawalWork(revision.namespaceId, revision.id);
+      return withdrawal;
+    }
+    await this.record(state, {
+      kind: "agent_revision",
+      action: "reconcile",
+      target: "credentials_withdrawn",
+      namespaceId: revision.namespaceId,
+      resourceId: revision.id,
+      actorId: principalId,
+      operationId: crypto.randomUUID(),
+    });
+    return withdrawal;
+  }
+
+  /**
+   * A `pending` withdrawal has no outstanding work once its attempts ran out with no later
+   * series queued (the chain ended, it awaits a replay, or maintenance has not re-queued it
+   * yet), so `withdrawalInProgress` is read from the queue.
+   *
+   * The source is withdrawn from the Agent only once every revision that may still run with it
+   * confirmed its own withdrawal, so the read reports the active revision's withdrawal unless
+   * one of those revisions' tells more: first a `pending` one with no attempt outstanding, so
+   * `withdrawalInProgress: false` on a `pending` read always means a replay is needed, then any
+   * other `pending` one, so `revoked` means all of them are. `revisionId` names the revision
+   * whose withdrawal is reported.
    */
   async readAgentCredentialWithdrawal(
     principalId: string,
@@ -6097,15 +6382,44 @@ export class OpenClawController {
           "The credential source was not withdrawn from the Agent's active revision.",
         );
       }
-      return Object.freeze({
-        ...withdrawal,
-        withdrawalInProgress:
-          withdrawal.state === "pending" &&
-          (await state.operations.hasOutstandingCredentialWithdrawalWork(
-            withdrawal.namespaceId,
-            withdrawal.revisionId,
-          )),
-      });
+      const withdrawals = [withdrawal];
+      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
+      const active = revisions.find(({ id }) => id === withdrawal.revisionId);
+      const companions =
+        active === undefined
+          ? []
+          : await credentialWithdrawalCompanionRevisions(state, revisions, active, this.clock());
+      for (const companion of companions) {
+        if (!revisionHoldsCredentialSource(companion, input.credentialSourceId)) {
+          continue;
+        }
+        const recorded = await state.credentialSources.findCredentialWithdrawal(
+          companion.namespaceId,
+          companion.id,
+          input.credentialSourceId,
+        );
+        if (recorded !== undefined) {
+          withdrawals.push(recorded);
+        }
+      }
+      let inProgress: Readonly<CredentialWithdrawalStatus> | undefined;
+      for (const candidate of withdrawals) {
+        if (candidate.state !== "pending") {
+          continue;
+        }
+        const status = Object.freeze({
+          ...candidate,
+          withdrawalInProgress: await state.operations.hasOutstandingCredentialWithdrawalWork(
+            candidate.namespaceId,
+            candidate.revisionId,
+          ),
+        });
+        if (!status.withdrawalInProgress) {
+          return status;
+        }
+        inProgress ??= status;
+      }
+      return inProgress ?? Object.freeze({ ...withdrawal, withdrawalInProgress: false });
     });
   }
 
@@ -6125,13 +6439,10 @@ export class OpenClawController {
       agent.id,
       agent.activeRevisionId,
     );
-    const harnessSource =
-      revision?.harnessAuth.method === "credential_source" &&
-      revision.harnessAuth.sourceId === input.credentialSourceId;
-    const nonModelSource = (revision?.credentialSources ?? []).some(
-      ({ sourceId }) => sourceId === input.credentialSourceId,
-    );
-    if (revision === undefined || (!harnessSource && !nonModelSource)) {
+    if (
+      revision === undefined ||
+      !revisionHoldsCredentialSource(revision, input.credentialSourceId)
+    ) {
       throw new ScopeViolationError(
         "The Agent's active revision does not use this credential source.",
       );
@@ -7022,7 +7333,7 @@ export class OpenClawController {
       if (!secret) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
       }
-      this.secretDriver(secret.driverId);
+      this.ownedSecretDriver(secret.driverId, () => new SecretBindingDriverError());
       secrets.set(secret.id, secret);
     }
     return Object.freeze([...secrets.values()]);
@@ -7055,7 +7366,7 @@ export class OpenClawController {
       if (source === undefined) {
         throw new ScopeViolationError("The Harness Secret does not belong to the exact Namespace.");
       }
-      this.secretDriver(source.driverId);
+      this.ownedSecretDriver(source.driverId, () => new HarnessAuthSecretDriverError());
     } else if (binding.method === "credential_source") {
       await this.authorize(principalId, "operate", {
         kind: "credential_source",
@@ -7072,7 +7383,7 @@ export class OpenClawController {
           "The Harness credential source is unavailable in the exact Namespace.",
         );
       }
-      this.credentialGatewayDriver(source.driverId);
+      this.ownedCredentialGatewayDriver(source.driverId);
     } else {
       if (binding.source.namespaceId !== namespaceId) {
         throw new ScopeViolationError("Harness authentication sources cannot cross Namespaces.");
@@ -7215,7 +7526,7 @@ export class OpenClawController {
           "The credential source is unavailable in the exact Namespace.",
         );
       }
-      this.credentialGatewayDriver(source.driverId);
+      this.ownedCredentialGatewayDriver(source.driverId);
     }
     this.assertHarnessSourceListed(bindings, harnessAuth);
   }
@@ -7261,7 +7572,7 @@ export class OpenClawController {
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError("The credential source is unavailable.");
       }
-      const gateway = this.credentialGatewayDriver(source.driverId);
+      const gateway = this.ownedCredentialGatewayDriver(source.driverId);
       await this.credentialSourceType(gateway, source.type);
       snapshots.push({ sourceId, credentialGatewayId: gateway.id, sourceType: source.type });
     }
@@ -7689,6 +8000,7 @@ export class OpenClawController {
     return effect.targetId === undefined || pending.targetId === effect.targetId;
   }
 
+  /** Settles the pending Configuration create once observed; undefined while it is absent. */
   private async inspectProvisioningConfigurationEffect(
     workId: string,
     record: Readonly<AgentProvisioningRecord>,
@@ -7696,7 +8008,7 @@ export class OpenClawController {
     configuration: Configuration,
     driver: ConfigurationDriver,
     runEffect: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>,
-  ): Promise<Readonly<AgentProvisioningRecord>> {
+  ): Promise<Readonly<AgentProvisioningRecord> | undefined> {
     if (!this.provisioningPendingEffectMatches(record, effect)) {
       throw new DependencyUnavailableError(
         "The pending Configuration provisioning effect outcome is unknown.",
@@ -7709,12 +8021,64 @@ export class OpenClawController {
     }
     return runEffect(async () => {
       const recovered = await this.driverOperation(() => driver.inspectExact!(configuration));
-      if (recovered === undefined) {
-        throw new DependencyUnavailableError(
-          "The pending Configuration provisioning effect outcome is unknown.",
-        );
+      return recovered === undefined
+        ? undefined
+        : this.settleProvisioningEffect(workId, record, effect);
+    });
+  }
+
+  /**
+   * Sends a pending Configuration create again when it is still absent after its settle window
+   * (finding 911): a create that never reached the API server is otherwise never resent, and the
+   * work retries as an unknown outcome until attempts run out. Inside the window the attempt
+   * defers without spending a retry. The resend keeps the pending effect, its owner and target,
+   * so the Namespace still waits for it; it follows a fresh fence, as the first send did, and
+   * writes the same deterministic Configuration with create-if-absent semantics. If it fails
+   * (AlreadyExists, or a lost response), an earlier send may have landed after all: the exact
+   * inspection, which checks identity, generation, creation time and values, decides whether
+   * the effect settles, and a conflict it reports replaces the create's error. The window is
+   * measured from the first send only (the pending effect cannot be replaced), so a later
+   * attempt resends at once and relies on create-if-absent and that inspection alone. An effect
+   * recorded before its start was stamped keeps waiting.
+   */
+  private async resendProvisioningConfigurationEffect(
+    claim: ClaimedWork,
+    record: Readonly<AgentProvisioningRecord>,
+    effect: ProvisioningEffectTarget & { readonly kind: "configuration" },
+    configuration: Configuration,
+    driver: ConfigurationDriver,
+    runEffect: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>,
+  ): Promise<Readonly<AgentProvisioningRecord>> {
+    const startedAt = provisioningPendingEffect(record)?.startedAt;
+    if (startedAt === undefined) {
+      throw new DependencyUnavailableError(
+        "The pending Configuration provisioning effect outcome is unknown.",
+      );
+    }
+    // The fence stamps updated_at on the database clock, the clock that stamped startedAt.
+    const fenced = await this.mutate((state) => this.fenceAgentProvisioning(state, claim));
+    if (!this.provisioningPendingEffectMatches(fenced, effect)) {
+      throw new DependencyUnavailableError(
+        "The pending Configuration provisioning effect outcome is unknown.",
+      );
+    }
+    const remainingMs =
+      startedAt.getTime() + PROVISIONING_CONFIGURATION_SETTLE_MS - fenced.updatedAt.getTime();
+    if (remainingMs > 0) {
+      throw new ProvisioningConfigurationSettlingError(
+        Math.min(Math.ceil(remainingMs), PROVISIONING_CONFIGURATION_SETTLE_MS),
+      );
+    }
+    return runEffect(async () => {
+      try {
+        await this.driverOperation(() => driver.createExact!(configuration));
+      } catch (error) {
+        const landed = await this.driverOperation(() => driver.inspectExact!(configuration));
+        if (landed === undefined) {
+          throw error;
+        }
       }
-      return this.settleProvisioningEffect(workId, record, effect);
+      return this.settleProvisioningEffect(claim.idempotencyKey, fenced, effect);
     });
   }
 
@@ -7750,6 +8114,100 @@ export class OpenClawController {
     });
   }
 
+  /** The Configuration that provisioning writes through the Configuration Driver. */
+  private provisioningConfiguration(
+    record: Readonly<AgentProvisioningRecord>,
+    configurationId: string,
+  ): Configuration {
+    const plan = this.provisioningPlan(record);
+    return {
+      id: configurationId,
+      namespaceId: record.namespaceId,
+      kind: "agent",
+      generation: 1,
+      values: plan.configuration.values,
+      ...(plan.configuration.secretBindings === undefined
+        ? {}
+        : { secretBindings: plan.configuration.secretBindings }),
+      createdAt: record.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * Settles the external write that an earlier attempt dispatched but did not record, by
+   * inspecting its exact target, before this attempt's first fence. A fence that then refuses
+   * the work for good (plugin policy, native worker support, Secret Driver ownership, a
+   * lifecycle or authority change) fails it as rejected with its own message, instead of
+   * retrying it as PROVISIONING_OUTCOME_UNKNOWN until attempts run out. A settled effect also
+   * stops holding the Namespace, which waits for unsettled ones before it can be deleted.
+   *
+   * Inspecting before the fence is safe: the earlier attempt dispatched the write only after its
+   * own fence passed; this reads only the target it recorded, through the Driver the accepted
+   * plan names (another selected Driver is left to the fence, which then retries the work); and
+   * settling records what it observed for that exact pending kind, owner and target (a pending
+   * effect replaced meanwhile settles nothing), as Agent deletion does for cancelled work.
+   * Nothing is written outside OCC before the fence. A write it cannot observe stays pending for
+   * the fenced step: a transport write retries, and a Configuration create may be resent after
+   * its settle window. Other work, and work whose effect is already settled, is unchanged.
+   */
+  private async reconcileProvisioningEffect(
+    record: Readonly<AgentProvisioningRecord>,
+    runEffect: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>,
+  ): Promise<Readonly<AgentProvisioningRecord>> {
+    const pending = provisioningPendingEffect(record);
+    if (
+      pending === undefined ||
+      !this.provisioningPendingEffectMatches(record, pending) ||
+      this.provisioningEffectReceipt(record, pending) !== undefined
+    ) {
+      return record;
+    }
+    const drivers = asRecord(record.plan.drivers);
+    if (pending.kind === "configuration") {
+      const driver = this.configurationDriver();
+      if (drivers?.configuration !== driver.id) {
+        return record;
+      }
+      // An absent write is left to the fenced Configuration step, which may resend it.
+      return (
+        (await this.inspectProvisioningConfigurationEffect(
+          record.workId,
+          record,
+          { kind: "configuration", targetId: pending.targetId },
+          this.provisioningConfiguration(record, pending.targetId),
+          driver,
+          runEffect,
+        )) ?? record
+      );
+    }
+    const driver = this.runtimeCredentialComputeDriver("provision");
+    if (drivers?.compute !== driver.id) {
+      return record;
+    }
+    const { namespace, agent } = await this.read(async (state) => {
+      const namespace = await state.namespaces.findNamespace(record.namespaceId);
+      return {
+        namespace,
+        agent:
+          namespace === undefined
+            ? undefined
+            : await state.agents.findAgent(namespace.id, pending.targetId),
+      };
+    });
+    if (namespace === undefined || agent === undefined) {
+      return record;
+    }
+    return this.inspectProvisioningTransportEffect(
+      record.workId,
+      record,
+      { kind: "transport", targetId: pending.targetId },
+      namespace,
+      agent,
+      driver,
+      runEffect,
+    );
+  }
+
   private async processAgentProvisioningConfiguration(
     claim: ClaimedWork,
     record: Readonly<AgentProvisioningRecord>,
@@ -7763,17 +8221,7 @@ export class OpenClawController {
       (receipt?.kind === "configuration" ? receipt.targetId : undefined) ??
       (pending?.kind === "configuration" ? pending.targetId : undefined) ??
       this.nextIdentifier("configuration");
-    const configuration: Configuration = {
-      id: configurationId,
-      namespaceId: record.namespaceId,
-      kind: "agent",
-      generation: 1,
-      values: plan.configuration.values,
-      ...(plan.configuration.secretBindings === undefined
-        ? {}
-        : { secretBindings: plan.configuration.secretBindings }),
-      createdAt: record.createdAt.toISOString(),
-    };
+    const configuration = this.provisioningConfiguration(record, configurationId);
     const driver = this.configurationDriver();
     if (driver.createExact === undefined || driver.inspectExact === undefined) {
       throw new DependencyUnavailableError(
@@ -7788,14 +8236,23 @@ export class OpenClawController {
       );
       if (metadata === undefined) {
         if (this.provisioningPendingEffectMatches(current, effect)) {
-          current = await this.inspectProvisioningConfigurationEffect(
-            claim.idempotencyKey,
-            current,
-            effect,
-            configuration,
-            driver,
-            runEffect,
-          );
+          current =
+            (await this.inspectProvisioningConfigurationEffect(
+              claim.idempotencyKey,
+              current,
+              effect,
+              configuration,
+              driver,
+              runEffect,
+            )) ??
+            (await this.resendProvisioningConfigurationEffect(
+              claim,
+              current,
+              effect,
+              configuration,
+              driver,
+              runEffect,
+            ));
         } else {
           current = await this.beginProvisioningEffect(claim, effect);
           await runEffect(async () => {
@@ -8112,7 +8569,7 @@ export class OpenClawController {
     if (secret === undefined) {
       throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
     }
-    this.secretDriver(secret.driverId);
+    this.ownedSecretDriver(secret.driverId, () => new ProvisioningSecretDriverError());
   }
 
   private async serviceAccountHarnessAuthSnapshot(
@@ -8123,9 +8580,7 @@ export class OpenClawController {
   ): Promise<HarnessAuthSnapshot> {
     const account = await state.serviceAccounts.lockServiceAccount(namespaceId, binding.source.id);
     if (account?.credential?.kind !== "access_token") {
-      throw new ResourceStateConflictError(
-        "ChatGPT Harness authentication requires an issued account access-token credential.",
-      );
+      throw this.missingAccessTokenError();
     }
     const backendBinding = await state.serviceAccounts.findServiceAccountBackendBinding(
       namespaceId,
@@ -8192,7 +8647,7 @@ export class OpenClawController {
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError("The Harness credential source is unavailable.");
       }
-      const gateway = this.credentialGatewayDriver(source.driverId);
+      const gateway = this.ownedCredentialGatewayDriver(source.driverId);
       const type = await this.credentialSourceType(gateway, source.type);
       if (type.harnessAuth === undefined) {
         throw new ResourceStateConflictError(
@@ -8212,9 +8667,7 @@ export class OpenClawController {
       binding.source.id,
     );
     if (account?.credential?.kind !== "access_token") {
-      throw new ResourceStateConflictError(
-        "ChatGPT Harness authentication requires an issued account access-token credential.",
-      );
+      throw this.missingAccessTokenError();
     }
     const backendBinding = await state.serviceAccounts.findServiceAccountBackendBinding(
       agent.namespaceId,
@@ -8365,6 +8818,23 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * The selected Secret Driver when it owns a Secret the caller has already been granted and
+   * looked up; otherwise the path's own SecretDriverOwnershipError, whose fixed message names
+   * that path's fix. Call it only after the grant and the lookup, so it is no existence oracle.
+   * No usable selected driver is an outage, not an ownership problem: it keeps the generic 503.
+   */
+  private ownedSecretDriver(
+    driverId: string,
+    failure: () => SecretDriverOwnershipError,
+  ): SecretDriver {
+    const driver = this.secretDriver();
+    if (driver.id !== driverId) {
+      throw failure();
+    }
+    return driver;
+  }
+
   private secretDriver(expectedId?: string): SecretDriver {
     try {
       const driver = this.selectedDriver("secret");
@@ -8377,6 +8847,20 @@ export class OpenClawController {
         "The selected Secret Driver is unavailable or does not own this Secret.",
       );
     }
+  }
+
+  /**
+   * The selected Credential Gateway Driver when it registered a source the caller has already
+   * been granted and looked up; otherwise CredentialSourceDriverError, whose fixed message names
+   * the fix. Call it only after the grant and the lookup, so it is no existence oracle. No usable
+   * selected driver is an outage, not an ownership problem: it keeps the generic 503.
+   */
+  private ownedCredentialGatewayDriver(driverId: string): CredentialGatewayDriver {
+    const driver = this.credentialGatewayDriver();
+    if (driver.id !== driverId) {
+      throw new CredentialSourceDriverError();
+    }
+    return driver;
   }
 
   private credentialGatewayDriver(expectedId?: string): CredentialGatewayDriver {
@@ -8432,9 +8916,9 @@ export class OpenClawController {
     );
     const entry = catalog.find((candidate) => candidate.type === type);
     if (entry === undefined) {
-      throw new ScopeViolationError(
-        "The selected Credential Gateway does not support this source type.",
-      );
+      // Callers check the caller's grant and look up an existing source first. The catalog is
+      // Installation configuration, so the refusal names the fix instead of a generic 404.
+      throw new CredentialSourceTypeNotOfferedError();
     }
     return entry;
   }
@@ -8827,6 +9311,19 @@ export class OpenClawController {
     } catch {
       throw new DependencyUnavailableError("The selected ServiceAccount Driver is unavailable.");
     }
+  }
+
+  /**
+   * Without a ChatGPT Backend no account can hold an access token, so that refusal names the
+   * missing Backend. The API selects the Driver; the worker knows only its configured id.
+   */
+  private missingAccessTokenError(): ResourceConflictError {
+    return this.selections.has("service_account") ||
+      this.configuredServiceAccountDriverId !== undefined
+      ? new ResourceStateConflictError(
+          "ChatGPT Harness authentication requires an issued account access-token credential.",
+        )
+      : new ServiceAccountDriverNotConfiguredError("deploy");
   }
 
   private serviceAccountDriverId(): string | undefined {

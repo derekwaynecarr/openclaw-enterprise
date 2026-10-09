@@ -91,10 +91,11 @@ then rerender with `repository.enabled: true`.
 
 Create a JSON file outside the repository or under an ignored local output
 directory. The renderer rejects any field it does not consume: unsupported
-fields fail preflight. Image references in `controlPlane.controllerImage`,
-`runtime.image`, and enabled `repository.image` must use literal `sha256` and
-64 lowercase hexadecimal characters. Invalid digest casing fails preflight
-without emitting deployable files.
+fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
+release-name syntax and be at most 53 characters. Image references in
+`controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
+must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
+casing fails preflight without emitting deployable files.
 
 ```json
 {
@@ -164,7 +165,8 @@ ChatGPT Backend admin credential path:
 
 Managed issuance is separate from the default `codex_pat` path. The rendered
 Backend and ServiceAccount Driver wiring does not prove that live
-service-account creation works.
+service-account creation works. Optional `credentialTtlSeconds` must be an
+integer from 1 through 2592000, the lifetime the API accepts; omit it to use 2592000.
 
 To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as

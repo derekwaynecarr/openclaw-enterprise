@@ -244,7 +244,9 @@ parent directory must be private and neither destination may already exist.
 Helm sets the key path from `bootstrap.password.mountPath` and
 `bootstrap.serviceKey.fileName` (default `initial-admin-service-key.json`). The
 key filename must be a simple basename distinct from `bootstrap.password.fileName`.
-Both use the existing `bootstrap.password.claimName` PVC. Reruns do not inspect,
+`bootstrap.password.claimName` must be a DNS subdomain of at most 253 characters,
+with each label at most 63, the same rule `prepare-bootstrap-volume` applies to
+`--claim`. Both use that existing PVC. Reruns do not inspect,
 replace, or regenerate output; see [recovery](../../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
 
 ## Production operational logging collection
@@ -287,6 +289,14 @@ See [chart defaults](../../../deploy/helm/openclaw-enterprise/values.yaml) for
 `resources`, `state.sizeLimit`, and `tmp.sizeLimit`. The
 [security reference](../security.md#operational-log-collection-boundary) owns the
 credential, runtime-export, and workload isolation boundaries.
+
+The chart rejects obvious malformed quantities such as `foo`, `10MiB`, and
+`1K` in top-level `resources`, Collector `resources`, and Collector volume size
+limits, with an error naming the setting. Kubernetes remains responsible for
+complete quantity validation; exponent ranges and numeric parsing edge cases
+are not checked during rendering. A successful render does not prove API
+acceptance. Setting a resource map or Collector size limit to `null` clears its
+chart default; a null size limit leaves that volume unlimited.
 
 ### Private telemetry defaults
 
