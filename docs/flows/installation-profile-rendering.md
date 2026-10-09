@@ -99,6 +99,11 @@ hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), and paired metrics scraper selectors. Invalid
 values therefore fail before `values.yaml` or `installation.yaml` is written.
 
+`scripts/render-installation-profile.mjs:controlPlaneNodeSelector` checks
+`controlPlane.nodeSelector` against the chart and bootstrap-volume helper's
+Kubernetes label-key and label-value rules (values may be empty). Invalid placement labels
+fail preflight without deployment files; legal YAML lookalike values remain strings.
+
 ### 4. Build Helm values
 
 `scripts/render-installation-profile.mjs:buildRendered`
@@ -218,6 +223,10 @@ activation, and repository registry creation need separate evidence.
 ## Changelog
 
 - 2026-10-09 20:06: Validate transport Secret prefixes before rendering Installation configuration. (authoring-run/8b675a82-44c5-4fc1-a404-dad5edd03858 - cd468c23101b201b3969fa1a4077a18042d3396b)
+
+- 2026-10-09: Accept empty control-plane placement label values, as Kubernetes does.
+
+- 2026-10-09 19:42: Validate control-plane placement labels before writing profile output. (authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52 - 3a1e29fb461d2ad61a9276ae4af432bcf2d04c88)
 
 - 2026-10-09 08:40: Integrate database CA-key validation with current renderer guards and regressions. (authoring-run/4108453c-660a-45ca-87c8-ff328a767f38 - 1f8c782e69d5d097b622ba13b964d87f1088a2ff)
 

@@ -506,3 +506,209 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
     });
   }
 });
+
+// An in-memory ChatGPT Admin API behind a replaced global fetch. Each fault applies the
+// request first (or not), then answers as the test asks.
+function fakeChatGPT(workspaceId) {
+  const accounts = new Map();
+  const requests = [];
+  const faults = [];
+  let next = 0;
+  const json = (status, body) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  const fetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    const base = `/v1/manage/workspaces/${workspaceId}/service-accounts`;
+    const [accountId, segment, credentialId] = path.slice(base.length + 1).split("/");
+    const request = { method: init.method, path };
+    requests.push(request);
+    const fault = faults.shift() ?? {};
+    if (fault.apply === false) {
+      throw new TypeError("fetch failed");
+    }
+    let reply;
+    if (init.method === "POST" && path === base) {
+      const id = `acct-${++next}`;
+      accounts.set(id, { name: JSON.parse(init.body).name, credentials: new Set() });
+      reply = json(200, { id, workspace_id: workspaceId, enabled: true, ...fault.body });
+    } else if (init.method === "DELETE" && segment === "credentials") {
+      const account = accounts.get(decodeURIComponent(accountId));
+      if (!account?.credentials.delete(decodeURIComponent(credentialId))) {
+        reply = json(404, { error: { code: "credential_not_found" } });
+      } else {
+        reply = json(200, { id: decodeURIComponent(credentialId), deleted: true });
+      }
+    } else if (init.method === "DELETE" && segment === undefined) {
+      if (!accounts.delete(decodeURIComponent(accountId))) {
+        reply = json(404, { error: { code: "service_account_not_found" } });
+      } else {
+        reply = json(200, { id: decodeURIComponent(accountId), deleted: true });
+      }
+    } else {
+      reply = json(400, { error: { code: "unexpected" } });
+    }
+    if (fault.lost) {
+      throw new TypeError("fetch failed");
+    }
+    if (fault.status !== undefined) {
+      return new Response(fault.text ?? "", { status: fault.status });
+    }
+    return reply;
+  };
+  return { accounts, requests, faults, fetch };
+}
+
+async function withFakeChatGPT(work) {
+  const workspaceId = backend.configuration.workspaceId;
+  const server = fakeChatGPT(workspaceId);
+  const original = globalThis.fetch;
+  globalThis.fetch = server.fetch;
+  try {
+    const client = new ChatGPTClient({ workspaceId, adminKey: "synthetic-test-key" });
+    await work({ client, server, workspaceId });
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+test("a ChatGPT account create whose reply is invalid removes exactly the account it made", async (t) => {
+  for (const reply of [
+    {
+      name: "disabled account",
+      body: { enabled: false },
+      stored: ["foreign"],
+      requests: ["POST service-accounts", "DELETE acct-1"],
+    },
+    {
+      // The reply does not place the account in this workspace, so it proves nothing.
+      name: "another workspace",
+      body: { workspace_id: "22222222-2222-4222-8222-222222222222" },
+      stored: ["foreign", "acct-1"],
+      requests: ["POST service-accounts"],
+    },
+  ]) {
+    await t.test(reply.name, () =>
+      withFakeChatGPT(async ({ client, server }) => {
+        server.accounts.set("foreign", { name: "kept-sa_x", credentials: new Set() });
+        server.faults.push({ body: reply.body });
+        await assert.rejects(
+          client.createServiceAccount({ name: "kept-sa_x" }),
+          (error) =>
+            error instanceof DependencyUnavailableError &&
+            error.message === "ChatGPT returned an invalid service account.",
+        );
+        assert.deepEqual([...server.accounts.keys()], reply.stored);
+        assert.deepEqual(
+          server.requests.map(({ method, path }) => `${method} ${path.split("/").at(-1)}`),
+          reply.requests,
+        );
+      }),
+    );
+  }
+
+  await t.test("the cleanup fails", () =>
+    withFakeChatGPT(async ({ client, server }) => {
+      server.faults.push({ body: { enabled: false } }, { apply: false });
+      await assert.rejects(
+        client.createServiceAccount({ name: "unremovable" }),
+        (error) =>
+          error instanceof DependencyUnavailableError && /could not be removed/.test(error.message),
+      );
+      assert.deepEqual([...server.accounts.keys()], ["acct-1"]);
+    }),
+  );
+
+  await t.test("the reply names no account", () =>
+    withFakeChatGPT(async ({ client, server }) => {
+      server.faults.push({ body: { id: "" } });
+      await assert.rejects(
+        client.createServiceAccount({ name: "nameless" }),
+        (error) =>
+          error instanceof DependencyUnavailableError &&
+          error.message === "ChatGPT returned an invalid service account.",
+      );
+      assert.deepEqual(
+        server.requests.map(({ method }) => method),
+        ["POST"],
+      );
+    }),
+  );
+});
+
+test("a ChatGPT account create whose reply is lost deletes nothing it cannot prove is its own", async (t) => {
+  // The Admin API key holds write scope only and the client has no account read, so a
+  // matching name is not proof: the create is reported as unavailable and nothing is deleted.
+  for (const fault of [
+    { name: "applied, reply lost", fault: { lost: true }, stored: ["foreign", "acct-1"] },
+    { name: "applied, HTTP 503", fault: { status: 503 }, stored: ["foreign", "acct-1"] },
+    {
+      name: "applied, reply unreadable",
+      fault: { status: 200, text: "{" },
+      stored: ["foreign", "acct-1"],
+    },
+    { name: "never applied", fault: { apply: false }, stored: ["foreign"] },
+  ]) {
+    await t.test(fault.name, () =>
+      withFakeChatGPT(async ({ client, server }) => {
+        server.accounts.set("foreign", { name: "lost-sa_x", credentials: new Set() });
+        server.faults.push(fault.fault);
+        await assert.rejects(
+          client.createServiceAccount({ name: "lost-sa_x" }),
+          DependencyUnavailableError,
+        );
+        assert.deepEqual([...server.accounts.keys()], fault.stored);
+        assert.deepEqual(
+          server.requests.map(({ method }) => method),
+          ["POST"],
+        );
+      }),
+    );
+  }
+});
+
+test("a ChatGPT account delete that applied but answered an error completes on retry", async () => {
+  const { ChatGPTServiceAccountDriver } =
+    await import("../../apps/controller/src/drivers/service-account/chatgpt.ts");
+  await withFakeChatGPT(async ({ client, server, workspaceId }) => {
+    server.accounts.set("acct-own", { name: "own", credentials: new Set(["cred-own"]) });
+    server.accounts.set("foreign", { name: "foreign", credentials: new Set(["cred-foreign"]) });
+    const binding = {
+      backendId: "openai",
+      driverId: "chatgpt-service-accounts",
+      externalAccountId: "acct-own",
+      externalCredentialId: "cred-own",
+      workspaceId,
+    };
+    const secrets = new Set(["service-account-own"]);
+    const driver = new ChatGPTServiceAccountDriver(
+      { id: "openai", drivers: { service_account: "chatgpt-service-accounts" }, client },
+      { transact: (work) => work({}) },
+      { queryInTransaction: async () => ({ rows: [binding], rowCount: 1 }) },
+      {
+        async deleteServiceAccountCredential({ secretRef }) {
+          secrets.delete(secretRef.name);
+        },
+      },
+    );
+    const account = {
+      id: "sa_own",
+      namespaceId: "ns_own",
+      name: "own",
+      credential: { kind: "access_token", secretRef: { name: "service-account-own", key: "t" } },
+    };
+    // Revocation applied, then the account deletion applied but its reply was lost: OCC
+    // rolls its records back and the provider account cannot be recreated.
+    server.faults.push({}, { lost: true });
+    await assert.rejects(driver.delete(account), DependencyUnavailableError);
+    assert.deepEqual([...server.accounts.keys()], ["foreign"]);
+
+    // The retry finds every provider resource already gone and completes.
+    await driver.delete(account);
+    assert.deepEqual([...server.accounts.keys()], ["foreign"]);
+    assert.deepEqual([...server.accounts.get("foreign").credentials], ["cred-foreign"]);
+    assert.equal(secrets.size, 0);
+  });
+});
