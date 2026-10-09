@@ -12,7 +12,7 @@ real Installation.
 
 ## 2026-10-09: Configuration save refuses Agent rosters every deployment refuses
 
-**What breaks.** Since #PRNUM, Configuration create and update
+**What breaks.** Since #1959, Configuration create and update
 (`POST /namespaces/<id>/configurations`, `PATCH .../configurations/<id>`,
 `occ configuration create` and `update`) answer `400 INVALID_REQUEST` for an
 `agents` roster that deployment already refused on every topology, such as an
