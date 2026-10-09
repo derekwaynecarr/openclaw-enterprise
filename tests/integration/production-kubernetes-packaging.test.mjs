@@ -302,6 +302,64 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
   );
 });
 
+test(
+  "gateway routing refuses fractional YAML ports before emitting resources",
+  tooling,
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-routing-ports-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const valuesFile = join(directory, "ports.yaml");
+    const routingValues = {
+      ...gatewayRoutingValues,
+      "gatewayRouting.sandbox.enabled": "true",
+      "gatewayRouting.sandbox.domain": "previews.example.test",
+      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
+      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "public-ingress",
+    };
+    // Values files preserve numeric scalars; --set passes a fractional value as a string.
+    for (const [key, value] of [
+      ["tenantGatewayPort", 8080.5],
+      ["envoyHttpsTargetPort", 10443.5],
+      ["sandbox.listenerPort", 8443.5],
+    ]) {
+      const field = key.startsWith("sandbox.")
+        ? `  sandbox:\n    listenerPort: ${value}\n`
+        : `  ${key}: ${value}\n`;
+      await writeFile(valuesFile, `gatewayRouting:\n${field}`);
+      await assert.rejects(
+        render(routingValues, { valuesFiles: [valuesFile] }),
+        ({ code, stderr }) => code !== 0 && stderr.includes(`gatewayRouting.${key}`),
+        key,
+      );
+    }
+    await writeFile(
+      valuesFile,
+      "gatewayRouting:\n  tenantGatewayPort: 8081\n  envoyHttpsTargetPort: 10444\n  sandbox:\n    listenerPort: 8444\n",
+    );
+    const rendered = await resources(
+      (await render(routingValues, { valuesFiles: [valuesFile] })).stdout,
+    );
+    assert.equal(
+      rendered
+        .find((item) => item.kind === "Gateway")
+        .spec.listeners.find((item) => item.name === "sandbox").port,
+      8444,
+    );
+    const policies = rendered.filter((item) => item.kind === "NetworkPolicy");
+    for (const expected of [8081, 10444, 8444]) {
+      assert.ok(
+        policies.some((policy) =>
+          [...(policy.spec.ingress ?? []), ...(policy.spec.egress ?? [])].some((rule) =>
+            rule.ports?.some((port) => port.port === expected),
+          ),
+        ),
+        `NetworkPolicy port ${expected}`,
+      );
+    }
+  },
+);
+
 // Evaluate the selector-only, numeric-port ingress rules rendered by this chart.
 // This checks additive policy semantics, not live CNI enforcement.
 function matchesPolicySelector(selector = {}, labels = {}) {
