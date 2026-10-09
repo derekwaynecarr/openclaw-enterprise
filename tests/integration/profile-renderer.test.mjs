@@ -541,10 +541,6 @@ test("label values that YAML 1.1 would retype stay strings", () => {
     scale: "1e3",
     hex: "0x1f",
     octal: "0o17",
-    sexagesimal: "1:20",
-    infinity: ".inf",
-    team: "@platform",
-    trailing: "zone:",
     yes: "keep",
   };
   const input = baseInput();
@@ -570,9 +566,9 @@ test("Helm renders YAML 1.1 lookalike label values as strings", { skip: helmSkip
   assert.doesNotMatch(manifests, /spot: false/);
   const rejected = baseInput();
   rejected.controlPlane.nodeSelector = { team: "@platform" };
-  const error = renderError(() => helmTemplate(render("openclaw", rejected)));
-  assert.match(
-    `${error.stdout ?? ""}${error.stderr ?? ""}`,
+  assertPreflightFailure(
+    "openclaw",
+    rejected,
     /controlPlane\.nodeSelector values must be nonempty Kubernetes label values/,
   );
 });
@@ -785,6 +781,10 @@ test("preflight rejects metrics and native admin inputs that Helm would reject",
       ` ${space}https://console.oce.example.internal${space} `,
     ]),
     "https://console.oce.example.internal\u0378",
+    // A leading zero is octal: 192.168.010.001 publishes 192.168.8.1.
+    "https://192.168.010.001",
+    "https://127.1",
+    "http://0177.0.0.1",
     // Like the chart: spaces, < and > and invisible characters inside the host. The host parser
     // refuses spaces, < and >, and drops tabs and most invisible characters.
     ...[

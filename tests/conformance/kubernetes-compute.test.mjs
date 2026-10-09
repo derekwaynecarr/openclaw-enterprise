@@ -3106,6 +3106,58 @@ test("sandbox routing caps the domain length and requires two labels", () => {
   assert.doesNotThrow(() => sandboxDriver("previews.localhost"));
 });
 
+test("gateway routing caps the Gateway name at a label value's 63 characters", () => {
+  const routedDriver = (gatewayName) =>
+    createKubernetesComputeDriver(
+      routedOptions({ gatewayRouting: { ...gatewayRouting, gatewayName } }),
+    );
+  // The name labels Envoy's proxy Pods, which the NetworkPolicies select on.
+  const longest = `${"a".repeat(31)}.${"b".repeat(31)}`;
+  assert.equal(longest.length, 63);
+  const ingress = routedDriver(longest)
+    .networkPolicies(
+      { namespaceId: tenant.id, agentId: "agent-routed" },
+      { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
+    )
+    .find(({ metadata }) => metadata.name === "allow-gateway-ingress");
+  assert.equal(
+    ingress.spec.ingress[0].from[0].podSelector.matchLabels[
+      "gateway.envoyproxy.io/owning-gateway-name"
+    ],
+    longest,
+  );
+  for (const gatewayName of ["a".repeat(64), "a".repeat(253)]) {
+    assert.throws(() => routedDriver(gatewayName), {
+      message:
+        "Gateway routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
+    });
+  }
+  for (const gatewayName of ["Bad_Name", "a".repeat(254)]) {
+    assert.throws(() => routedDriver(gatewayName), {
+      message: "Gateway routing Gateway name must be a DNS-safe Kubernetes resource name.",
+    });
+  }
+  // The two-cluster harness Gateway is labelled the same way.
+  const twoCluster = twoClusterOptions();
+  assert.throws(
+    () =>
+      createKubernetesComputeDriver({
+        ...twoCluster,
+        executionCluster: {
+          ...twoCluster.executionCluster,
+          harnessRouting: {
+            ...twoCluster.executionCluster.harnessRouting,
+            gatewayName: "a".repeat(64),
+          },
+        },
+      }),
+    {
+      message:
+        "Gateway routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
+    },
+  );
+});
+
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {
   const driver = createKubernetesComputeDriver(routedOptions());
   const revision = routedRevision(driver);
@@ -9676,6 +9728,25 @@ test("resource quantities written as bare numbers name the field and the quoting
   const quoted = separateResources();
   quoted.resources.gateway.limits.cpu = "4";
   KubernetesComputeDriver.validateConfiguration(quoted);
+});
+
+test("transport secret prefix must produce a DNS-safe credential Secret name", () => {
+  for (const transportSecretPrefix of ["Bad_Prefix", "bad prefix", `${"a".repeat(242)}`]) {
+    assert.throws(
+      () =>
+        KubernetesComputeDriver.validateConfiguration(
+          options({
+            runtime: { transportSecretPrefix, gatewayStorageClassName: "local-path" },
+          }),
+        ),
+      /runtime\.transportSecretPrefix must produce a DNS-safe Agent transport Secret name/,
+    );
+  }
+  KubernetesComputeDriver.validateConfiguration(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    }),
+  );
 });
 
 test("real gateways require an explicit SQLite-compatible storage class", () => {
