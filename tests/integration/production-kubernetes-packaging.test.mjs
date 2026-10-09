@@ -749,6 +749,57 @@ test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
   assert.equal(gateway?.metadata.name, sixtyThree);
 });
 
+test(
+  "the execution chart refuses a harness Gateway name or Envoy namespace Compute refuses",
+  tooling,
+  async () => {
+    const template = (field, value) =>
+      execute(
+        helm,
+        [
+          "template",
+          "oce",
+          "deploy/helm/openclaw-execution",
+          "--set",
+          "routing.hostname=agents.example.invalid",
+          "--set",
+          "routing.gatewayClassName=private-envoy-gateway",
+          "--set",
+          "routing.tlsSecretName=agents-tls",
+          "--set",
+          "routing.controlPlaneCidrs[0]=198.51.100.0/24",
+          "--set-string",
+          `routing.${field}=${value}`,
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+    // Compute validateGatewayName: a DNS subdomain, at most 63 characters (a label value).
+    for (const gatewayName of ["Bad_Name", "-gateways", "a".repeat(64)]) {
+      await assert.rejects(
+        template("gatewayName", gatewayName),
+        /routing\.gatewayName must be a DNS-safe Kubernetes resource name of at most 63 characters/,
+        gatewayName,
+      );
+    }
+    // Compute isKubernetesNamespaceName: a DNS label, at most 63 characters, no dots.
+    for (const envoyNamespace of ["Envoy", "envoy.system", "-envoy", "envoy-", "a".repeat(64)]) {
+      await assert.rejects(
+        template("envoyNamespace", envoyNamespace),
+        /routing\.envoyNamespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
+        envoyNamespace,
+      );
+    }
+    const gateways = await resources((await template("gatewayName", "gateways.example")).stdout);
+    assert.equal(
+      gateways.find((object) => object.kind === "Gateway")?.metadata.name,
+      "gateways.example",
+    );
+    const envoyNamespace = "a".repeat(63);
+    const envoy = await resources((await template("envoyNamespace", envoyNamespace)).stdout);
+    assert.ok(envoy.some((object) => object.metadata?.namespace === envoyNamespace));
+  },
+);
+
 test("production Helm values example renders the backendless default chart", tooling, async () => {
   const { stdout } = await execute(
     helm,

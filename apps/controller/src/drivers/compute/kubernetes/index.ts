@@ -8,7 +8,7 @@ import {
 import { createHash, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { isAbsolute } from "node:path";
-import { isKubernetesResourceName } from "./resource-name.ts";
+import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-name.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -1529,6 +1529,14 @@ function validateKubernetesResourceName(value: string, description: string): voi
   }
 }
 
+function validateKubernetesNamespaceName(value: string, description: string): void {
+  if (!isKubernetesNamespaceName(value)) {
+    throw new ConfigurationFailure(
+      `${description} must be a Kubernetes namespace name: a DNS label of at most 63 characters.`,
+    );
+  }
+}
+
 // Gateway API allows a 253-character Gateway name, but Envoy Gateway labels the proxy Pods
 // with it (gateway.envoyproxy.io/owning-gateway-name), and the NetworkPolicies select on that
 // label. A label value stops at 63 characters, so a longer name could never be applied.
@@ -2748,11 +2756,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       validatePort(routing.endpointPort ?? 443, "Gateway routing endpoint port");
       validateGatewayName(required(routing.gatewayName, "Gateway routing Gateway name"));
-      validateKubernetesResourceName(
+      validateKubernetesNamespaceName(
         required(routing.gatewayNamespace, "Gateway routing Gateway namespace"),
         "Gateway routing Gateway namespace",
       );
-      validateKubernetesResourceName(
+      validateKubernetesNamespaceName(
         required(routing.envoyNamespace, "Gateway routing Envoy namespace"),
         "Gateway routing Envoy namespace",
       );
