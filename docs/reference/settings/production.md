@@ -307,7 +307,8 @@ both are set. Partial selectors and invalid or API-colliding ports fail renderin
 See [scraping and discovery](../../guides/observability/metrics.md).
 
 For an in-cluster log receiver, set both
-`logging.collector.exporter.namespaceLabels` and `podLabels`, set its `port`,
+`logging.collector.exporter.namespaceLabels` and `podLabels`, set decimal `port`
+(1–65535, no leading zeros),
 and leave `cidr` empty. This alternative cannot be combined with a CIDR.
 Collector metrics use the same paired selector contract under
 `logging.collector.metrics`, on fixed port `8888`; metrics ingress is opt-in.
