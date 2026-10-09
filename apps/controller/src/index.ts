@@ -79,6 +79,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdmittedCaller } from "./admission/admission-verifier.ts";
 import {
   OCC_SERVICE_KEY_HEADER,
+  SERVICE_KEY_NAME_MAX_LENGTH,
+  ServiceKeyNameRefused,
   type ClientAddressConfiguration,
   type ControllerAuth,
   type PreparedAuthAccount,
@@ -2611,7 +2613,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   properties: {
                     servicePrincipalId: { type: "string", minLength: 1, maxLength: 200 },
                     namespaceId: { type: "string", pattern: RESOURCE_ID.namespaceId.source },
-                    name: { type: "string", minLength: 1, maxLength: 32, pattern: "\\S" },
+                    name: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: SERVICE_KEY_NAME_MAX_LENGTH,
+                      pattern: "\\S",
+                    },
                     expiresIn: {
                       type: "integer",
                       minimum: 86400,
@@ -2775,10 +2782,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 ...(body.expiresIn === undefined ? {} : { expiresIn: body.expiresIn }),
               });
               await options.auditSink.append(audit(key));
-            } catch {
+            } catch (error) {
               // Never return an unaudited credential; remove it if audit persistence fails.
               if (key) {
                 await options.auth.revokeServiceKey(key).catch(() => {});
+              }
+              // The schema admitted this name, so a refusal is a contract mismatch, not an
+              // outage: answer as the schema does for a name over its bound.
+              if (error instanceof ServiceKeyNameRefused) {
+                throw failure(
+                  400,
+                  "INVALID_REQUEST",
+                  `The request does not match the operation contract: body /name is too long (expected at most ${SERVICE_KEY_NAME_MAX_LENGTH} characters).`,
+                  [{ path: "/name", code: "TOO_LONG" }],
+                );
               }
               throw dependencyUnavailable();
             }

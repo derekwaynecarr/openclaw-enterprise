@@ -177,9 +177,9 @@ func (app *application) namespaceCommand() *cobra.Command {
 		Use:   "create NAME",
 		Short: "Create a Namespace",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			// createNamespace existingNamespace: a DNS-1123 label of at most 63 characters.
-			if existingNamespace != "" && !dns1123Label(existingNamespace) {
+			if command.Flags().Changed("existing-namespace") && !dns1123Label(existingNamespace) {
 				return fmt.Errorf("--existing-namespace must be a DNS-1123 label of at most 63 characters")
 			}
 			client, err := app.client()
