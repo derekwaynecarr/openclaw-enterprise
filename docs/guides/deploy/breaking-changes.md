@@ -10,6 +10,34 @@ you run now, then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-09: Configuration save refuses Agent rosters every deployment refuses
+
+**What breaks.** Since #1959, Configuration create and update
+(`POST /namespaces/<id>/configurations`, `PATCH .../configurations/<id>`,
+`occ configuration create` and `update`) answer `400 INVALID_REQUEST` for an
+`agents` roster that Kubernetes Compute deployment already refused on every
+topology, such as an `agents.list`, an entry's `default`, or more than one
+`agents.entries` entry without `agents.ownership: "explicit"`. The
+[Configuration reference](../../reference/configuration.md#create-read-update-and-delete)
+lists every rule. The message is the one deployment gives, naming the setting and
+the rule. Such a write used to save and fail only at deploy.
+
+**Who is affected.** Clients and scripts that save such a roster, including the
+split-layout `import` below, which re-creates each exported Configuration.
+Stored Configurations do not change: they still read, Kubernetes deployment still
+refuses them with the same message, and an update that fixes the roster saves.
+SSH Compute deployment does not check rosters, so there the save is the first
+refusal. Rules that depend on the topology, such as dedicated OpenClaw serving
+the `main` Agent, still apply only at deployment.
+
+**How to tell.** On Kubernetes Compute, deploying an Agent that uses such a
+Configuration already fails with a `400` naming an `agents` setting. A save now
+fails with the same message.
+
+**Steps.** Fix the roster as the message says and save again. For a split-layout
+bundle, fix that Configuration's `values` in the bundle file and run `import`
+again; it resumes from its ID map.
+
 ## 2026-10-09: Driver package entries are checked as Node resolves them
 
 **What breaks.** Since #1923 and #1944, the controller picks an external Driver
