@@ -405,8 +405,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $rootSecretName := include "openclaw.gatewayRouting.rootSecretName" . -}}
 {{- if and (hasKey $routing "hostname") (not (kindIs "string" $routing.hostname)) -}}{{- fail "gatewayRouting.hostname must be a string when supplied" -}}{{- end -}}
 {{- if not $routing.gatewayClassName -}}{{- fail "gatewayRouting.gatewayClassName must reference an operator-created GatewayClass" -}}{{- end -}}
-{{- /* Compute validateKubernetesResourceName refuses the same Gateway name at startup. */ -}}
-{{- $gatewayName := trim (include "openclaw.gatewayRouting.gatewayName" .) -}}
+{{- /* Compute required() keeps the original string, then validateKubernetesResourceName refuses it. Check the name the Gateway template emits, including surrounding spaces. */ -}}
+{{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . -}}
 {{- if or (gt (len $gatewayName) 253) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" $gatewayName)) -}}
 {{- fail "gatewayRouting.gatewayName must be a DNS-safe Kubernetes resource name" -}}
 {{- end -}}

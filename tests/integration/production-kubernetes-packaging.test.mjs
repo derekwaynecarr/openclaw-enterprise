@@ -634,6 +634,24 @@ test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
     ),
     /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
   );
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "openclaw-system",
+        "--values",
+        "deploy/examples/production/values.yaml",
+        "--set-string",
+        "gatewayRouting.gatewayName= oce-agent-gateways ",
+      ],
+      { cwd: repository },
+    ),
+    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
+  );
 });
 
 test("production Helm values example renders the backendless default chart", tooling, async () => {
