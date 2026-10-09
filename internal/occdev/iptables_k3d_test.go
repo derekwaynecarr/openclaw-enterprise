@@ -55,6 +55,44 @@ func withLegacyNATFiles(base map[string]string, extra map[string]string) map[str
 	return files
 }
 
+// rootOnlyFS refuses to open one file but still reports it, like the
+// root-only /proc/net/ip_tables_names seen by an ordinary user.
+type rootOnlyFS struct {
+	fstest.MapFS
+	name string
+}
+
+func (f rootOnlyFS) Open(name string) (fs.File, error) {
+	if name == f.name {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+	}
+	return f.MapFS.Open(name)
+}
+
+func (f rootOnlyFS) ReadFile(name string) ([]byte, error) {
+	if name == f.name {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+	}
+	return f.MapFS.ReadFile(name)
+}
+
+func (f rootOnlyFS) Stat(name string) (fs.FileInfo, error) {
+	return f.MapFS.Stat(name)
+}
+
+func TestLegacyNATTableStateTreatsTheRootOnlyTablesFileAsPresent(t *testing.T) {
+	files := legacyNATTestFiles(withLegacyNATFiles(legacyNATUnloadableHost, map[string]string{
+		"proc/net/ip_tables_names": "filter\n",
+	}))
+	fsys := rootOnlyFS{MapFS: files, name: "proc/net/ip_tables_names"}
+	if _, err := fs.ReadFile(fsys, "proc/net/ip_tables_names"); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("fixture is readable: %v", err)
+	}
+	if got := legacyNATTableState(fsys, legacyNATTestRelease); got != legacyNATAvailable {
+		t.Fatalf("got %v, want available: ip_tables is present", got)
+	}
+}
+
 func TestLegacyNATTableState(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -86,6 +124,10 @@ func TestLegacyNATTableState(t *testing.T) {
 			legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin + "kernel/net/ipv4/netfilter/ip_tables.ko\n",
 		}), legacyNATTestRelease, legacyNATAvailable},
 		{"ip_tables absent", legacyNATUnloadableHost, legacyNATTestRelease, legacyNATUnloadable},
+		// A built-in ip_tables cannot be ruled out without modules.builtin.
+		{"no builtin list, nat shipped", map[string]string{
+			legacyNATTestModules + "modules.dep": legacyNATTestDep,
+		}, legacyNATTestRelease, legacyNATUnknown},
 		{"ip_tables absent, uncompressed modules", map[string]string{
 			legacyNATTestModules + "modules.builtin": legacyNATTestBuiltin,
 			legacyNATTestModules + "modules.dep":     "kernel/net/ipv4/netfilter/iptable_nat.ko: kernel/net/netfilter/nf_nat.ko\n",

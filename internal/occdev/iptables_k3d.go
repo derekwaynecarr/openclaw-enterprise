@@ -47,11 +47,12 @@ const (
 	legacyNATUnknown
 )
 
-// legacyNATTableState reads only world-readable kernel state. A loaded module
-// appears in /sys/module and /proc/modules; a built-in one appears in neither
-// /proc/modules nor, without parameters, /sys/module, so modules.builtin
-// decides that case. /proc/net/ip_tables_names exists only while ip_tables is
-// present.
+// legacyNATTableState reads kernel state an ordinary user can see. A loaded
+// module appears in /sys/module and /proc/modules; a built-in one appears in
+// neither /proc/modules nor, without parameters, /sys/module, so
+// modules.builtin decides that case. /proc/net/ip_tables_names exists only
+// while ip_tables is present; it is readable only by root, so only its
+// existence is relied on.
 func legacyNATTableState(fsys fs.FS, release string) legacyNATState {
 	modules, _ := fs.ReadFile(fsys, "proc/modules")
 	loaded := func(module string) bool {
@@ -66,8 +67,7 @@ func legacyNATTableState(fsys fs.FS, release string) legacyNATState {
 	if loaded(legacyNATModule) {
 		return legacyNATAvailable
 	}
-	tables, tablesErr := fs.ReadFile(fsys, "proc/net/ip_tables_names")
-	if tablesErr == nil && anyLine(tables, func(line string) bool {
+	if tables, err := fs.ReadFile(fsys, "proc/net/ip_tables_names"); err == nil && anyLine(tables, func(line string) bool {
 		return strings.TrimSpace(line) == "nat"
 	}) {
 		return legacyNATAvailable
@@ -93,8 +93,12 @@ func legacyNATTableState(fsys fs.FS, release string) legacyNATState {
 	if disabled, err := fs.ReadFile(fsys, "proc/sys/kernel/modules_disabled"); err == nil && strings.TrimSpace(string(disabled)) == "1" {
 		return legacyNATUnloadable
 	}
-	if tablesErr == nil || loaded(legacyIPTablesModule) || (builtinErr == nil && listsKernelModule(builtin, legacyIPTablesModule)) {
+	if _, err := fs.Stat(fsys, "proc/net/ip_tables_names"); err == nil || loaded(legacyIPTablesModule) || (builtinErr == nil && listsKernelModule(builtin, legacyIPTablesModule)) {
 		return legacyNATAvailable
+	}
+	// Without modules.builtin, a built-in ip_tables cannot be ruled out.
+	if builtinErr != nil {
+		return legacyNATUnknown
 	}
 	return legacyNATUnloadable
 }
