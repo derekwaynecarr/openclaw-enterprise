@@ -230,23 +230,23 @@ value only to processes started after the update.
 The API authorizes `agent:operate` and requires the active revision to list the
 source in `credential_sources`. For that revision, each later revision
 admitted with the source, and each earlier one not yet retired, it inserts a `pending` `credential_withdrawals` row keyed by revision
-and source, or returns the existing one. For each pending row with no withdrawal
-work outstanding, it makes the caller `requested_by` and queues
-revision-scoped work with target `credentials_withdrawn`
-(`packages/occ/src/state/controller-work.ts:credentialWithdrawalWorkKey`). That
-work never deploys the revision and owns no repository cleanup.
+and source unless one exists. It makes the caller `requested_by` of
+each pending row and queues revision-scoped work with target `credentials_withdrawn`
+(`packages/occ/src/state/controller-work.ts:credentialWithdrawalWorkKey`) or
+expedites outstanding work. That work never deploys the revision.
 
-The worker rechecks `agent:operate` for each pending withdrawal's own
+The worker rechecks `agent:operate` for each pending withdrawal's
 `requested_by` and calls Compute's
 `withdrawCredentialSource` for each authorized one in admission order. The work retries while an authorized withdrawal is unconfirmed;
-otherwise a denied requester fails it after the others are revoked. Each
+otherwise a denied requester fails it after the others are revoked, unless a
+replay reassigned it. Each
 revocation is audited for its requester in the pass that confirms it; each
-denial, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
+denial or failure, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
 on the `harnessResource` Sandbox and reads the receipt's status. Each
 attempt records `last_reason` and `last_attempt_at` when its claim ends. `revoked` or `absent`
 also marks the row `revoked` and appends
-`openclaw.agents.lifecycle.credentials_withdraw`. Any other state retries with
-backoff until attempts run out, leaving the row `pending`. The read
+`openclaw.agents.lifecycle.credentials_withdraw`. Other states retry with
+backoff. The read
 (`packages/occ/src/index.ts:readAgentCredentialWithdrawal`) prefers these
 revisions' exhausted rows, then `pending` ones, the active revision's first. Without Compute maintenance, failing the work queues
 a bounded later series (`apps/controller/src/worker.ts:scheduleCredentialWithdrawalRecovery`). `withdrawalInProgress` reflects outstanding
@@ -259,14 +259,14 @@ withdrawn
 any withdrawal is `pending`, the pass keeps the chain; once all are `revoked`, it stops. Deploy and repair work never re-attach a withdrawn source:
 a Harness source fails them with `CREDENTIAL_WITHDRAWN`. Either maintenance pass re-queues
 pending withdrawals with no work outstanding, the other revisions' too
-(`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`); one denied to its
-requester waits for a replay. `authorizeRevision` skips the
+(`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`); one denied
+or refused waits for a replay. `authorizeRevision` skips the
 `operate` recheck for withdrawn sources, so removing their grants cannot end
 maintenance.
 
 A withdrawal that finds no Sandbox records `revoked`, yet a create OpenShell
 accepted before its worker lost the claim can land later with the source. So
-every preparation, and every pass of a Harness-withdrawn revision, first
+every preparation, and every pass of a Harness-withdrawn revision,
 rechecks `revoked` rows
 (`apps/controller/src/worker.ts:recheckRevokedCredentialSources`): the OpenShell
 Driver detaches the provider again only if `SandboxSpec.providers` lists it.
@@ -283,8 +283,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 - The credential withdrawal cases in
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
   and worker against PostgreSQL with a Compute double: retries, outages, replays,
-  maintenance, omitted sources, requester denials, other revisions, lost grants,
-  and late creates.
+  refusals, maintenance, denials, other revisions, lost grants, and late creates.
 - The real OpenShell test updates the source and withdraws a `bearer-token`
   source (its placeholder stops reaching an echo service), then the model
   source (the next model turn fails).
@@ -297,8 +296,9 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   `HARNESS_AUTH_SOURCE_UNAVAILABLE` mean a changed selection or an unavailable
   source; `CREDENTIAL_WITHDRAWN` a withdrawn revision source, and
   `CREDENTIAL_WITHDRAWAL_PENDING` an unconfirmed revocation. `CREDENTIALS_WITHDRAWN` and `WITHDRAWAL_REVISION_RETIRED` complete the work,
-  and `CREDENTIAL_WITHDRAWAL_UNSUPPORTED`, `COMPUTE_DRIVER_MISMATCH`, and
-  `AUTHORIZATION_DENIED` fail it at once.
+  and `CREDENTIAL_WITHDRAWAL_UNSUPPORTED`, `COMPUTE_DRIVER_MISMATCH`,
+  `CREDENTIAL_WITHDRAWAL_MISCONFIGURED`, `CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT`,
+  and `AUTHORIZATION_DENIED` fail it at once.
 
 ## Related docs
 
@@ -314,6 +314,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 ## Changelog
 
+- 2026-10-09 08:30: Replays take over withdrawal work. (fix-892-894)
 - 2026-10-09 06:00: Exhausted withdrawals retry later without Compute maintenance. (fix-887)
 - 2026-10-08 20:30: Maintenance leaves denied withdrawals for a replay. (fix-853)
 - 2026-10-08 17:30: Withdrawal covers unretired predecessors. (fix-816-819)

@@ -807,6 +807,11 @@ export interface PlatformOperationRepository extends PlatformOperationReadReposi
     initiatingActorId: string,
     actorId: string,
   ): Promise<boolean>;
+  /**
+   * Makes the revision's queued credential withdrawal work claimable now instead of at its
+   * scheduled time. Claimed work is left alone. True when any queued work was waiting.
+   */
+  expediteCredentialWithdrawalWork(namespaceId: string, revisionId: string): Promise<boolean>;
 }
 
 export type { AgentProvisioningRecord } from "./agent-provisioning.ts";
@@ -2847,6 +2852,7 @@ function repositories(
       // The in-memory operation log has no executing or terminal work records.
       retryFailedAgentDeletion: async () => false,
       retryFailedNamespaceDeletion: async () => false,
+      expediteCredentialWithdrawalWork: async () => false,
       findWorkAttempt: async () => undefined,
       // Recorded work never executes here, so every recorded withdrawal stays outstanding.
       hasOutstandingCredentialWithdrawalWork: async (namespaceId, revisionId) =>

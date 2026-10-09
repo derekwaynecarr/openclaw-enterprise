@@ -170,9 +170,8 @@ that deployment with `CREDENTIAL_WITHDRAWN`; otherwise it activates without the
 source, and the read below then returns its withdrawal. An earlier revision
 that still runs because the active revision's deployment has not finished
 replacing it gets its own withdrawal too. A replay returns the
-same withdrawal. It queues another attempt only if no
-attempt is already queued or running, and the caller then becomes the
-withdrawal's `requestedBy`.
+same withdrawal and makes the caller its `requestedBy`. It queues another
+attempt only if none is queued or running; a queued attempt runs at once.
 
 The worker detaches the source from the revision's Sandbox and records
 `revoked` only after the gateway confirms that the revision's placeholders no
@@ -187,6 +186,10 @@ attempt is queued or running. A `pending` withdrawal with reason
 running process never confirms revocation. `AUTHORIZATION_DENIED` or
 `ACTOR_REVOKED` means the requester lost `agent:operate`; another operator can
 send the withdraw request again to retry it on their own authority.
+`CREDENTIAL_WITHDRAWAL_MISCONFIGURED` or `CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT`
+means Compute cannot reach the revision's Sandbox as configured, or found an
+object it does not own; the attempt fails without retries, even with
+maintenance. Correct the cause, then send the request again.
 
 The worker retries an unconfirmed withdrawal a few times with backoff
 (`OCC_WORKER_MAX_ATTEMPTS`; by default about 12 seconds). If those attempts run
@@ -198,7 +201,8 @@ and 4 minutes, then every 5 minutes, 15 series in all (about an hour).
 Meanwhile the read shows `pending`, the latest `reason`, and
 `withdrawalInProgress: true`, and the source still resolves in the Sandbox. The first series the gateway confirms
 records `revoked`, with no replay needed. A withdraw request sent while a
-series waits queues nothing more; the series runs at its scheduled time.
+series waits queues nothing more; the series runs at once, on the caller's
+authority.
 
 When the last series fails, or every withdrawal left on the revision is denied
 to its requester, the withdrawal stays `pending` with
@@ -235,7 +239,9 @@ requires exact `delete` and returns `204`:
 
 - It returns `409` while an Agent draft, active revision, or pending deployment
   references the source, or while a withdrawal attempt or retry series is queued
-  for a revision that still holds it.
+  for a revision that holds it. A withdrawal that never confirms keeps its
+  series queued for up to about an hour, even after a redeploy; a completed
+  Agent deletion drops that work.
 - On an Installation with no Credential Gateway it returns
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
   did not register it returns `503`; neither changes the record.

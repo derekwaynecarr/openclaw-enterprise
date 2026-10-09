@@ -282,6 +282,7 @@ export {
   CredentialSourceDriverError,
   CredentialSourceRevisionError,
   CredentialSourceTypeNotOfferedError,
+  CredentialWithdrawalRefusedError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
@@ -6137,9 +6138,10 @@ export class OpenClawController {
    * worker work to revoke it. Every admitted successor revision that holds the source gets its
    * own withdrawal too, so a deployment still in flight cannot attach it again, and so does
    * each predecessor that may still run until the active revision's deployment retires it.
-   * A replay of a pending withdrawal queues another attempt only when no earlier attempt is
-   * still queued or running, and that attempt runs on the replaying operator's authority; a
-   * revoked withdrawal is left unchanged. The response describes the active revision's
+   * A replay of a pending withdrawal makes the replaying operator its requester, so its next
+   * attempt runs on their authority. It queues another attempt only when no earlier attempt is
+   * still queued or running, and otherwise lets a queued one run now; a revoked withdrawal is
+   * left unchanged. The response describes the active revision's
    * withdrawal, or, once that is revoked, a pending one of another revision that may still run
    * with the source (see readAgentCredentialWithdrawal).
    */
@@ -6201,8 +6203,9 @@ export class OpenClawController {
   }
 
   /**
-   * Inserts or returns the revision's withdrawal of the source. A pending one without
-   * outstanding work makes the caller its requester and queues an attempt.
+   * Inserts or returns the revision's withdrawal of the source. A pending one makes the caller
+   * its requester. Without outstanding work it queues an attempt; otherwise the queued attempt
+   * runs now instead of at its scheduled time, so one chain still serves the withdrawal.
    */
   private async requestRevisionCredentialWithdrawal(
     state: PlatformUnitOfWork,
@@ -6221,18 +6224,13 @@ export class OpenClawController {
         requestedAt: this.timestamp(),
       }),
     );
-    if (
-      withdrawal.state !== "pending" ||
-      (await state.operations.hasOutstandingCredentialWithdrawalWork(
-        revision.namespaceId,
-        revision.id,
-      ))
-    ) {
+    if (withdrawal.state !== "pending") {
       return withdrawal;
     }
     // The worker rechecks `agent:operate` for the recorded requester. An earlier requester
-    // may have lost it since, so the attempt this replay queues runs on the authority just
-    // checked by the caller; otherwise nobody could ever complete the withdrawal.
+    // may have lost it since, so the next attempt, queued now or earlier, runs on the authority
+    // just checked by the caller; otherwise nobody could ever complete the withdrawal. The
+    // request's own audit event records the caller; earlier events keep their actors.
     if (withdrawal.requestedBy !== principalId) {
       const reassigned = await state.credentialSources.reassignCredentialWithdrawal(
         withdrawal.namespaceId,
@@ -6246,6 +6244,18 @@ export class OpenClawController {
         );
       }
       withdrawal = reassigned;
+    }
+    // A queued attempt (a retry backing off, or a later series of the worker's recovery chain)
+    // runs now rather than up to five minutes later. A running one reads the new requester
+    // when it settles (the worker's finalizeCredentialWithdrawal).
+    if (
+      await state.operations.hasOutstandingCredentialWithdrawalWork(
+        revision.namespaceId,
+        revision.id,
+      )
+    ) {
+      await state.operations.expediteCredentialWithdrawalWork(revision.namespaceId, revision.id);
+      return withdrawal;
     }
     await this.record(state, {
       kind: "agent_revision",

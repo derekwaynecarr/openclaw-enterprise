@@ -720,6 +720,23 @@ export class CredentialSourceRevisionError extends Error {
 }
 
 /**
+ * A Compute Driver cannot withdraw a credential source from this exact AgentRevision: its
+ * configuration cannot identify the revision's Sandbox, or it found an object it does not
+ * own. Retrying cannot change the outcome until an operator corrects the cause, so the worker
+ * fails the withdrawal at once with `code` instead of retrying it for an hour; a replay tries
+ * again. The message stays in the controller.
+ */
+export class CredentialWithdrawalRefusedError extends Error {
+  readonly code: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED" | "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT";
+
+  constructor(code: CredentialWithdrawalRefusedError["code"], message: string) {
+    super(message);
+    this.name = "CredentialWithdrawalRefusedError";
+    this.code = code;
+  }
+}
+
+/**
  * An AccessBinding Role carries Permissions that can never take effect through the
  * binding: `create` is checked against the Namespace, not an existing resource, and a
  * binding to an exact resource applies only Permissions of that resource's kind.
