@@ -13,7 +13,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const profilesDir = resolve(repoRoot, "deploy/profiles");
 const allowedProfiles = new Set(["openclaw", "codex"]);
-const helmReleaseName = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+const dnsSubdomain = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
 // Kubernetes Service names are DNS-1035 labels. The chart refuses any other
 // repositoryCredentials.serviceName.
 const dns1035Label = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
@@ -1026,7 +1026,7 @@ function buildRendered(profile, parsed, diagnostics) {
     trustedProxy,
   } = parsed;
   const releaseName = asString(controlPlane, ["controlPlane", "releaseName"], diagnostics, {
-    validate: (value) => value.length <= 53 && helmReleaseName.test(value),
+    validate: (value) => value.length <= 53 && dnsSubdomain.test(value),
     description: "a valid Helm release name of at most 53 characters",
   });
   const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics, {
@@ -1410,6 +1410,12 @@ function buildRendered(profile, parsed, diagnostics) {
               runtime,
               ["runtime", "transportSecretPrefix"],
               diagnostics,
+              {
+                validate: (value) =>
+                  value.length + 13 <= 253 && dnsSubdomain.test(`${value}-${"a".repeat(12)}`),
+                description:
+                  "a prefix producing a DNS-safe Secret name of at most 253 characters with its 12-character suffix",
+              },
             ),
             ...(profile.name === "codex"
               ? {

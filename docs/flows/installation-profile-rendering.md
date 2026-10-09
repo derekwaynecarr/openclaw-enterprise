@@ -189,6 +189,12 @@ entries, but it does not read the files; controller startup resolves the paths
 and validates their contents. Preset input changes alter the Installation
 checksum like any other startup configuration.
 
+`runtime.transportSecretPrefix` must produce the same DNS-safe name that
+Kubernetes Compute startup requires: `<prefix>-<12 hex characters>`, at most
+253 characters in total. Preflight checks that composed name before writing
+Installation YAML. A trailing hyphen in the prefix remains valid; a trailing
+dot does not, because the suffix would start a new label with a hyphen.
+
 ### 6. Write outputs and preflight
 
 `scripts/render-installation-profile.mjs:writeYaml`
@@ -245,6 +251,8 @@ activation, and repository registry creation need separate evidence.
 - 2026-10-09 21:03: Validate controller image references before emitting profile files. (authoring-run/9a3fd823-79af-431c-b422-44c0ba255013 - b62cf404ed354079e1c51b64a1e664b3c66c0262)
 
 - 2026-10-09 20:43: Preserve Google hosted-domain and repository Service-name checks after the main merge. (01a12099-b8bf-7523-b52e-c7a160e191ec - 31a682eba8a8e4e0e0b80fe48cb71ab86db7e985)
+
+- 2026-10-09 20:06: Validate transport Secret prefixes before rendering Installation configuration. (authoring-run/8b675a82-44c5-4fc1-a404-dad5edd03858 - cd468c23101b201b3969fa1a4077a18042d3396b)
 
 - 2026-10-09 19:54: Reject external sign-in credential-key collisions during profile preflight. (authoring-run/d628d0ae-29d8-405c-b812-0534f00d5821 - 60a837dfd798e8fac90b53c47436c4bc7a36e8e4)
 

@@ -307,6 +307,10 @@ copy manual examples into the same output directory. Rerender successfully so
 `values.yaml`, `installation.yaml`, and `controlPlane.installationChecksum` stay
 paired.
 
+`runtime.transportSecretPrefix` must form a DNS-safe Kubernetes Secret name after
+`-` and 12 hex characters are appended, with at most 253 characters in total.
+Preflight refuses a prefix that the controller would reject at startup.
+
 ## Required environment checks
 
 The renderer does not check these prerequisites. Verify them before you treat
