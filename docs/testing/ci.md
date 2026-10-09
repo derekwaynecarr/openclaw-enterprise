@@ -93,7 +93,7 @@ NetworkPolicy enforcement.
 Kubernetes fixture startup logs phase timings and host resource and pressure snapshots. On cluster or readiness failure, preparation collects bounded
 node, system Pod, event and redacted node-container diagnostics before cleanup;
 k3d rollback is disabled long enough to retain them. Inspect the
-`diagnostics-<artifact-prefix>-<lane>` artifact or local
+`diagnostics-<artifact-prefix>-<lane>-attempt-<N>` artifact (one per job attempt) or local
 `<state-file>.diagnostics.json`. Failed diagnostic commands are marked unavailable or timed out; collection preserves the original failure. Raw
 kubeconfig, environment values and Pod specs are excluded. After a failed prepared
 run, local callers must run `node scripts/ci/cleanup.mjs --state <state-file>`.
@@ -114,8 +114,11 @@ cases) and its last 400 stdout, stderr and diagnostic lines to the same report
 under `failures`, for the first 8 failed files (`omittedFailureFiles` counts the rest). They get the failure-message
 redaction, and lines naming a credential are dropped whole. Test output reaches an
 artifact only here; a runtime-minted value without a known shape is not redacted,
-so tests must not print secrets. A file killed at the runner timeout gets no output
-tail and usually no record; one that fails preparation gets none.
+so tests must not print secrets. Each record has a `reason`. A file stopped at the
+runner timeout gets `timeout`, its elapsed time, the running tests and the output tail
+so far (a long tail can lose its oldest lines; `omittedLines` counts them). A
+preparation failure gets `prepare` with the redacted error message, which can quote a
+command's output, and stack.
 
 The `k3d-model`, `gateway-routing`, `slack`, `openshell`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable Node 24 `NODE_BASE_IMAGE`; gateway-routing, Slack and OpenShell CI use the repository variable `CONTAINER_NODE_BASE_IMAGE`. Preparation supplies the imported controller digest and private routing CA paths; Slack still requires approved runtime images and credentials.
 

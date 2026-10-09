@@ -554,6 +554,12 @@ test("run records timeout cancellation without leaking child output", async (t) 
   const summary = JSON.parse(text);
   assert.equal(summary.files[0].nodeExitCode, 1);
   assert(summary.issues.some((entry) => entry.code === "test-timeout"));
+  // A timeout always leaves a record, even before the test printed anything.
+  const report = await readFile(join(root, "state/timeout.jsonl.diagnostics.json"), "utf8");
+  assert.doesNotMatch(report, /secretauthvalue/);
+  const [record] = JSON.parse(report).failures;
+  assert.equal(record.reason, "timeout");
+  assert.equal(record.timeoutMs, 100);
 });
 
 test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from artifacts", async (t) => {
@@ -1571,7 +1577,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(failed.error.stack, undefined);
   assert.match(
     result.stderr,
-    /run-tests: whole failure messages, stacks and output tails are in .*state\/details\.json\.diagnostics\.json \(artifact diagnostics-<prefix>-details\)/,
+    /run-tests: whole failure messages, stacks and output tails are in .*state\/details\.json\.diagnostics\.json \(artifact diagnostics-<prefix>-details-attempt-(?:\d+|<N>)\)/,
   );
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
   assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|passing output/);
@@ -1593,6 +1599,285 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     "stdout: progress before the failure",
   ]);
   assert.equal(record.output.omittedLines, 0);
+});
+
+test("the reporter sends interrupted tests and the output tail, newest first, on a timeout", async () => {
+  const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
+  const render = async (events) => {
+    let text = "";
+    for await (const chunk of reporter(events)) {
+      text += chunk;
+    }
+    return text
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  };
+  const at = (name, line, nesting = 1) => ({ name, line, column: 1, nesting, file: "/repo/a.mjs" });
+  const sent = await render([
+    { type: "test:dequeue", data: at("/repo/a.mjs", 1, 0) },
+    { type: "test:dequeue", data: at("done", 2) },
+    { type: "test:stdout", data: { file: "a.mjs", message: "early\n" } },
+    { type: "test:complete", data: at("done", 2) },
+    { type: "test:dequeue", data: at("hangs", 5) },
+    // Two runs of a test declared in a loop share a location; one is still running.
+    { type: "test:dequeue", data: at("loop", 9) },
+    { type: "test:dequeue", data: at("loop", 9) },
+    { type: "test:complete", data: at("loop", 9) },
+    ...Array.from({ length: 450 }, (_, index) => ({
+      type: "test:stdout",
+      // Quotes double in JSON; batches are measured as sent.
+      data: { file: "a.mjs", message: `bulk ${index} ${'"'.repeat(1_000)}\n` },
+    })),
+    { type: "test:stderr", data: { file: "a.mjs", message: "last words" } },
+    { type: "test:interrupted", data: { tests: [at("/repo/a.mjs", 1, 0)] } },
+    { type: "test:fail", data: { name: "hangs", details: { error: new Error("cancelled") } } },
+  ]);
+  assert.equal(sent[0].type, "test:interrupted");
+  assert.deepEqual(sent[0].data.running, [
+    { name: "/repo/a.mjs", line: 1, nesting: 0 },
+    { name: "hangs", line: 5, nesting: 1 },
+    { name: "loop", line: 9, nesting: 1 },
+  ]);
+  const batches = sent.filter(({ type }) => type === "test:output");
+  // Small batches, newest first, each counting the lines before it; nothing is sent twice.
+  assert(batches.length > 1);
+  assert(batches.every(({ data }) => JSON.stringify(data).length < 40 * 1024));
+  assert.equal(batches[0].data.lines.at(-1), "stderr: last words");
+  const omitted = batches.map(({ data }) => data.omitted);
+  assert.deepEqual(
+    omitted,
+    [...omitted].sort((a, b) => b - a),
+  );
+  assert.equal(batches.at(-1).data.omitted, 52);
+  const lines = batches.reverse().flatMap(({ data }) => data.lines);
+  assert.equal(lines.length, 400);
+  assert.match(lines[0], /^stdout: bulk 51 "+$/);
+  assert.equal(new Set(lines).size, 400);
+  assert.equal(sent.at(-1).type, "test:fail");
+});
+
+test("run records a timed-out file's interrupted test and output tail in the diagnostics report", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/hang.json");
+  const statePath = join(root, "state/hang.json");
+  await writeFile(
+    join(root, "tests/integration/hang.test.mjs"),
+    [
+      'import test from "node:test";',
+      'test("passes first", () => {});',
+      'test("hangs", async () => {',
+      "  for (let index = 0; index < 500; index += 1) {",
+      '    console.log(`bulk ${index} ${"v".repeat(2_000)}`);',
+      "  }",
+      "  console.log(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
+      '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
+      '  console.log("waiting for a reply that never comes");',
+      "  // Ends by itself in case the runner leaves it behind.",
+      "  await new Promise((resolve) => setTimeout(resolve, 30_000));",
+      "});",
+      "",
+    ].join("\n"),
+  );
+  // Node can exit mid-line after the interruption; the test runner process here
+  // always does, and the runner must skip that cut line.
+  const cutAtExit = join(root, "scripts/ci/cut-at-exit.cjs");
+  await writeFile(
+    cutAtExit,
+    'if (process.execArgv.includes("--test")) process.on("exit", () => process.stdout.write(\'{"type":"test:output","data":{"lines":["cut\'));\n',
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      hang: {
+        env: { NODE_OPTIONS: `--require=${cutAtExit}` },
+        files: [{ path: "tests/integration/hang.test.mjs" }],
+      },
+    },
+    groups: { ci: ["hang"] },
+  });
+
+  const result = run(
+    root,
+    [
+      "run",
+      "hang",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      resultsPath,
+    ],
+    { CI_RUNNER_TEST_TIMEOUT_MS: "5000" },
+  );
+
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert(summary.issues.some((entry) => entry.code === "test-timeout"));
+  const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123/);
+  const [record] = JSON.parse(text).failures;
+  assert.equal(record.file, "tests/integration/hang.test.mjs");
+  assert.equal(record.reason, "timeout");
+  assert.equal(record.timeoutMs, 5000);
+  assert(record.elapsedMs >= 5000 && record.elapsedMs < 15_000, String(record.elapsedMs));
+  assert.deepEqual(record.interruptedTests, [{ name: "hangs", line: 3 }]);
+  // Up to the last 400 of 503 lines, newest last, with the usual redaction. Node
+  // exits soon after the interruption, so on a slow host only the newest batches
+  // arrive; the rest are counted.
+  const { lines, omittedLines } = record.output;
+  assert(lines.length >= 10 && lines.length <= 400, String(lines.length));
+  assert.equal(lines.length + omittedLines, 503);
+  assert.deepEqual(lines.slice(-3), [
+    "stdout: credential [env:CI_RUNNER_FIXTURE_CREDENTIAL]",
+    "[redacted credential-bearing line]",
+    "stdout: waiting for a reply that never comes",
+  ]);
+  const bulk = lines.slice(0, -3);
+  assert.deepEqual(
+    bulk.map((line) => line.match(/^stdout: bulk (\d+) v+\.\.\. \[truncated\]$/u)?.[1]),
+    bulk.map((_, index) => String(500 - bulk.length + index)),
+  );
+});
+
+test("each job attempt uploads its own diagnostics report", async () => {
+  // A passing rerun must not replace a failed attempt's report. This reads the
+  // composite action; it is not a GitHub Actions execution.
+  const action = await readFile(
+    join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"),
+    "utf8",
+  );
+  const upload = action.match(/- name: Upload cluster diagnostics\n[\s\S]*?\n {4}- /u)?.[0] ?? "";
+  assert.match(
+    upload,
+    /\n\s+name: diagnostics-\$\{\{ inputs\.artifact-prefix \}\}-\$\{\{ inputs\.lane \}\}-attempt-\$\{\{ github\.run_attempt \}\}\n/u,
+  );
+});
+
+test("run records a timeout that came before any test started", async (t) => {
+  const root = await fixture(t);
+  const statePath = join(root, "state/stuck.json");
+  await writeFile(
+    join(root, "tests/integration/stuck.test.mjs"),
+    'import test from "node:test";\nawait new Promise((resolve) => setTimeout(resolve, 30_000));\ntest("never registered", () => {});\n',
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { stuck: { files: [{ path: "tests/integration/stuck.test.mjs" }] } },
+    groups: { ci: ["stuck"] },
+  });
+
+  const result = run(
+    root,
+    [
+      "run",
+      "stuck",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      join(root, "results/stuck.json"),
+    ],
+    { CI_RUNNER_TEST_TIMEOUT_MS: "2000" },
+  );
+
+  assert.equal(result.status, 1);
+  const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
+  assert.deepEqual(
+    { ...record, capturedAt: undefined, elapsedMs: undefined },
+    {
+      file: "tests/integration/stuck.test.mjs",
+      capturedAt: undefined,
+      reason: "timeout",
+      timeoutMs: 2000,
+      elapsedMs: undefined,
+      tests: [],
+      omittedTests: 0,
+      output: { lines: [], omittedLines: 0 },
+    },
+  );
+  assert(record.elapsedMs >= 2000, String(record.elapsedMs));
+});
+
+test("run records a preparation failure's redacted message in the diagnostics report", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/prepare.json");
+  const statePath = join(root, "state/prepare.json");
+  await writeFile(
+    join(root, "scripts/ci/prepare.mjs"),
+    [
+      'import { writeFile } from "node:fs/promises";',
+      "export async function prepareFile({ file, statePath }) {",
+      "  if (file.path.endsWith('broken.test.mjs')) {",
+      "    // The lane state's env holds prepared values the job env never had.",
+      "    await writeFile(statePath, JSON.stringify({ env: { OCC_TEST_STATE_IMAGE: 'stateonlyopaque-image-ref' } }));",
+      "    const error = new Error(",
+      "      `image import failed for ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL} stateonlyopaque-image-ref\\nAuthorization: Bearer abcdefghijklmnop0123\\npull https://user:hunter2pass@registry.example/x`,",
+      "    );",
+      "    error.stderr = 'child output secretauthvalue-stderr';",
+      "    throw error;",
+      "  }",
+      "  return {};",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  for (const name of ["broken", "fine"]) {
+    await writeFile(
+      join(root, `tests/integration/${name}.test.mjs`),
+      'import test from "node:test";\ntest("runs", () => {});\n',
+    );
+  }
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      prepare: {
+        files: [
+          { path: "tests/integration/broken.test.mjs" },
+          { path: "tests/integration/fine.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["prepare"] },
+  });
+
+  const result = run(root, [
+    "run",
+    "prepare",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ]);
+
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  // Results keep the closed contract.
+  const prepareIssue = summary.issues.find((entry) => entry.code === "prepare-failed");
+  assert.deepEqual(prepareIssue.error, { name: "Error" });
+  const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|hunter2pass|stateonlyopaque/);
+  const report = JSON.parse(text);
+  assert.equal(report.failures.length, 1);
+  const [record] = report.failures;
+  assert.equal(record.file, "tests/integration/broken.test.mjs");
+  assert.equal(record.reason, "prepare");
+  assert.equal(record.error.name, "Error");
+  assert.equal(
+    record.error.message,
+    "image import failed for [env:CI_RUNNER_FIXTURE_CREDENTIAL] [env:OCC_TEST_STATE_IMAGE]\n[redacted credential-bearing line]\n[redacted credential-bearing line]",
+  );
+  assert.match(record.error.stack, /^at prepareFile \(.*scripts\/ci\/prepare\.mjs:6:\d+\)/);
 });
 
 test("run keeps bounded Agent namespace activity from passing k3d files, alone and side by side", async (t) => {
