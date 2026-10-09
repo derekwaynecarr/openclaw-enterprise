@@ -1394,7 +1394,7 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string): void 
     throw new ConfigurationFailure(`${description} is required.`);
   }
   // NetworkPolicies select the peer on kubernetes.io/metadata.name, which only ever holds a
-  // Namespace name; anything else would select no Pods.
+  // Namespace name; anything else matches nothing, or is not even a valid label value.
   validateKubernetesNamespaceName(
     required(value.namespace, `${description} namespace`),
     `${description} namespace`,

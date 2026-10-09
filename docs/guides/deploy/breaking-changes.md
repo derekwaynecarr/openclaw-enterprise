@@ -16,16 +16,18 @@ real Installation.
 `DNS peer namespace must be a Kubernetes namespace name: a DNS label of at most
 63 characters.` (or the same message for a gateway client, the repository
 credential gateway, the provider Harness gateway or the managed channel proxy)
-when that peer's namespace has dots, uppercase letters or more than 63
-characters. The observability demo chart refuses such an `occ.namespace`,
-`dns.namespace` or `grafana.clients[N].namespace`.
+when that peer's namespace is not a DNS label (lowercase letters, digits and
+inner hyphens, at most 63 characters). The observability demo chart refuses such
+an `occ.namespace`, `dns.namespace` or `grafana.clients[N].namespace`.
 
-**Who is affected.** Only a hand-written `installation.yaml` with such a value.
-No Namespace can have that name, so the peer's NetworkPolicy selected no Pods:
-the peer was already unreachable. The profile renderer and product charts
-refuse these values already.
+**Who is affected.** Only a hand-written `installation.yaml` or demo chart
+values with such a value. No Namespace can have that name, so the peer's
+NetworkPolicy matched nothing or could not be applied: the peer was already
+unreachable. The profile renderer and product charts refuse these values
+already.
 
-**How to tell.** The controller logs the message above at startup.
+**How to tell.** The controller logs the message above at startup; `helm
+upgrade` of the demo chart fails with the field name.
 
 **Steps.** Set the peer's real Namespace name (`kubectl get namespaces`), then
 upgrade.
