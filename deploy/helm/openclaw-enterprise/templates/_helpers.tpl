@@ -461,6 +461,11 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $tlsSecretName := include "openclaw.gatewayRouting.tlsSecretName" . -}}
 {{- $rootSecretName := include "openclaw.gatewayRouting.rootSecretName" . -}}
 {{- if and (hasKey $routing "hostname") (not (kindIs "string" $routing.hostname)) -}}{{- fail "gatewayRouting.hostname must be a string when supplied" -}}{{- end -}}
+{{- /* The same custom hostname enters the Gateway listener and Certificate SANs. Compute validates it while loading the Installation; empty keeps automatic Service DNS derivation. */ -}}
+{{- if and $routing.hostname (or (gt (len $routing.hostname) 253) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$" $routing.hostname))) -}}
+{{- fail "gatewayRouting.hostname must be a DNS hostname without a port or path" -}}
+{{- end -}}
+
 {{- if not $routing.gatewayClassName -}}{{- fail "gatewayRouting.gatewayClassName must reference an operator-created GatewayClass" -}}{{- end -}}
 {{- /* Compute required() keeps the original string. validateGatewayName then refuses a name that is not DNS-safe, or longer than 63 characters, because Envoy copies it into the owning-gateway-name label. Check the name the Gateway template emits, including surrounding spaces. */ -}}
 {{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . -}}

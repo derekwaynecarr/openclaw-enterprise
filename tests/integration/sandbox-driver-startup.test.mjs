@@ -2462,7 +2462,6 @@ test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer
     "[::1]:0",
     "[::1]:65536",
     "[::1]:999999",
-    "[::1%]:8080",
     "[not-an-ip]:8080",
     "[127.0.0.1]:8080",
     "[::1:8080",
@@ -2475,6 +2474,23 @@ test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer
     await assert.rejects(
       loadInstallationFile(t, configuration),
       /configuration.endpoint must be host:port or an http or https origin/,
+      endpoint,
+    );
+  }
+  // Node's isIP accepts a zoned literal, but WHATWG URL (the http:// form and the service
+  // transport) refuses it, so both forms refuse a zone ID with one reason.
+  for (const endpoint of [
+    "[fe80::1%eth0]:8080",
+    "http://[fe80::1%eth0]:8080",
+    "http://[fe80::1%25eth0]:8080",
+    "https://[fe80::1%eth0]:8443",
+    "[::1%]:8080",
+  ]) {
+    const configuration = sandboxInstallation();
+    configuration.backend[0].configuration = { endpoint, insecureTransport: "network-policy" };
+    await assert.rejects(
+      loadInstallationFile(t, configuration),
+      /configuration\.endpoint must not include an IPv6 zone ID/,
       endpoint,
     );
   }

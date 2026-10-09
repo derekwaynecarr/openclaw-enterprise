@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-10-09"
-last_updated_session: "codex/01a12074-7896-7f63-99fe-9f42e9041d02"
+last_updated_session: "authoring-run/0d8da3d8-474a-4801-9887-230406a6b7bd"
 ---
 
 # Production Startup Flow
@@ -118,7 +118,9 @@ UDP/TCP ports `53` and `5353` to the configured DNS peer; see the
 [Helm DNS contract](../reference/settings/production.md#required-production-controller-environment).
 
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` refuses fractional
-routing ports, which its Sprig `int` range checks would truncate.
+routing ports and custom hostnames Compute rejects. Empty
+hostnames keep Service DNS derivation; Gateway listeners and Certificate SANs
+use that hostname.
 
 The Helm initialization hook preserves the full release name and shortens its
 suffix to Kubernetes' 63-character limit. Both containers mount
@@ -320,6 +322,8 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 23:51: Refuse custom Gateway hostnames Compute rejects during production configuration loading. (authoring-run/0d8da3d8-474a-4801-9887-230406a6b7bd - 5b9dd76c497c1b552a2651ee4b984978cdef0a93)
 
 - 2026-10-09 22:25: Refuse database CA paths that duplicate active database-client mounts before Kubernetes admission. (codex/01a12074-7896-7f63-99fe-9f42e9041d02 - 7f358117e)
 

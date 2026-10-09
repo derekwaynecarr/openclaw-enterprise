@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-08
-last_updated_session: authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6
+updated: 2026-10-10 00:29
+last_updated_session: authoring-run/edaa639f-bb63-47bd-9fa4-83e9ff735733
 ---
 
 # Harness Execution Topology Flow
@@ -105,7 +105,9 @@ See the [harness authentication flow](native-service-account-credential-delivery
 for admission, immutable source snapshots, and worker reauthorization.
 
 API composition, including development, and worker startup call
-`KubernetesComputeDriver.preflight` before reconciliation. Single-cluster
+`KubernetesComputeDriver.preflight` before reconciliation. `KubernetesComputeDriver.validateConfiguration`
+first rejects native Gateway or derived sandbox listener ports overlapping private
+runtime status TCP/18791. Single-cluster
 preflight checks every storage-namespace page and refuses legacy split targets
 without changing labels or state.
 The [upgrade requirements](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
@@ -319,6 +321,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 00:29: Reserve private status TCP/18791 before native listeners start. (authoring-run/edaa639f-bb63-47bd-9fa4-83e9ff735733 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
 
 - 2026-10-08 02:42: Align the admitted native Agent workspace and Gateway file-transfer binding with OpenShell's approved data mount. (authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6 - a8d2969355bd3c0478337e16a01e267ad3607595)
 

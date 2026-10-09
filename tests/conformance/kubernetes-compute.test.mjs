@@ -3076,6 +3076,44 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
   }
 });
 
+test("native Gateway listeners cannot overlap the private runtime status port", () => {
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  for (const [gatewayPort, sandbox] of [
+    [18791, false],
+    [18790, true],
+  ]) {
+    const configured = routedOptions({
+      runtime,
+      gatewayRouting: {
+        ...gatewayRouting,
+        ...(sandbox ? { sandbox: { domain: "previews.example.test" } } : {}),
+      },
+    });
+    configured.network.gatewayPort = gatewayPort;
+    assert.throws(
+      () => createKubernetesComputeDriver(configured),
+      /reserved runtime status port 18791/,
+    );
+  }
+  // 18790 remains valid without the auxiliary listener; neighboring ordinary
+  // and sandbox ports must retain the existing configured-port contract.
+  for (const [gatewayPort, sandbox] of [
+    [18790, false],
+    [18792, true],
+    [8080, true],
+  ]) {
+    const configured = routedOptions({
+      runtime,
+      gatewayRouting: {
+        ...gatewayRouting,
+        ...(sandbox ? { sandbox: { domain: "previews.example.test" } } : {}),
+      },
+    });
+    configured.network.gatewayPort = gatewayPort;
+    assert.doesNotThrow(() => createKubernetesComputeDriver(configured));
+  }
+});
+
 test("sandbox routing keeps generated HTML off the administrative origin and backend", () => {
   const driver = createKubernetesComputeDriver(
     routedOptions({
@@ -15983,6 +16021,35 @@ test("Kubernetes runtime log reads are bounded, timestamped and re-check the Pod
     /does not match/,
   );
   assert.equal(fixture.calls.filter(({ call }) => call === "readNamespacedPodLog").length, before);
+});
+
+test("Kubernetes runtime log reads normalize RFC3339 offsets without losing nanoseconds", async () => {
+  const fixture = runtimeLogDriverFixture();
+  const lines = [
+    ["2026-09-30T12:00:00Z", "2026-09-30T12:00:00Z"],
+    ["2026-09-30T12:00:00.123456789Z", "2026-09-30T12:00:00.123456789Z"],
+    ["2026-10-01T00:00:00.123456789+08:00", "2026-09-30T16:00:00.123456789Z"],
+    ["2026-09-30T23:00:00.987654321-07:30", "2026-10-01T06:30:00.987654321Z"],
+    ["2026-09-30T12:00:00.12+00:00", "2026-09-30T12:00:00.12Z"],
+    ["2026-09-30T12:00:00+05:45", "2026-09-30T06:15:00Z"],
+  ];
+  const unknown = [
+    "plain diagnostic",
+    "2026-09-30T12:00:00+8:00 malformed offset",
+    "2026-09-30T12:00:00+24:00 invalid offset",
+    "2026-09-30T12:00:00+08:60 invalid minute",
+    "2026-02-30T12:00:00+08:00 invalid date",
+  ];
+  fixture.state.logs.gateway =
+    [...lines.map(([time]) => `${time} ready`), ...unknown].join("\n") + "\n";
+  const chunk = await fixture.driver.readAgentRuntimeLogs(
+    fixture.binding,
+    fixture.request("gateway"),
+  );
+  assert.deepEqual(chunk.lines, [
+    ...lines.map(([, time]) => ({ time, raw: "ready" })),
+    ...unknown.map((raw) => ({ time: null, raw })),
+  ]);
 });
 
 test("Kubernetes runtime log and Event 403s become the typed cluster RBAC error", async () => {

@@ -574,6 +574,110 @@ test("compiled Driver export arrays activate through production startup and Conf
   }
 });
 
+// Node takes a `.js` entry's format from the nearest package.json scope, not the package root,
+// and matches the "type" key by its raw JSON text. Node's own import is the oracle.
+test("Driver entry format follows the nearest package.json scope Node's import uses", async (t) => {
+  // `exports` is undefined in ESM, so Node can load this file only as CommonJS.
+  const commonJSDriver = [
+    'exports.configurationSchema = { type: "object" };',
+    "exports.validateConfiguration = () => {};",
+    'exports.createDriver = () => { throw new Error("The CommonJS Driver must never be created."); };',
+    "",
+  ].join("\n");
+  async function scopedPackage(scenario, { root, entry = "./compiled/index.js", files }) {
+    const owner = await onDiskConfigurationPackage(scenario, entry);
+    const installed = join(owner, "node_modules", configurationPackage);
+    const manifestPath = join(installed, "package.json");
+    const { type: _type, ...manifest } = JSON.parse(await readFile(manifestPath, "utf8"));
+    await writeFile(manifestPath, `${JSON.stringify(manifest).slice(0, -1)}${root}}`);
+    for (const [file, text] of Object.entries(files)) {
+      await writeFile(join(installed, file), text);
+    }
+    return owner;
+  }
+  for (const [description, layout] of [
+    [
+      "nested module scope under a CommonJS root",
+      { root: ',"type":"commonjs"', files: { "compiled/package.json": '{"type":"module"}' } },
+    ],
+    [
+      "nested module scope under a root without type",
+      { root: "", files: { "compiled/package.json": '\ufeff{"type":"module"}' } },
+    ],
+  ]) {
+    await t.test(description, async (scenario) => {
+      const owner = await scopedPackage(scenario, layout);
+      const native = importConfigurationPackage(owner);
+      assert.equal(native.status, 0, native.stderr);
+      const configuration = installation();
+      configuration.drivers.configuration = selectedConfiguration();
+      const drivers = await load(owner, configuration);
+      assert.equal(drivers.configurationDriver.implementation, `${configurationPackage}@1.0.0`);
+    });
+  }
+  for (const [description, layout, message] of [
+    [
+      "nested scope without type under a module root",
+      {
+        root: ',"type":"module"',
+        entry: "./compiled/driver.js",
+        files: {
+          "compiled/package.json": '{"name":"compiled"}',
+          "compiled/driver.js": commonJSDriver,
+        },
+      },
+      /^drivers\.configuration\.package must export precompiled JavaScript ESM\.$/,
+    ],
+    [
+      "nested CommonJS scope under a module root",
+      {
+        root: ',"type":"module"',
+        entry: "./compiled/driver.js",
+        files: {
+          "compiled/package.json": '{"type":"commonjs"}',
+          "compiled/driver.js": commonJSDriver,
+        },
+      },
+      /^drivers\.configuration\.package must export precompiled JavaScript ESM\.$/,
+    ],
+    [
+      "escaped type key in the root manifest",
+      {
+        root: ',"typ\\u0065":"module"',
+        entry: "./compiled/driver.js",
+        files: { "compiled/driver.js": commonJSDriver },
+      },
+      /^drivers\.configuration\.package must export precompiled JavaScript ESM\.$/,
+    ],
+    [
+      "non-string type in the nearest manifest",
+      {
+        root: ',"type":"module"',
+        files: { "compiled/package.json": '{"type":"module","type":1}' },
+      },
+      /^drivers\.configuration\.package has invalid package scope metadata\.$/,
+    ],
+  ]) {
+    await t.test(description, async (scenario) => {
+      const owner = await scopedPackage(scenario, layout);
+      const native = importConfigurationPackage(owner);
+      if (layout.entry === undefined) {
+        assert.notEqual(native.status, 0, native.stdout);
+      } else {
+        // Node loads the selected file, as CommonJS.
+        assert.equal(native.status, 0, native.stderr);
+        assert.equal(native.stdout.trim(), "function");
+      }
+      const configuration = installation();
+      configuration.drivers.configuration = selectedConfiguration();
+      await assert.rejects(load(owner, configuration), (error) => {
+        assert.match(error.message, message);
+        return true;
+      });
+    });
+  }
+});
+
 async function onDiskConfigurationPackage(t, exports) {
   const owner = await mkdtemp(join(tmpdir(), "occ-driver-export-array-"));
   t.after(() => rm(owner, { recursive: true, force: true }));

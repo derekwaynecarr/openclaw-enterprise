@@ -27,3 +27,16 @@ app.kubernetes.io/component: {{ .component }}
 {{- fail (printf "%s must be a Kubernetes namespace name (a DNS label of at most 63 characters)" .path) -}}
 {{- end -}}
 {{- end -}}
+
+{{- /* Service names are DNS labels, while Helm permits dots and leading digits in release names. Keep admissible short names stable and hash the original release whenever normalization or shortening is needed. */ -}}
+{{- define "demo.serviceName" -}}
+{{- $name := printf "%s-%s" .root.Release.Name .component -}}
+{{- if and (le (len $name) 63) (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $name) -}}
+{{- $name -}}
+{{- else -}}
+{{- /* End with the hash: a fallback cannot alias an unchanged name ending in -prometheus, -loki or -grafana. */ -}}
+{{- $prefix := printf "%s-%s" .component (replace "." "-" .root.Release.Name) -}}
+{{- $suffix := printf "-%s" (.root.Release.Name | sha256sum | trunc 12) -}}
+{{- printf "%s%s" ($prefix | trunc (int (sub 63 (len $suffix))) | trimSuffix "-") $suffix -}}
+{{- end -}}
+{{- end -}}
