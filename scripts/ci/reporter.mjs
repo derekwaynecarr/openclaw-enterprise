@@ -98,7 +98,9 @@ const modelProbeMeasurementCodes = new Set([
   "READY",
   "MODEL_PROBE_TIMEOUT",
   "MODEL_PROBE_CPU_STARVED",
+  "MODEL_PROBE_FAILED",
   "AUTHENTICATION_FAILED",
+  "UNAVAILABLE",
 ]);
 const modelProbeMeasurementTimes = [
   "elapsedMs",

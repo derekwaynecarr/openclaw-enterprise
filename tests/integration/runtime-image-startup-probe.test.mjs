@@ -574,6 +574,7 @@ async function assertProbeGatesStartup(t, kind, delayMs) {
     until: readyOrFailed,
   });
   if (kind === "gateway") {
+    // The case name assumes gatewayStartupProbeCpuLimit stays at one core.
     recordModelProbeMeasurement(t, "gateway-1cpu-answer", run);
   }
   assertStartupReady(run);

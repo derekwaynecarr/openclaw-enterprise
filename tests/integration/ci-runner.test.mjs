@@ -3014,6 +3014,17 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         }),
         measurement({
           kind: "runtime-model-probe",
+          case: "gateway-500m-contended",
+          code: null,
+          elapsedMs: null,
+          capMs: null,
+          cpuWaitMs: null,
+          setupMs: 1,
+          probeDoneMs: null,
+          readyMs: null,
+        }),
+        measurement({
+          kind: "runtime-model-probe",
           case: "secretauthvalue-case",
           code: "READY",
           elapsedMs: 1,
@@ -3091,6 +3102,17 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       setupMs: 1,
       probeDoneMs: 1,
       readyMs: 1,
+    },
+    {
+      kind: "runtime-model-probe",
+      case: "gateway-500m-contended",
+      code: null,
+      elapsedMs: null,
+      capMs: null,
+      cpuWaitMs: null,
+      setupMs: 1,
+      probeDoneMs: null,
+      readyMs: null,
     },
   ]);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
