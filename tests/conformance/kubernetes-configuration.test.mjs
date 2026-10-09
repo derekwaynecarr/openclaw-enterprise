@@ -774,18 +774,26 @@ test("Kubernetes Configuration gives up on a request at its deadline and never r
     client.stalls.add(method);
     const before = client.calls[method];
     const result = operation(driver);
-    for (let turn = 0; client.calls[method] === before; turn += 1) {
-      assert.ok(turn < 100, `${method} was never sent`);
-      await new Promise((resolve) => setImmediate(resolve));
+    try {
+      for (let turn = 0; client.calls[method] === before; turn += 1) {
+        assert.ok(turn < 100, `${method} was never sent`);
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      deadlines.at(-1).abort(new DOMException("deadline", "TimeoutError"));
+      await assert.rejects(
+        result,
+        (error) =>
+          error instanceof ConfigurationBackendUnavailableError &&
+          error.message === `The Kubernetes ConfigMap ${action} outcome is unknown after timeout.`,
+        method,
+      );
+      assert.equal(client.calls[method] - before, 1, method);
+    } finally {
+      // Settles the operation even when an assertion above failed first.
+      for (const deadline of deadlines) {
+        deadline.abort();
+      }
+      await result.catch(() => {});
     }
-    deadlines.at(-1).abort(new DOMException("deadline", "TimeoutError"));
-    await assert.rejects(
-      result,
-      (error) =>
-        error instanceof ConfigurationBackendUnavailableError &&
-        error.message === `The Kubernetes ConfigMap ${action} outcome is unknown after timeout.`,
-      method,
-    );
-    assert.equal(client.calls[method] - before, 1, method);
   }
 });

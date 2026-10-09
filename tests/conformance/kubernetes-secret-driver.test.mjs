@@ -742,16 +742,22 @@ test("kubernetes-secret-driver reports a read the owner cancels in flight as can
   // The read waits for its abort signal, then rejects with the abort reason.
   client.readSecretTimesOut = true;
   const result = withComputeAbortSignal(owner.signal, () => driver.resolve(secret));
-  for (let turn = 0; client.reads === reads; turn += 1) {
-    assert.ok(turn < 100, "the read was never sent");
-    await new Promise((resolve) => setImmediate(resolve));
+  try {
+    for (let turn = 0; client.reads === reads; turn += 1) {
+      assert.ok(turn < 100, "the read was never sent");
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    owner.abort(new Error("claim lost"));
+    await assert.rejects(
+      result,
+      (error) =>
+        error instanceof SecretBackendUnavailableError &&
+        error.message === "The Kubernetes Secret read was cancelled.",
+    );
+    assert.equal(client.reads - reads, 1, "no read after the cancellation");
+  } finally {
+    // Settles the read even when an assertion above failed first.
+    owner.abort(new Error("claim lost"));
+    await result.catch(() => {});
   }
-  owner.abort(new Error("claim lost"));
-  await assert.rejects(
-    result,
-    (error) =>
-      error instanceof SecretBackendUnavailableError &&
-      error.message === "The Kubernetes Secret read was cancelled.",
-  );
-  assert.equal(client.reads - reads, 1, "no read after the cancellation");
 });

@@ -3,7 +3,7 @@ import { unreachableSocketFailure } from "../compute/kubernetes/index.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../compute/operation-context.ts";
 
 /** How long one Kubernetes API request may take before its outcome counts as unknown. */
-export const KUBERNETES_REQUEST_TIMEOUT_MS = 10_000;
+const KUBERNETES_REQUEST_TIMEOUT_MS = 10_000;
 
 // Pauses before each retry of a read whose connection never got an answer, or
 // that the API server answered with 429 or 5xx. A load balancer in front of the
