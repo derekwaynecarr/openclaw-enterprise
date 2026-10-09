@@ -258,7 +258,21 @@ function httpOrigin(value) {
     url.password.length === 0 &&
     url.pathname === "/" &&
     url.search.length === 0 &&
-    url.hash.length === 0
+    url.hash.length === 0 &&
+    ipv4HostKept(value, url)
+  );
+}
+
+// The same rule as the chart and OCC_AUTH_BASE_URL: a leading zero is octal, and
+// hex, shorthand, a single integer or a trailing dot publish a different host.
+function ipv4HostKept(raw, url) {
+  if (isIP(url.hostname) !== 4) {
+    return true;
+  }
+  const stripped = stripUrlEdges(raw);
+  const written = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
+  return (
+    written === url.hostname && /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(url.hostname)
   );
 }
 
@@ -295,6 +309,11 @@ function observabilityDestination(value) {
   );
 }
 
+// The chart refuses ".", "..", and any database.caKey that is not a basename.
+function simpleBasename(value) {
+  return value !== "." && value !== ".." && /^[A-Za-z0-9._-]+$/.test(value);
+}
+
 function optionalString(source, path, diagnostics, { pattern, validate, description } = {}) {
   const value = source[path.at(-1)];
   if (value === undefined) {
@@ -325,13 +344,17 @@ function asBoolean(source, path, diagnostics, fallback = false) {
   return value;
 }
 
-function optionalPositiveInteger(source, path, diagnostics) {
+function optionalPositiveInteger(source, path, diagnostics, { max } = {}) {
   const value = source[path.at(-1)];
   if (value === undefined) {
     return undefined;
   }
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    diagnostics.errors.push(`${path.join(".")} must be a positive integer when supplied.`);
+  if (!Number.isSafeInteger(value) || value < 1 || (max !== undefined && value > max)) {
+    diagnostics.errors.push(
+      max === undefined
+        ? `${path.join(".")} must be a positive integer when supplied.`
+        : `${path.join(".")} must be an integer from 1 through ${max} when supplied.`,
+    );
     return undefined;
   }
   return value;
@@ -352,6 +375,36 @@ function labelMap(source, path, diagnostics, { nonempty = true } = {}) {
     }
   }
   return value;
+}
+
+// Match the control-plane selector contract in Helm and prepare-bootstrap-volume.
+function controlPlaneNodeSelector(source, diagnostics) {
+  const path = ["controlPlane", "nodeSelector"];
+  const labels = labelMap(source, path, diagnostics);
+  const labelName = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
+  for (const [key, value] of Object.entries(labels)) {
+    const parts = key.split("/");
+    const name = parts.at(-1);
+    const prefix = parts.length === 2 ? parts[0] : undefined;
+    if (
+      parts.length > 2 ||
+      name.length > 63 ||
+      labelName.exec(name)?.[0] !== name ||
+      (prefix !== undefined &&
+        (prefix.length > 253 ||
+          /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/.exec(prefix)?.[0] !==
+            prefix ||
+          prefix.split(".").some((label) => label.length > 63)))
+    ) {
+      diagnostics.errors.push("controlPlane.nodeSelector keys must be Kubernetes label keys.");
+    }
+    if (typeof value === "string" && (value.length > 63 || labelName.exec(value)?.[0] !== value)) {
+      diagnostics.errors.push(
+        "controlPlane.nodeSelector values must be nonempty Kubernetes label values.",
+      );
+    }
+  }
+  return labels;
 }
 
 function stringArray(
@@ -1099,8 +1152,10 @@ function buildRendered(profile, parsed, diagnostics) {
               diagnostics,
             ),
             caKey:
-              optionalString(databaseCa, ["controlPlane", "databaseCa", "key"], diagnostics) ??
-              "ca.pem",
+              optionalString(databaseCa, ["controlPlane", "databaseCa", "key"], diagnostics, {
+                validate: simpleBasename,
+                description: "a simple basename",
+              }) ?? "ca.pem",
             caMountPath:
               optionalString(
                 databaseCa,
@@ -1145,7 +1200,7 @@ function buildRendered(profile, parsed, diagnostics) {
     controlPlane: {
       ...(controlPlane.nodeSelector === undefined
         ? {}
-        : { nodeSelector: labelMap(controlPlane, ["controlPlane", "nodeSelector"], diagnostics) }),
+        : { nodeSelector: controlPlaneNodeSelector(controlPlane, diagnostics) }),
     },
     dns: {
       namespace: asString(dns, ["controlPlane", "dns", "namespace"], diagnostics),
@@ -1401,6 +1456,8 @@ function buildRendered(profile, parsed, diagnostics) {
               managedServiceAccounts,
               ["codex", "managedServiceAccounts", "credentialTtlSeconds"],
               diagnostics,
+              // packages/occ validateBackendDefinitions refuses a larger lifetime.
+              { max: 2_592_000 },
             ) ?? 2_592_000,
         },
         drivers: {

@@ -84,6 +84,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := r.pinEndpoint(ctx); err != nil {
 		return err
 	}
+	if err := r.checkLegacyNATTable(ctx); err != nil {
+		return err
+	}
 	state.ContainerEngine = r.engine
 	state.DockerHost = r.env["DOCKER_HOST"]
 	if err := r.ensureAbsent(ctx, state); err != nil {

@@ -541,10 +541,6 @@ test("label values that YAML 1.1 would retype stay strings", () => {
     scale: "1e3",
     hex: "0x1f",
     octal: "0o17",
-    sexagesimal: "1:20",
-    infinity: ".inf",
-    team: "@platform",
-    trailing: "zone:",
     yes: "keep",
   };
   const input = baseInput();
@@ -562,12 +558,19 @@ test("label values that YAML 1.1 would retype stay strings", () => {
 
 test("Helm renders YAML 1.1 lookalike label values as strings", { skip: helmSkip }, () => {
   const input = baseInput();
-  input.controlPlane.nodeSelector = { spot: "no", scale: "1e3", team: "@platform" };
+  input.controlPlane.nodeSelector = { spot: "no", scale: "1e3", hex: "0x1f" };
   const manifests = helmTemplate(render("openclaw", input));
   assert.match(manifests, /spot: ["']no["']/);
   assert.match(manifests, /scale: ["']1e3["']/);
-  assert.match(manifests, /team: ["']@platform["']/);
+  assert.match(manifests, /hex: ["']0x1f["']/);
   assert.doesNotMatch(manifests, /spot: false/);
+  const rejected = baseInput();
+  rejected.controlPlane.nodeSelector = { team: "@platform" };
+  assertPreflightFailure(
+    "openclaw",
+    rejected,
+    /controlPlane\.nodeSelector values must be nonempty Kubernetes label values/,
+  );
 });
 
 test("renderer rejects the removed default profile", () => {
@@ -778,6 +781,10 @@ test("preflight rejects metrics and native admin inputs that Helm would reject",
       ` ${space}https://console.oce.example.internal${space} `,
     ]),
     "https://console.oce.example.internal\u0378",
+    // A leading zero is octal: 192.168.010.001 publishes 192.168.8.1.
+    "https://192.168.010.001",
+    "https://127.1",
+    "http://0177.0.0.1",
     // Like the chart: spaces, < and > and invisible characters inside the host. The host parser
     // refuses spaces, < and >, and drops tabs and most invisible characters.
     ...[
@@ -1251,6 +1258,176 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
   );
   assert.match(accepted.values, /channelDirectoryProxyUrl: http:\/\/192\.0\.2\.10:8080/);
   assert.match(accepted.installation, /proxyUrl: http:\/\/192\.0\.2\.10:8080/);
+  KubernetesComputeDriver.validateConfiguration(
+    loadYaml(accepted.installation).drivers.compute.configuration,
+  );
+});
+
+for (const profile of ["openclaw", "codex"]) {
+  for (const proxyUrl of ["http://192.0.2.10:80", "https://192.0.2.10:443"]) {
+    test(`${profile} preserves explicit default channel proxy port in ${proxyUrl}`, (t) => {
+      const input = profile === "codex" ? codexInput() : baseInput();
+      input.channels = { directoryProxyUrl: proxyUrl, runtimeProxyUrl: proxyUrl };
+      const output = render(profile, input);
+      t.after(() => rmSync(output.directory, { recursive: true, force: true }));
+      assert.equal(output.preflight.ok, true);
+      assert.equal(loadYaml(output.values).api.channelDirectoryProxyUrl, proxyUrl);
+      const compute = loadYaml(output.installation).drivers.compute.configuration;
+      assert.equal(compute.runtime.channels.proxyUrl, proxyUrl);
+      // Installation validation runs even before an Agent enables a channel.
+      assert.doesNotThrow(() => KubernetesComputeDriver.validateConfiguration(compute));
+    });
+  }
+}
+
+test("channel proxy validation preserves explicit ports and exact managed peers", (t) => {
+  const output = render("openclaw", baseInput());
+  t.after(() => rmSync(output.directory, { recursive: true, force: true }));
+  const compute = loadYaml(output.installation).drivers.compute.configuration;
+  const managed = structuredClone(compute.runtime.channels);
+  assert.equal(managed.managedProxy.port, 3128);
+  KubernetesComputeDriver.validateConfiguration(compute);
+
+  // IPv6 is supported by Compute directly; profile input intentionally remains IPv4-only.
+  for (const proxyUrl of [
+    " http://192.0.2.10:8080 ",
+    "http://[2001:db8::10]:80",
+    "https://[2001:db8::10]:443/",
+    "http://192.0.2.10:443",
+    "https://192.0.2.10:80/",
+  ]) {
+    compute.runtime.channels = { proxyUrl };
+    assert.doesNotThrow(() => KubernetesComputeDriver.validateConfiguration(compute), proxyUrl);
+  }
+  for (const [scheme, port] of [
+    ["http", 80],
+    ["https", 443],
+  ]) {
+    compute.runtime.channels = {
+      ...managed,
+      proxyUrl: `${scheme}://${managed.managedProxy.hostname}:${port}/`,
+      managedProxy: { ...managed.managedProxy, port },
+    };
+    assert.doesNotThrow(() => KubernetesComputeDriver.validateConfiguration(compute));
+  }
+
+  for (const proxyUrl of [
+    "http://192.0.2.10",
+    "https://[2001:db8::10]",
+    "http://192.0.2.10:0",
+    "http://192.0.2.10:65536",
+    syntheticCredentialUrl({
+      protocol: "http",
+      username: "proxy-user",
+      password: "synthetic-password",
+      host: "192.0.2.10",
+      port: 80,
+    }),
+    "http://192.0.2.10:80/path",
+    "http://192.0.2.10:80?query=1",
+    "https://192.0.2.10:443#fragment",
+    "ftp://192.0.2.10:80",
+    "http://proxy.example.invalid:80",
+  ]) {
+    compute.runtime.channels = { proxyUrl };
+    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), /Channel proxy/i);
+  }
+  // A valid peer grant never authorizes a different Service, port, or URL credentials.
+  for (const proxyUrl of [
+    "http://other.openclaw-system.svc:80",
+    `http://${managed.managedProxy.hostname}:443`,
+    `http://${managed.managedProxy.hostname}`,
+    syntheticCredentialUrl({
+      protocol: "http",
+      username: "proxy-user",
+      password: "synthetic-password",
+      host: managed.managedProxy.hostname,
+      port: 80,
+    }),
+  ]) {
+    compute.runtime.channels = {
+      ...managed,
+      proxyUrl,
+      managedProxy: { ...managed.managedProxy, port: 80 },
+    };
+    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), /channel proxy/i);
+  }
+});
+
+test("channel proxy validation preserves omitted-port endpoint diagnostics", (t) => {
+  const output = render("openclaw", baseInput());
+  t.after(() => rmSync(output.directory, { recursive: true, force: true }));
+  const compute = loadYaml(output.installation).drivers.compute.configuration;
+  const managed = structuredClone(compute.runtime.channels);
+
+  for (const proxyUrl of [
+    "http://192.0.2.10",
+    "https://[2001:db8::10]",
+    "http://proxy.example.invalid:8080",
+    "http://192.0.2.10:8080/path",
+  ]) {
+    compute.runtime.channels = { proxyUrl };
+    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), {
+      message: "Channel proxy URL must identify one credential-free HTTP(S) IP endpoint.",
+    });
+  }
+  for (const proxyUrl of [
+    `http://${managed.managedProxy.hostname}`,
+    `http://${managed.managedProxy.hostname}:8080`,
+    "http://other.openclaw-system.svc:3128",
+  ]) {
+    compute.runtime.channels = { ...managed, proxyUrl };
+    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), {
+      message: "Managed channel proxy URL must match the exact configured Service host and port.",
+    });
+  }
+});
+
+test("profiles refuse database CA keys the chart refuses", () => {
+  const withCa = (key) =>
+    baseInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        databaseCa: { secretName: "occ-db-ca", ...(key === undefined ? {} : { key }) },
+      },
+    });
+  const accepted = render("openclaw", withCa("db_ca.pem"));
+  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+  assert.match(accepted.values, /caKey: db_ca.pem/);
+  const omitted = render("openclaw", withCa(undefined));
+  assert.equal(omitted.summary.ok, true, omitted.preflight.errors.join("\n"));
+  assert.match(omitted.values, /caKey: ca.pem/);
+  for (const key of [".", "..", "ca/pem", "ca pem"]) {
+    assertPreflightFailure(
+      "openclaw",
+      withCa(key),
+      /controlPlane.databaseCa.key must be a simple basename/,
+    );
+  }
+});
+
+test("profiles refuse ChatGPT credential lifetimes the API refuses", () => {
+  const accounts = {
+    workspaceId: "11111111-1111-4111-8111-111111111111",
+    adminSecretName: "occ-chatgpt-admin",
+    adminSecretKey: "admin-key",
+    providerCidr: "192.0.2.21/32",
+  };
+  const accepted = render(
+    "codex",
+    managedCodexInput({
+      codex: { managedServiceAccounts: { ...accounts, credentialTtlSeconds: 2_592_000 } },
+    }),
+  );
+  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+  assert.match(accepted.installation, /credentialTtlSeconds: 2592000/);
+  assertPreflightFailure(
+    "codex",
+    managedCodexInput({
+      codex: { managedServiceAccounts: { ...accounts, credentialTtlSeconds: 2_592_001 } },
+    }),
+    /codex.managedServiceAccounts.credentialTtlSeconds must be an integer from 1 through 2592000/,
+  );
 });
 
 test("preflight rejects Codex seccomp paths the compute driver refuses", () => {

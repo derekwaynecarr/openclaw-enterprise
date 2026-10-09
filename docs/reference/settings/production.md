@@ -244,7 +244,9 @@ parent directory must be private and neither destination may already exist.
 Helm sets the key path from `bootstrap.password.mountPath` and
 `bootstrap.serviceKey.fileName` (default `initial-admin-service-key.json`). The
 key filename must be a simple basename distinct from `bootstrap.password.fileName`.
-Both use the existing `bootstrap.password.claimName` PVC. Reruns do not inspect,
+`bootstrap.password.claimName` must be a DNS subdomain of at most 253 characters,
+with each label at most 63, the same rule `prepare-bootstrap-volume` applies to
+`--claim`. Both use that existing PVC. Reruns do not inspect,
 replace, or regenerate output; see [recovery](../../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
 
 ## Production operational logging collection
