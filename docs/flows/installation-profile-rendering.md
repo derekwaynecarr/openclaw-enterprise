@@ -99,6 +99,10 @@ requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters 
 Noncanonical digest casing adds a field-specific diagnostic; the final error
 branch writes only `preflight.json`, leaving no deployable artifacts.
 
+`controlPlane.clusterName` follows the Name rule the chart and the bootstrap Job
+already apply to `installation.name`: 1 to 200 characters, with no leading or
+trailing whitespace and no control characters or line or paragraph separators.
+
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), repository Service names, and paired metrics
@@ -235,6 +239,8 @@ activation, and repository registry creation need separate evidence.
 - 2026-10-09: Refuse gateway and Envoy namespaces the Compute driver refuses.
 
 - 2026-10-08: Refuse database CA keys the chart refuses.
+
+- 2026-10-08: Refuse installation names the chart and the bootstrap Job refuse.
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 

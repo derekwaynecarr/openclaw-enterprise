@@ -95,7 +95,9 @@ fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
 release-name syntax and be at most 53 characters. Image references in
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
 must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
-casing fails preflight without emitting deployable files.
+casing fails preflight without emitting deployable files. `controlPlane.adminEmail`
+must be an administrator email the bootstrap Job accepts after trim and lowercase:
+one `@` and a dotted domain.
 
 ```json
 {
@@ -163,10 +165,13 @@ ChatGPT Backend admin credential path:
 }
 ```
 
-Managed issuance is separate from the default `codex_pat` path. The rendered
-Backend and ServiceAccount Driver wiring does not prove that live
-service-account creation works. Optional `credentialTtlSeconds` must be an
-integer from 1 through 2592000, the lifetime the API accepts; omit it to use 2592000.
+`workspaceId` must be a UUID the controller accepts at startup: version digit
+1–8 and variant 8, 9, a, or b, as in the example. Any other spelling, including
+a nil UUID, is a preflight error. Managed issuance is separate from the default
+`codex_pat` path. The rendered Backend and ServiceAccount Driver wiring does not
+prove that live service-account creation works. Optional `credentialTtlSeconds`
+must be an integer from 1 through 2592000, the lifetime the API accepts; omit it
+to use 2592000.
 
 To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as

@@ -334,6 +334,32 @@ test("managed ChatGPT service-account wiring is optional and explicit", () => {
   assert.match(codex.preflight.warnings.join("\n"), /issuance is wired but remains unverified/);
 });
 
+test("profiles refuse ChatGPT workspace IDs the controller refuses", () => {
+  const message =
+    /codex\.managedServiceAccounts\.workspaceId must be a UUID the controller accepts for a ChatGPT workspace/;
+  for (const workspaceId of [
+    "not-a-uuid",
+    "00000000-0000-0000-0000-000000000000",
+    "11111111-1111-4111-0111-111111111111",
+    "11111111-1111-0111-8111-111111111111",
+  ]) {
+    assertPreflightFailure(
+      "codex",
+      managedCodexInput({
+        codex: {
+          managedServiceAccounts: {
+            workspaceId,
+            adminSecretName: "occ-chatgpt-admin",
+            adminSecretKey: "admin-key",
+            providerCidr: "192.0.2.21/32",
+          },
+        },
+      }),
+      message,
+    );
+  }
+});
+
 test("profiles reject invalid Helm release names before emitting deployment files", (t) => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
@@ -1216,6 +1242,24 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
   );
 });
 
+test("profiles refuse installation names the chart and the bootstrap Job refuse", () => {
+  const accepted = render(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...baseInput().controlPlane, clusterName: "n".repeat(200) },
+    }),
+  );
+  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+  assert.match(accepted.values, /name: n{200}\n/);
+  for (const clusterName of [" profile", `${"n".repeat(201)}`, "bad\nname", "\uD800"]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ controlPlane: { ...baseInput().controlPlane, clusterName } }),
+      /controlPlane.clusterName must be 1 to 200 characters/,
+    );
+  }
+});
+
 test("preflight rejects CIDR prefixes with a leading zero", () => {
   const controlPlane = baseInput().controlPlane;
   assertPreflightFailure(
@@ -1444,6 +1488,24 @@ test("profiles refuse ChatGPT credential lifetimes the API refuses", () => {
     }),
     /codex.managedServiceAccounts.credentialTtlSeconds must be an integer from 1 through 2592000/,
   );
+});
+
+test("profiles refuse administrator emails the bootstrap Job refuses", () => {
+  const accepted = render(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...baseInput().controlPlane, adminEmail: " Admin@Example.invalid " },
+    }),
+  );
+  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+  assert.match(accepted.values, /adminEmail: " Admin@Example.invalid "/);
+  for (const adminEmail of ["not-an-email", "admin@example", "a @b.c"]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ controlPlane: { ...baseInput().controlPlane, adminEmail } }),
+      /controlPlane.adminEmail must be a valid administrator email/,
+    );
+  }
 });
 
 test("profiles refuse gateway namespaces the compute driver refuses", () => {

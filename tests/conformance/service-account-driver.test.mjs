@@ -534,6 +534,25 @@ function fakeChatGPT(workspaceId) {
       const id = `acct-${++next}`;
       accounts.set(id, { name: JSON.parse(init.body).name, credentials: new Set() });
       reply = json(200, { id, workspace_id: workspaceId, enabled: true, ...fault.body });
+    } else if (init.method === "POST" && segment === "credentials" && credentialId === undefined) {
+      const owner = decodeURIComponent(accountId);
+      const account = accounts.get(owner);
+      if (account === undefined) {
+        reply = json(404, { error: { code: "service_account_not_found" } });
+      } else {
+        const id = `cred-${++next}`;
+        account.credentials.add(id);
+        const { scopes, ttl } = JSON.parse(init.body);
+        reply = json(200, {
+          id,
+          access_token: `synthetic-${id}`,
+          workspace_id: workspaceId,
+          service_account_id: owner,
+          scopes,
+          expires_at: 1_800_000_000 + ttl,
+          ...fault.body,
+        });
+      }
     } else if (init.method === "DELETE" && segment === "credentials") {
       const account = accounts.get(decodeURIComponent(accountId));
       if (!account?.credentials.delete(decodeURIComponent(credentialId))) {
@@ -634,6 +653,86 @@ test("a ChatGPT account create whose reply is invalid removes exactly the accoun
         server.requests.map(({ method }) => method),
         ["POST"],
       );
+    }),
+  );
+});
+
+test("a ChatGPT credential create whose reply is invalid revokes exactly the credential it issued", async (t) => {
+  const invalid = (error) =>
+    error instanceof DependencyUnavailableError &&
+    error.message === "ChatGPT returned an invalid service-account credential.";
+  const credentials = (server) =>
+    Object.fromEntries([...server.accounts].map(([id, { credentials }]) => [id, [...credentials]]));
+  const issue = async (body) => {
+    let result;
+    await withFakeChatGPT(async ({ client, server }) => {
+      server.accounts.set("acct-own", { name: "own", credentials: new Set() });
+      server.accounts.set("acct-other", { name: "other", credentials: new Set(["cred-other"]) });
+      server.faults.push(body === undefined ? {} : { body });
+      let error;
+      let credential;
+      try {
+        credential = await client.createCredential({ accountId: "acct-own", name: "occ-sa_x" });
+      } catch (caught) {
+        error = caught;
+      }
+      result = {
+        error,
+        credential,
+        stored: credentials(server),
+        requests: server.requests.map(({ method, path }) => `${method} ${path.split("/").at(-1)}`),
+      };
+    });
+    return result;
+  };
+
+  await t.test("a valid reply is returned unchanged", async () => {
+    const { error, credential, stored } = await issue();
+    assert.equal(error, undefined);
+    assert.deepEqual(credential, { id: "cred-1", accessToken: "synthetic-cred-1" });
+    assert.deepEqual(stored, { "acct-own": ["cred-1"], "acct-other": ["cred-other"] });
+  });
+
+  for (const [name, body] of [
+    ["an unexpected scope", { scopes: ["another.scope"] }],
+    ["no access token", { access_token: "" }],
+    ["no expiry", { expires_at: null }],
+  ]) {
+    await t.test(`a reply with ${name} under this account removes that credential`, async () => {
+      const { error, stored, requests } = await issue(body);
+      assert.ok(invalid(error), String(error));
+      assert.deepEqual(stored, { "acct-own": [], "acct-other": ["cred-other"] });
+      assert.deepEqual(requests, ["POST credentials", "DELETE cred-1"]);
+    });
+  }
+
+  for (const [name, body] of [
+    // The reply does not place the credential under the requested account or this
+    // workspace, or names none, so it proves nothing and nothing is deleted.
+    ["another account", { service_account_id: "acct-other", id: "cred-other" }],
+    ["another workspace", { workspace_id: "22222222-2222-4222-8222-222222222222" }],
+    ["no credential ID", { id: "" }],
+  ]) {
+    await t.test(`a reply naming ${name} deletes nothing`, async () => {
+      const { error, stored, requests } = await issue(body);
+      assert.ok(invalid(error), String(error));
+      assert.deepEqual(stored, { "acct-own": ["cred-1"], "acct-other": ["cred-other"] });
+      assert.deepEqual(requests, ["POST credentials"]);
+    });
+  }
+
+  await t.test("the cleanup fails", () =>
+    withFakeChatGPT(async ({ client, server }) => {
+      server.accounts.set("acct-own", { name: "own", credentials: new Set() });
+      server.faults.push({ body: { scopes: [] } }, { apply: false });
+      await assert.rejects(
+        client.createCredential({ accountId: "acct-own", name: "occ-sa_x" }),
+        (error) =>
+          error instanceof DependencyUnavailableError &&
+          error.message ===
+            "ChatGPT returned an invalid service-account credential that could not be removed.",
+      );
+      assert.deepEqual(credentials(server), { "acct-own": ["cred-1"] });
     }),
   );
 });
