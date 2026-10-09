@@ -331,11 +331,12 @@ function configurationFieldMessage(path: string, message: (path: string) => stri
 
 /**
  * Builds a message that names the Configuration setting `agents.entries.<key>`. A submitted
- * key can hold any character: control and format characters show as ?, a key that is not a
- * plain Agent ID is quoted, and a long key shortens the path to fit the 256-character cap.
+ * key can hold any character: control, format, line and paragraph separator characters show
+ * as ?, a key that is not a plain Agent ID is quoted, and a long key shortens the path to fit
+ * the 256-character cap.
  */
 export function agentEntryMessage(key: string, message: (path: string) => string): string {
-  const shown = key.replace(/[\p{Cc}\p{Cf}]|\p{Cs}/gu, "?");
+  const shown = key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
   const path = /^[A-Za-z0-9_-]+$/.test(shown)
     ? `agents.entries.${shown}`
     : `agents.entries[${JSON.stringify(shown)}]`;

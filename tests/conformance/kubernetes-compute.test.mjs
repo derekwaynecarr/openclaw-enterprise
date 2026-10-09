@@ -5245,7 +5245,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   const listRefusal =
     "The OpenClaw Gateway rejects agents.list: remove it and configure each Agent under agents.entries, keyed by its Agent ID.";
   const ownershipRefusal =
-    'The OpenClaw Gateway accepts only "explicit" for agents.ownership: set it to "explicit" or remove it.';
+    'The OpenClaw Gateway accepts only "explicit" for agents.ownership: set it to "explicit", or remove it if agents.entries has at most one entry.';
   const multiRefusal =
     'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.';
   const emptyRefusal =
@@ -5332,7 +5332,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     [{ entries: { "": {} } }, idRefusal('agents.entries[""]')],
     [{ entries: { ["a".repeat(65)]: {} } }, idRefusal(`agents.entries.${"a".repeat(65)}`)],
     // A submitted key shows control and format characters as ?, quoted.
-    [{ entries: { "a\u0000\u202eb": {} } }, idRefusal('agents.entries["a??b"]')],
+    [{ entries: { "a\u0000\u202e\u2028b": {} } }, idRefusal('agents.entries["a???b"]')],
     [{ entries: { 'a"b': null } }, entryRefusal('agents.entries["a\\"b"]')],
     [{ ownership: "explicit", entries: { main: {}, Main: {} } }, duplicateRefusal("main", "Main")],
     [

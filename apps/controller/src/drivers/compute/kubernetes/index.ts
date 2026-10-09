@@ -2011,7 +2011,7 @@ function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): vo
   }
   if (agents?.ownership !== undefined && !explicit) {
     throw new ConfigurationHarnessError(
-      'The OpenClaw Gateway accepts only "explicit" for agents.ownership: set it to "explicit" or remove it.',
+      'The OpenClaw Gateway accepts only "explicit" for agents.ownership: set it to "explicit", or remove it if agents.entries has at most one entry.',
     );
   }
   if (rosterSize > 1 && !explicit) {
