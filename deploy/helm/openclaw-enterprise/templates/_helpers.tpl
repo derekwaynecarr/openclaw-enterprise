@@ -441,6 +441,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "gatewayRouting.gatewayName must be a DNS-safe Kubernetes resource name" -}}
 {{- end -}}
 {{- if not $routing.envoyNamespace -}}{{- fail "gatewayRouting.envoyNamespace must identify the existing Envoy Gateway controller namespace" -}}{{- end -}}
+{{- /* The Compute driver (isKubernetesResourceName) refuses anything that is not a DNS subdomain of at most 253 characters. */ -}}
+{{- if or (gt (len (toString $routing.envoyNamespace)) 253) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" (toString $routing.envoyNamespace))) -}}
+{{- fail "gatewayRouting.envoyNamespace must be a DNS-safe Kubernetes resource name of at most 253 characters" -}}
+{{- end -}}
 {{- if not $routing.issuerRef -}}{{- fail "gatewayRouting.issuerRef must be configured" -}}{{- end -}}
 {{- if and (hasKey $routing.issuerRef "name") (not (kindIs "string" $routing.issuerRef.name)) -}}{{- fail "gatewayRouting.issuerRef.name must be a string when supplied" -}}{{- end -}}
 {{- if $routing.issuerRef.name -}}

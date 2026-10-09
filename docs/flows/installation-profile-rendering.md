@@ -88,7 +88,12 @@ provisioning for `codex_pat` is optional and renders only when `codex.managedSer
 supplied.
 
 Preflight checks `controlPlane.releaseName` against Helm's lowercase release-name
-syntax and 53-character maximum. The shared `digestImage` check in `buildRendered`
+syntax and 53-character maximum. It also requires `controlPlane.namespace` and,
+when set, `controlPlane.envoyNamespace` to be DNS-safe Kubernetes resource names
+of at most 253 characters, the same rule the Compute driver applies to
+`gatewayNamespace` and `envoyNamespace`. The chart applies that rule to
+`gatewayRouting.envoyNamespace`. A slash, an uppercase letter, or a longer name
+fails before any deployable file is written. The shared `digestImage` check in `buildRendered`
 requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters for
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`.
 Noncanonical digest casing adds a field-specific diagnostic; the final error
@@ -242,6 +247,8 @@ activation, and repository registry creation need separate evidence.
 - 2026-10-09: Refuse Google hosted domains the chart and API refuse.
 
 - 2026-10-09: Refuse a repository broker Service name the chart's DNS-1035 check refuses.
+
+- 2026-10-09: Refuse gateway and Envoy namespaces the Compute driver refuses.
 
 - 2026-10-08: Refuse database CA keys the chart refuses.
 

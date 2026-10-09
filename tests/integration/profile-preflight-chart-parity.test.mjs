@@ -178,6 +178,32 @@ test(
   },
 );
 
+test(
+  "envoy namespaces get the same verdict from the preflight and the chart",
+  { skip: helmSkip },
+  () => {
+    const chartError =
+      /gatewayRouting\.envoyNamespace must be a DNS-safe Kubernetes resource name of at most 253 characters/;
+    for (const [envoyNamespace, accepted] of [
+      ["envoy-gateway-system", true],
+      ["gateway.example", true],
+      ["a".repeat(253), true],
+      ["envoy/system", false],
+      ["OpenClaw", false],
+      ["foo_bar", false],
+      ["a".repeat(254), false],
+    ]) {
+      assertParity({
+        label: envoyNamespace.length > 40 ? `${envoyNamespace.length} characters` : envoyNamespace,
+        controlPlane: { envoyNamespace },
+        values: { gatewayRouting: { envoyNamespace } },
+        accepted,
+        chartError,
+      });
+    }
+  },
+);
+
 // The API is looser than the chart on input outside this table: it trims whitespace and
 // takes a bare address as a single host. Preflight and the chart refuse both.
 test("every trusted proxy CIDR in the table gets the API's verdict, apart from zone IDs", () => {
