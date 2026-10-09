@@ -1075,15 +1075,6 @@ const invalid = [
     env: { OCC_AUTH_OIDC_DISPLAY_NAME: "\u0085Continue" },
     parser: /OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters/,
   },
-  // RE2's \p{C} does not cover unassigned code points; the API's \p{C} does.
-  ...["\u0378", "\u{E0080}", "\u{1FAFF}"].map((character) => ({
-    name: `OIDC with an unassigned code point in its display name (U+${character.codePointAt(0).toString(16).toUpperCase()})`,
-    values: { ...oidcUpgradeValues(recoveryUserId), "auth.oidc.displayName": `Acme${character}` },
-    chart: /auth\.oidc\.displayName must be 1 to 40 printable characters/,
-    oidc: true,
-    env: { OCC_AUTH_OIDC_DISPLAY_NAME: `Acme${character}` },
-    parser: /OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters/,
-  })),
   {
     name: "OIDC with an overlong label",
     values: { ...oidcUpgradeValues(recoveryUserId), "auth.oidc.displayName": "x".repeat(41) },
@@ -1479,6 +1470,9 @@ test(
         "//console.oce.example.internal",
         "ftp://console.oce.example.internal",
         "https://console.oce.example.internal:65536",
+        // Go keeps everything before the last colon in the host name; Node refuses the port.
+        "https://console.oce.example.internal:80:1",
+        "https://192.0.2.10:80:1",
         "https://",
         "http://localhost/occ",
       ].map((baseUrl) => ({ baseUrl, chart: notOrigin, api: false, job: false })),
@@ -1565,6 +1559,19 @@ test(
         api: accepted,
         job: accepted,
       })),
+      // Both parsers percent-decode the host, so the chart checks the decoded name too.
+      ...["%C2%A0", "%E3%80%80"].map((space) => ({
+        baseUrl: `https://console${space}.oce.example.internal`,
+        chart: unicodeInside,
+        api: false,
+        job: false,
+      })),
+      {
+        baseUrl: "https://console%EF%BC%9F.oce.example.internal",
+        chart: compatibility,
+        api: false,
+        job: false,
+      },
       // The host parser maps compatibility characters first and refuses those that map to a
       // forbidden host code point (full-width ? # / @, ?? from U+2047) or that UTS #46 disallows
       // (U+2488 maps to "1.", U+FFFD). Go's URL parser keeps them. A sample here; the next test

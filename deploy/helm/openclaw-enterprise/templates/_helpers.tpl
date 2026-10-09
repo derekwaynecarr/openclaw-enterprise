@@ -22,9 +22,12 @@
 {{- /* The API and the bootstrap Job accept only an absolute HTTP(S) origin (validHttpBaseURL). They also refuse a bare ? or #, which urlParse reads as an empty query or fragment. */ -}}
 {{- $baseUrl := urlParse $baseUrlText -}}
 {{- $baseUrlPort := trimPrefix ":" (regexFind ":[0-9]+$" $baseUrl.host) -}}
-{{- if or (not (has $baseUrl.scheme (list "http" "https"))) (not $baseUrl.hostname) $baseUrl.userinfo (not (has $baseUrl.path (list "" "/"))) $baseUrl.query $baseUrl.fragment (regexMatch "[?#]" $baseUrlText) (and $baseUrlPort (gt (atoi $baseUrlPort) 65535)) -}}
+{{- if or (not (has $baseUrl.scheme (list "http" "https"))) (not $baseUrl.hostname) (and (contains ":" $baseUrl.hostname) (not (hasPrefix "[" $baseUrl.host))) $baseUrl.userinfo (not (has $baseUrl.path (list "" "/"))) $baseUrl.query $baseUrl.fragment (regexMatch "[?#]" $baseUrlText) (and $baseUrlPort (gt (atoi $baseUrlPort) 65535)) -}}
 {{- fail "auth.baseUrl must be an absolute HTTP(S) origin such as https://console.example.com, without a path, query, fragment or user info" -}}
 {{- end -}}
+{{- /* Both parsers percent-decode the host, so the character checks above also run on the decoded host name (https://ex%C2%A0ample.com). */ -}}
+{{- if regexMatch "[^\\pL\\pM\\pN\\pP\\pS\\x{200C}\\x{200D}]|[<>]" $baseUrl.hostname -}}{{- fail "auth.baseUrl must not contain spaces, invisible characters, < or >; the API's URL parser refuses or drops them in a host" -}}{{- end -}}
+{{- if regexMatch $baseUrlHostRefused $baseUrl.hostname -}}{{- fail "auth.baseUrl must not contain compatibility characters such as full-width ? # / : @ or dotted numbers; the API's URL parser refuses them" -}}{{- end -}}
 {{- /* Go's URL parser keeps the written host. Node treats a host whose last label (after one trailing dot) is a number, decimal or 0x hex, as IPv4: it reads a leading zero as octal and also accepts hex (a bare 0x is 0), shorthand, a single integer and a trailing dot, then publishes that other address, and refuses a host such as example.123 or foo.1.0.0.1 that is not one. Before that check it maps compatibility characters (UTS #46): it drops variation selectors and Hangul fillers, maps the dots U+3002, U+FF0E and U+FF61, and maps digits such as １, ①, ⑩, 𝟏 and ¹ and letters such as ｘ, Ａ, ⓕ and ㏈ to ASCII. The chart maps the same characters, enough to decide whether the last label is a number; such a host must then be written as four ASCII decimal octets. A DNS name that only borrows those characters elsewhere is left alone. The lists are generated from Node; sign-in-chart-parity.test.mjs re-derives them. */ -}}
 {{- $ipv4Ignored := "[\\x{034F}\\x{115F}\\x{1160}\\x{17B4}\\x{17B5}\\x{180B}-\\x{180D}\\x{180F}\\x{3164}\\x{FE00}-\\x{FE0F}\\x{FFA0}\\x{E0100}-\\x{E01EF}]" -}}
 {{- $ipv4Dots := "[\\x{3002}\\x{FF0E}\\x{FF61}]" -}}
@@ -152,9 +155,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (regexMatch $endpoint $url)) (ne (lower (regexReplaceAll $endpoint $url "${1}")) $host) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 on the issuer's host, with no query or fragment" $key) -}}{{- end -}}
 {{- end -}}
 {{- if not (has (toString (default "client_secret_post" $oidc.tokenAuth)) (list "client_secret_post" "client_secret_basic")) -}}{{- fail "auth.oidc.tokenAuth must be client_secret_post or client_secret_basic" -}}{{- end -}}
-{{- /* The API trims the display name and uses its default when nothing is left; otherwise it allows letters, marks, numbers, punctuation, symbols and spaces (Zs). RE2's \p{C} misses unassigned code points, so the class is spelled positively. */ -}}
+{{- /* The API trims the display name and uses its default when nothing is left. RE2's \p{C} has no unassigned code points, which the API refuses at startup; a positive class would instead refuse characters newer than Helm's Unicode tables that the API accepts, such as new emoji. */ -}}
 {{- $displayName := regexReplaceAll $jsTrim (toString (default "" $oidc.displayName)) "" -}}
-{{- if and $displayName (not (regexMatch "^[\\pL\\pM\\pN\\pP\\pS\\p{Zs}]{1,40}$" $displayName)) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
+{{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $oidc.egressCidrs) (kindIs "slice" $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $oidc.egressCidrs -}}
 {{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.oidc.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
