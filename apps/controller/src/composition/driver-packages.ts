@@ -1,7 +1,7 @@
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { findPackageJSON } from "node:module";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   ComputeDriver,
@@ -171,13 +171,14 @@ function nodePackageType(text: string): string | undefined {
 
 /**
  * Node's package scope for a `.js` entry: the nearest package.json from the entry's directory,
- * never at or past a node_modules directory. The walk stops at the package root.
+ * never at or past a node_modules directory. The walk stops at the package root. Returns the
+ * scope's "type" ("none" when absent) and the manifest that decided it.
  */
-async function entryPackageType(
+async function entryPackageScope(
   entryPath: string,
   packageDirectory: string,
   path: string,
-): Promise<string | undefined> {
+): Promise<{ readonly type: string; readonly manifest: string } | undefined> {
   for (
     let directory = dirname(entryPath);
     basename(directory) !== "node_modules";
@@ -207,7 +208,7 @@ async function entryPackageType(
       if (type === undefined) {
         throw new Error(`${path}.package has invalid package scope metadata.`);
       }
-      return type;
+      return { type, manifest: join(directory, "package.json") };
     }
     if (directory === packageDirectory || dirname(directory) === directory) {
       break;
@@ -328,16 +329,28 @@ export async function loadDriverPackage(
     throw new Error(`${path}.package entry escapes its installed package root.`);
   }
   // Node loads `.mjs` as ESM without reading a package scope, and `.js` by the nearest
-  // package.json scope, not the root's.
+  // package.json scope, not the root's. A refusal names the file that decided the format.
   const extension = extname(entryPath);
-  if (
-    extension !== ".mjs" &&
-    !(
-      extension === ".js" &&
-      (await entryPackageType(entryPath, packageDirectory, path)) === "module"
-    )
-  ) {
-    throw new Error(`${path}.package must export precompiled JavaScript ESM.`);
+  const packagePath = (file: string) =>
+    [packageName, ...relative(packageDirectory, file).split(sep)].join("/");
+  if (extension !== ".mjs") {
+    if (extension !== ".js") {
+      throw new Error(
+        `${path}.package must export precompiled JavaScript ESM: entry ${packagePath(entryPath)} is not a .mjs or .js file.`,
+      );
+    }
+    const scope = await entryPackageScope(entryPath, packageDirectory, path);
+    if (scope?.type !== "module") {
+      // No scope when the entry's real path sits under a node_modules directory inside the
+      // package: the walk stops there, as Node's does.
+      const reason =
+        scope === undefined
+          ? `has no package.json scope inside ${packageName}`
+          : `takes its format from ${packagePath(scope.manifest)}, which does not set "type": "module"`;
+      throw new Error(
+        `${path}.package must export precompiled JavaScript ESM: entry ${packagePath(entryPath)} ${reason}.`,
+      );
+    }
   }
 
   let imported: unknown;
