@@ -1479,48 +1479,154 @@ test("runtime log cursor context resets for changed stream, view, expiry and mid
   }
 });
 
-test("runtime log route polling preserves identical same-time line occurrences", async () => {
+async function runtimeLogRoutePoller() {
   const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
     await import("../helpers/runtime-logs.mjs");
   const computeDriver = createRuntimeLogComputeDriver();
   const fixture = await createRuntimeLogFixture({ computeDriver });
   const target = await fixture.deployAgent();
-  const repeated = timedLog("retrying in 5s", 0);
   let cursor;
-  async function poll(lines) {
-    computeDriver.state.lines = lines;
-    const query = new URLSearchParams({
-      source: "gateway",
-      tailLines: "1000",
-      ...(cursor === undefined ? {} : { cursor }),
-    });
-    const response = await fixture.request("GET", target.logsPath(query.toString()));
-    assert.equal(response.status, 200, response.text);
-    assert.equal(typeof response.data.cursor, "string");
-    cursor = response.data.cursor;
-    return response.data.records
-      .filter((record) => record.type === "line")
-      .map((record) => record.message);
-  }
+  return {
+    startView() {
+      cursor = undefined;
+    },
+    async poll(lines, { tailLines = "1000", truncated = false } = {}) {
+      computeDriver.state.lines = lines;
+      computeDriver.state.truncated = truncated;
+      const query = new URLSearchParams({
+        source: "gateway",
+        tailLines,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      const response = await fixture.request("GET", target.logsPath(query.toString()));
+      assert.equal(response.status, 200, response.text);
+      assert.equal(typeof response.data.cursor, "string");
+      cursor = response.data.cursor;
+      return response.data;
+    },
+  };
+}
 
+test("runtime log route polling preserves identical same-time line occurrences", async () => {
+  const reader = await runtimeLogRoutePoller();
+  const repeated = timedLog("retrying in 5s", 0);
   // The Driver contract supplies raw lines without requiring unique timestamps.
   // A later poll must subtract the two delivered occurrences, not all equal text.
-  assert.deepEqual(await poll([repeated, repeated]), ["retrying in 5s", "retrying in 5s"]);
+  assert.deepEqual(messages(await reader.poll([repeated, repeated])), [
+    "retrying in 5s",
+    "retrying in 5s",
+  ]);
   const burst = [repeated, repeated, repeated, timedLog("worker connected", 0)];
-  assert.deepEqual(await poll(burst), ["retrying in 5s", "worker connected"]);
-  assert.deepEqual(await poll(burst), [], "replaying the whole overlap must show no duplicate");
-  assert.deepEqual(await poll([...burst, timedLog("retrying in 5s", 1)]), ["retrying in 5s"]);
+  assert.deepEqual(messages(await reader.poll(burst)), ["retrying in 5s", "worker connected"]);
+  assert.deepEqual(
+    messages(await reader.poll(burst)),
+    [],
+    "replaying the whole overlap must show no duplicate",
+  );
+  assert.deepEqual(messages(await reader.poll([...burst, timedLog("retrying in 5s", 1)])), [
+    "retrying in 5s",
+  ]);
 
   // A new view can deliver more occurrences than its bounded cursor remembers.
   // An incomplete count cannot establish a new copy on unchanged follow polls.
-  cursor = undefined;
+  reader.startView();
   const saturated = Array.from({ length: 17 }, () => timedLog("retrying in 5s", 0));
-  assert.equal((await poll(saturated)).length, 17);
-  assert.deepEqual(await poll(saturated), [], "a saturated frontier must not replay old copies");
-  assert.deepEqual(await poll(saturated), [], "repeated unchanged polls must remain empty");
-  assert.deepEqual(await poll([...saturated, timedLog("worker connected", 1)]), [
+  assert.equal(messages(await reader.poll(saturated)).length, 17);
+  assert.deepEqual(
+    messages(await reader.poll(saturated)),
+    [],
+    "a saturated frontier must not replay old copies",
+  );
+  assert.deepEqual(
+    messages(await reader.poll(saturated)),
+    [],
+    "repeated unchanged polls must remain empty",
+  );
+  assert.deepEqual(messages(await reader.poll([...saturated, timedLog("worker connected", 1)])), [
     "worker connected",
   ]);
+});
+
+test("runtime log route polling keeps a cut timestamp group conservative when the tail expands", async () => {
+  const reader = await runtimeLogRoutePoller();
+  const old = Array.from({ length: 3 }, () => timedLog("retrying in 5s", 0));
+  assert.equal(messages(await reader.poll(old, { tailLines: "2" })).length, 2);
+  assert.deepEqual(
+    messages(await reader.poll(old)),
+    [],
+    "expanding the tail does not make an old copy new",
+  );
+  assert.deepEqual(
+    messages(await reader.poll([...old, timedLog("retrying in 5s", 0)])),
+    [],
+    "an incomplete frontier cannot distinguish another identical copy",
+  );
+  assert.deepEqual(messages(await reader.poll([...old, timedLog("worker connected", 1)])), [
+    "worker connected",
+  ]);
+  assert.deepEqual(
+    messages(
+      await reader.poll([...old, timedLog("worker connected", 1), timedLog("worker connected", 1)]),
+    ),
+    ["worker connected"],
+  );
+
+  reader.startView();
+  assert.equal(messages(await reader.poll(old, { truncated: true })).length, 2);
+  assert.deepEqual(
+    messages(await reader.poll(old)),
+    [],
+    "a Driver byte cut cannot establish a complete first timestamp group",
+  );
+});
+
+test("runtime log route polling counts undelivered copies after its page byte cut", async () => {
+  const reader = await runtimeLogRoutePoller();
+  const padding = Array.from({ length: 60 }, (_, index) =>
+    timedLog(
+      JSON.stringify({
+        level: "info",
+        subsystem: "gateway",
+        message: `line ${index} ${"x ".repeat(4096)}`,
+      }),
+      0,
+    ),
+  );
+  const repeated = timedLog(
+    JSON.stringify({
+      level: "info",
+      subsystem: "gateway",
+      message: `retrying ${"x ".repeat(4096)}`,
+    }),
+    1,
+  );
+  const lines = [...padding, repeated, repeated, repeated];
+  const first = await reader.poll(lines);
+  assert.equal(first.truncated, true);
+  assert.equal(messages(first).length, 62);
+  const next = await reader.poll(lines);
+  assert.equal(
+    messages(next).length,
+    1,
+    "a page cut leaves one copy to deliver at the complete frontier",
+  );
+  assert.deepEqual(messages(await reader.poll(lines)), []);
+});
+
+test("runtime log cursor keeps legacy frontier counts conservative", async () => {
+  const reader = pollReader();
+  const repeated = timedLog("retrying in 5s", 0);
+  await reader.poll([repeated, repeated]);
+  const position = reader.codec.decode(reader.cursor, reader.binding).position;
+  const cursor = reader.codec.encode(reader.binding, { ...position, frontierComplete: undefined });
+  assert.deepEqual(
+    messages(await reader.poll([repeated, repeated, repeated], { query: { cursor } })),
+    [],
+  );
+  assert.deepEqual(
+    messages(await reader.poll([repeated, repeated, timedLog("retrying in 5s", 1)])),
+    ["retrying in 5s"],
+  );
 });
 
 test("runtime log route polling carries PEM masking through the serialized cursor", async () => {

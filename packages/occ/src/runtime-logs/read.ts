@@ -304,7 +304,9 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   }
   if (resume !== undefined && !replacedDuringRead) {
     const lastTime = resume.lastTime!;
-    const saturated = resume.lastHashes.length >= RUNTIME_LOG_MAX_FRONTIER_HASHES;
+    const complete =
+      resume.frontierComplete === true &&
+      resume.lastHashes.length < RUNTIME_LOG_MAX_FRONTIER_HASHES;
     const remaining = new Map<string, number>();
     for (const hash of resume.lastHashes) {
       remaining.set(hash, (remaining.get(hash) ?? 0) + 1);
@@ -332,9 +334,9 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       const hash = runtimeLogLineHash(line.raw);
       const count = remaining.get(hash) ?? 0;
       if (count === 0) {
-        // A full cursor may have forgotten earlier copies. Preserve matching-text
-        // suppression until time advances instead of replaying those copies forever.
-        return !saturated || !remaining.has(hash);
+        // An incomplete tail or full cursor may have omitted earlier copies.
+        // Matching text cannot establish a new occurrence until time advances.
+        return complete || !remaining.has(hash);
       }
       remaining.set(hash, count - 1);
       return false;
@@ -466,9 +468,17 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   const kept = resume !== undefined && !replacedDuringRead && !skipStalled;
   let lastTime = kept ? resume.lastTime : null;
   let lastHashes = kept ? [...resume.lastHashes] : [];
+  let frontierComplete = kept ? resume.frontierComplete === true : false;
   if (last !== undefined) {
     if (lastTime === null || compareRuntimeLogTime(last.time!, lastTime) !== 0) {
       lastHashes = [];
+      // The first fetched timestamp can have been clipped by the requested tail.
+      // A later frontier starts inside the fetched range; otherwise only a short,
+      // uncut Driver page proves that no earlier copies were outside the tail.
+      frontierComplete =
+        ordered &&
+        ((earliest !== null && compareRuntimeLogTime(earliest, last.time!) < 0) ||
+          (chunk.lines.length < query.tailLines && !chunk.truncated));
     }
     lastTime = last.time;
     for (const line of delivered) {
@@ -485,6 +495,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     previous: query.previous,
     lastTime,
     lastHashes: lastHashes.slice(-RUNTIME_LOG_MAX_FRONTIER_HASHES),
+    frontierComplete,
     ...(sanitized.pemOpen === undefined ? {} : { pemOpen: sanitized.pemOpen, pemAfterTime }),
     issuedAt: readStartedAt,
   };

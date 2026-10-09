@@ -63,9 +63,11 @@ GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime/
 unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to
 read only newer lines of the same view. Container reads count remembered
 occurrences at the cursor timestamp, so an additional identical line at that time
-is still returned while fewer than 16 occurrences are remembered. At that bound,
-matching text stays suppressed until a later timestamp because the count may be
-incomplete.
+is still returned when the fetched tail established a complete frontier and fewer
+than 16 occurrences are remembered. When a tail or Driver byte cut leaves
+completeness unknown, an older cursor lacks that evidence, or the history is full,
+matching text stays suppressed until a later timestamp. Such a frontier cannot distinguish an additional identical line
+from an older occurrence omitted by the tail.
 `download=true` answers `text/plain` with `Content-Disposition: attachment`,
 always reads 1000 lines, and cannot be combined with `cursor` (`400`). See the
 [API reference](../../reference/api.md).
