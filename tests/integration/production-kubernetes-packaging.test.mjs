@@ -705,9 +705,11 @@ test(
     ];
     for (const hostname of [...invalid, ...valid]) {
       const configuration = structuredClone(example);
-      if (hostname === undefined)
+      if (hostname === undefined) {
         delete configuration.drivers.compute.configuration.gatewayRouting.hostname;
-      else configuration.drivers.compute.configuration.gatewayRouting.hostname = hostname;
+      } else {
+        configuration.drivers.compute.configuration.gatewayRouting.hostname = hostname;
+      }
       await writeFile(installationPath, JSON.stringify(configuration));
       const load = () =>
         loadInstallationConfiguration({
