@@ -9571,14 +9571,20 @@ export class OpenClawController {
    * Compensations run after the failed transaction's ROLLBACK released its row locks, so another
    * request may have deleted or updated the Configuration in between (finding 945). A
    * compensation restores the previous document only while the record is still the one the
-   * failed request locked; otherwise that later write owns the backend state.
+   * failed request locked; otherwise that later write owns the backend state. A state read that
+   * fails counts as unchanged: the failure is usually the same outage that failed the request,
+   * when no other request can commit either, and skipping would leave the metadata without its
+   * ConfigMap (finding 916).
    */
   private async configurationRecordUnchanged(
     expected: Pick<Configuration, "id" | "namespaceId" | "generation" | "createdAt">,
   ): Promise<boolean> {
     const current = await this.read((state) =>
       state.configurations.findConfiguration(expected.namespaceId, expected.id),
-    );
+    ).catch(() => "unreadable" as const);
+    if (current === "unreadable") {
+      return true;
+    }
     return (
       current !== undefined &&
       current.generation === expected.generation &&

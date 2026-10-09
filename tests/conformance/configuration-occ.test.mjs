@@ -452,7 +452,7 @@ test("a Configuration delete that applied but answered an error restores the Con
 });
 
 test("a failed Configuration delete leaves a delete committed after its rollback alone", async () => {
-  const { configurationDriver, controller, namespace } = await fixture();
+  const { configurationDriver, controller, namespace, state } = await fixture();
   inspectExactly(configurationDriver);
   const configuration = await controller.createConfiguration(administrator, {
     namespaceId: namespace.id,
@@ -492,6 +492,34 @@ test("a failed Configuration delete leaves a delete committed after its rollback
     controller.getConfiguration(administrator, namespace.id, configuration.id),
     ScopeViolationError,
   );
+
+  // When that re-read fails too (the outage that failed the request), the compensation
+  // proceeds as before: a delete that applied gets its ConfigMap back (finding 916).
+  const kept = await controller.createConfiguration(administrator, {
+    namespaceId: namespace.id,
+    kind: "agent",
+    values: { model: "kept" },
+  });
+  recreated.length = 0;
+  const read = state.read;
+  configurationDriver.delete = async (reference) => {
+    configurationDriver.delete = deleteConfiguration;
+    await deleteConfiguration(reference);
+    state.read = async () => {
+      state.read = read;
+      throw new Error("synthetic state outage");
+    };
+    throw new Error("synthetic Configuration delete response loss");
+  };
+  await assert.rejects(
+    controller.deleteConfiguration(administrator, namespace.id, kept.id),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "The selected Configuration Driver is unavailable.",
+  );
+  assert.equal(state.read, read);
+  assert.deepEqual(configurationDriver.stored(kept), kept);
+  assert.deepEqual(recreated, [kept]);
 });
 
 test("a failed Configuration update leaves an update committed after its rollback alone", async () => {

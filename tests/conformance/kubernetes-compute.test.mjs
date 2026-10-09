@@ -4955,6 +4955,19 @@ test("a ServiceAccount credential rollback deletes only the Secret holding its o
     assert.deepEqual(fixture.deletes, []);
   });
 
+  await t.test("another owner's object under the name is kept", async () => {
+    const fixture = await serviceAccountSecretFixture();
+    await stored(fixture);
+    fixture.objects.get(fixture.key).metadata.annotations["openclaw.dev/service-account-id"] =
+      "sa_another";
+    await fixture.driver.deleteServiceAccountCredential(input(fixture, "at-request-fixture"));
+    assert.equal(fixture.storedToken(), "at-request-fixture");
+    assert.deepEqual(fixture.deletes, []);
+    // Account deletion still refuses it instead of passing over it silently.
+    await assert.rejects(fixture.driver.deleteServiceAccountCredential(input(fixture)));
+    assert.deepEqual(fixture.deletes, []);
+  });
+
   await t.test("account deletion passes no token and removes the account's Secret", async () => {
     const fixture = await serviceAccountSecretFixture();
     const { uid } = await stored(fixture, "at-another-request");

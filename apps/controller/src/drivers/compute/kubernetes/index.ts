@@ -3930,11 +3930,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return;
     }
     this.verifyGatewayNamespace(tenant, { namespaceId });
-    const existing = await this.getOwned("Secret", name, namespace, {
-      namespaceId,
-      serviceAccountId,
-    });
+    const existing = await this.get("Secret", name, namespace);
     if (existing === undefined) {
+      return;
+    }
+    try {
+      this.verifyOwnership(existing, { namespaceId, serviceAccountId });
+    } catch (error) {
+      if (accessToken === undefined) {
+        throw error;
+      }
+      // Someone else's object under this name: a compensation leaves it alone, as the
+      // failed-create cleanup does.
       return;
     }
     const clients = await this.clients(namespace.plane);
