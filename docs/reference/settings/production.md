@@ -31,7 +31,7 @@ session cookie before forwarding to the native gateway.
 | `OCC_DATABASE_URL`                         | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database.                                                               |
 | `OCC_CONFIG_PATH`                          | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                      |
 | `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret.                                                                           | Signs and verifies session material without logging it.                                                                 |
-| `OCC_AUTH_BASE_URL`                        | Absolute HTTP(S) origin without a path, query, fragment or user info.                                              | Defines the production Better Auth base URL and cookie origin.                                                          |
+| `OCC_AUTH_BASE_URL`                        | HTTP(S) origin without path, query, fragment or user info; IPv4 as four decimal octets, no leading zeros.          | Defines the Better Auth base URL and cookie origin.                                                                     |
 | `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.             |
 | `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.    |
 | `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.              |
@@ -108,14 +108,14 @@ scope, and revocation, and the [deployment guide](../../guides/deploy/service-ke
 for the procedure. Normal issuance and verification require no additional
 settings; initial-key delivery uses the bootstrap settings below.
 Auth-secret rotation takes effect after
-replacing the mounted Secret and restarting the process; it also invalidates every
+replacing the mounted Secret and restarting; it also invalidates every
 [known-device cookie](../authentication.md#known-devices) until each browser's next sign-in.
 Revoking one account's cookies needs no rotation: reset its password.
 
 ### GitHub sign-in and trusted proxies
 
 These optional variables apply to the API only. The chart never passes them to
-the worker or initialization Job.
+other workloads.
 
 | Variable                           | Helm value                                 | Behavior                                                                                                                                                                                                                 |
 | ---------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
