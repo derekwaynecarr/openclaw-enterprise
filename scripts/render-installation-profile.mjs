@@ -18,6 +18,8 @@ const helmReleaseName = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-
 // repositoryCredentials.serviceName.
 const dns1035Label = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
 const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
+// The controller reference also feeds prepare-bootstrap-volume and the chart.
+const controllerDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
 // The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
 // The shape check alone still matches 192.0.2.999 and port 99999.
 function isLiteralIpv4ProxyUrl(value) {
@@ -1020,7 +1022,7 @@ function buildRendered(profile, parsed, diagnostics) {
     description: NAME_RULE,
   });
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
-    pattern: digestImage,
+    pattern: controllerDigestImage,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const runtimeImage = asString(runtime, ["runtime", "image"], diagnostics, {

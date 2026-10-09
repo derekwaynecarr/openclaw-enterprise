@@ -95,7 +95,9 @@ fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
 release-name syntax and be at most 53 characters. Image references in
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
 must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
-casing fails preflight without emitting deployable files. `controlPlane.adminEmail`
+casing fails preflight without emitting deployable files. The controller reference
+also follows the chart and bootstrap-volume helper: a letter or digit first,
+then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest. `controlPlane.adminEmail`
 must be an administrator email the bootstrap Job accepts after trim and lowercase:
 one `@` and a dotted domain.
 
