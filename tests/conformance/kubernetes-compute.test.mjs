@@ -4763,6 +4763,220 @@ test("a ServiceAccount credential Secret create that applied but answered an err
   });
 });
 
+/**
+ * The fixture's account Secret, with a delete that enforces uid and resourceVersion
+ * preconditions the way the API server does and records each request's preconditions.
+ */
+async function serviceAccountSecretFixture(deleteStatus) {
+  const { driver, namespace, objects } = workspaceSetupFixture(false);
+  const { core } = await driver.apiClients;
+  const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
+  const secretName = `service-account-${createHash("sha256")
+    .update(serviceAccountId)
+    .digest("hex")
+    .slice(0, 32)}`;
+  const key = `Secret:${namespace}:${secretName}`;
+  const deletes = [];
+  core.deleteNamespacedSecret = async ({ name, body }) => {
+    deletes.push(body?.preconditions);
+    if (deleteStatus !== undefined) {
+      throw Object.assign(new Error("delete failed"), { statusCode: deleteStatus });
+    }
+    const existing = objects.get(`Secret:${namespace}:${name}`);
+    if (existing === undefined) {
+      throw Object.assign(new Error("Not found"), { statusCode: 404 });
+    }
+    const { uid, resourceVersion } = body?.preconditions ?? {};
+    if (
+      (uid !== undefined && uid !== existing.metadata.uid) ||
+      (resourceVersion !== undefined && resourceVersion !== existing.metadata.resourceVersion)
+    ) {
+      throw Object.assign(new Error("Conflict"), { statusCode: 409 });
+    }
+    objects.delete(`Secret:${namespace}:${name}`);
+  };
+  const storedToken = () =>
+    objects.has(key) ? Buffer.from(objects.get(key).data.token, "base64").toString() : undefined;
+  return { driver, objects, key, deletes, serviceAccountId, secretName, storedToken };
+}
+
+test("a failed issuance's Secret rollback after the lock is released keeps a later issuance's Secret", async () => {
+  const { ChatGPTServiceAccountDriver } =
+    await import("../../apps/controller/src/drivers/service-account/chatgpt.ts");
+  const {
+    driver: compute,
+    objects,
+    key,
+    deletes,
+    serviceAccountId,
+    storedToken,
+  } = await serviceAccountSecretFixture();
+  const workspaceId = "ws-service-account-fixture";
+  const binding = {
+    backendId: "openai",
+    driverId: "chatgpt-service-accounts",
+    externalAccountId: "acct-fixture",
+    externalCredentialId: null,
+    workspaceId,
+  };
+  const revoked = [];
+  let issued = 0;
+  const client = {
+    workspaceId,
+    async createCredential() {
+      issued += 1;
+      return { id: `cred-${issued}`, accessToken: `at-request-fixture-${issued}` };
+    },
+    async deleteCredential({ credentialId }) {
+      revoked.push(credentialId);
+    },
+  };
+  const state = {
+    async queryInTransaction(_unit, statement, parameters) {
+      if (statement.trimStart().startsWith("SELECT")) {
+        return { rows: [{ ...binding }], rowCount: 1 };
+      }
+      binding.externalCredentialId = parameters[3];
+      return { rows: [], rowCount: 1 };
+    },
+  };
+  // One request: its compensations are collected and run the way OCC runs them, newest first.
+  const request = () => {
+    const rollbacks = [];
+    const controller = {
+      transact: (work) => work({}),
+      registerRollback: (rollback) => rollbacks.push(rollback),
+    };
+    const driver = new ChatGPTServiceAccountDriver(
+      { id: "openai", drivers: { service_account: "chatgpt-service-accounts" }, client },
+      controller,
+      state,
+      compute,
+    );
+    const rollBack = async () => {
+      for (const rollback of rollbacks.reverse()) {
+        await rollback();
+      }
+    };
+    return { driver, rollBack };
+  };
+  const account = { id: serviceAccountId, namespaceId: tenant.id, name: "raced" };
+
+  // Request A stores its Secret, then its transaction fails after the Driver call. ROLLBACK
+  // releases the account row lock before A's compensations run (finding 944).
+  const failed = request();
+  await failed.driver.createCredential(account);
+  binding.externalCredentialId = null;
+
+  // In that window request B is told the leftover Secret blocks it (#1883's transient 409); an
+  // operator deletes it as the message says, and B's retry stores its own Secret.
+  const blocked = request();
+  await assert.rejects(
+    blocked.driver.createCredential(account),
+    ServiceAccountCredentialSecretExistsError,
+  );
+  await blocked.rollBack();
+  objects.delete(key);
+  const retry = request();
+  assert.deepEqual(await retry.driver.createCredential(account), {
+    kind: "access_token",
+    secretRef: { name: key.split(":")[2], key: "token" },
+  });
+  objects.get(key).metadata.uid = "retry-secret-uid";
+
+  // A's compensation then finds B's Secret under the same name: it must keep it, so B's
+  // recorded credential still has its Secret.
+  await failed.rollBack();
+  assert.equal(storedToken(), "at-request-fixture-3");
+  assert.equal(binding.externalCredentialId, "cred-3");
+  assert.deepEqual(deletes, []);
+  assert.deepEqual(revoked, ["cred-2", "cred-1"]);
+});
+
+test("a ServiceAccount credential rollback deletes only the Secret holding its own token", async (t) => {
+  const input = (fixture, accessToken) => ({
+    namespaceId: tenant.id,
+    serviceAccountId: fixture.serviceAccountId,
+    secretRef: { name: fixture.secretName, key: "token" },
+    ...(accessToken === undefined ? {} : { accessToken }),
+  });
+  const stored = async (fixture, accessToken = "at-request-fixture") => {
+    await fixture.driver.storeServiceAccountCredential({
+      namespaceId: tenant.id,
+      serviceAccountId: fixture.serviceAccountId,
+      accessToken,
+    });
+    return fixture.objects.get(fixture.key).metadata;
+  };
+
+  await t.test("its own Secret is deleted with uid and resourceVersion preconditions", async () => {
+    const fixture = await serviceAccountSecretFixture();
+    const { uid, resourceVersion } = await stored(fixture);
+    await fixture.driver.deleteServiceAccountCredential(input(fixture, "at-request-fixture"));
+    assert.equal(fixture.objects.has(fixture.key), false);
+    assert.deepEqual(fixture.deletes, [{ uid, resourceVersion }]);
+  });
+
+  await t.test("another issuance's Secret is kept", async () => {
+    const fixture = await serviceAccountSecretFixture();
+    await stored(fixture, "at-another-request");
+    await fixture.driver.deleteServiceAccountCredential(input(fixture, "at-request-fixture"));
+    assert.equal(fixture.storedToken(), "at-another-request");
+    assert.deepEqual(fixture.deletes, []);
+  });
+
+  await t.test("a Secret already gone counts as removed", async () => {
+    const fixture = await serviceAccountSecretFixture(404);
+    await stored(fixture);
+    await fixture.driver.deleteServiceAccountCredential(input(fixture, "at-request-fixture"));
+    assert.equal(fixture.deletes.length, 1);
+  });
+
+  await t.test("a Secret replaced before the delete is kept and the rollback fails", async () => {
+    const fixture = await serviceAccountSecretFixture(409);
+    await stored(fixture);
+    await assert.rejects(
+      fixture.driver.deleteServiceAccountCredential(input(fixture, "at-request-fixture")),
+    );
+    assert.equal(fixture.storedToken(), "at-request-fixture");
+  });
+
+  await t.test("a Secret without a resource version is not deleted blindly", async () => {
+    const fixture = await serviceAccountSecretFixture();
+    await stored(fixture);
+    delete fixture.objects.get(fixture.key).metadata.resourceVersion;
+    await assert.rejects(
+      fixture.driver.deleteServiceAccountCredential(input(fixture, "at-request-fixture")),
+      (error) =>
+        error instanceof DependencyUnavailableError &&
+        error.message === "The ServiceAccount credential Secret has no exact identity to delete.",
+    );
+    assert.equal(fixture.storedToken(), "at-request-fixture");
+    assert.deepEqual(fixture.deletes, []);
+  });
+
+  await t.test("another owner's object under the name is kept", async () => {
+    const fixture = await serviceAccountSecretFixture();
+    await stored(fixture);
+    fixture.objects.get(fixture.key).metadata.annotations["openclaw.dev/service-account-id"] =
+      "sa_another";
+    await fixture.driver.deleteServiceAccountCredential(input(fixture, "at-request-fixture"));
+    assert.equal(fixture.storedToken(), "at-request-fixture");
+    assert.deepEqual(fixture.deletes, []);
+    // Account deletion still refuses it instead of passing over it silently.
+    await assert.rejects(fixture.driver.deleteServiceAccountCredential(input(fixture)));
+    assert.deepEqual(fixture.deletes, []);
+  });
+
+  await t.test("account deletion passes no token and removes the account's Secret", async () => {
+    const fixture = await serviceAccountSecretFixture();
+    const { uid } = await stored(fixture, "at-another-request");
+    await fixture.driver.deleteServiceAccountCredential(input(fixture));
+    assert.equal(fixture.objects.has(fixture.key), false);
+    assert.deepEqual(fixture.deletes, [{ uid }]);
+  });
+});
+
 test("managed PAT preparation projects the account-owned token and rejects a changed owner", async () => {
   const { driver, revision, namespace, context, objects, records } = workspaceSetupFixture(false);
   const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
