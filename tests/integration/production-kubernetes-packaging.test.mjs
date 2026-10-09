@@ -615,27 +615,80 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   assert.equal(bootstrapClaim.spec.resources.requests.storage, "1Gi");
 });
 
-test("execution chart refuses a harness hostname Compute refuses", tooling, async () => {
+test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
   await assert.rejects(
     execute(
       helm,
       [
         "template",
         "oce",
-        "deploy/helm/openclaw-execution",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "openclaw-system",
+        "--values",
+        "deploy/examples/production/values.yaml",
         "--set",
-        "routing.hostname=Bad_Host",
-        "--set",
-        "routing.gatewayClassName=private-envoy-gateway",
-        "--set",
-        "routing.tlsSecretName=agents-tls",
-        "--set-json",
-        'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+        "gatewayRouting.gatewayName=Bad_Name",
       ],
       { cwd: repository },
     ),
-    /routing\.hostname must be a DNS hostname without a port or path/,
+    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
   );
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "openclaw-system",
+        "--values",
+        "deploy/examples/production/values.yaml",
+        "--set-string",
+        "gatewayRouting.gatewayName= oce-agent-gateways ",
+      ],
+      { cwd: repository },
+    ),
+    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
+  );
+  const sixtyFour = "a".repeat(64);
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        "openclaw-system",
+        "--values",
+        "deploy/examples/production/values.yaml",
+        "--set-string",
+        `gatewayRouting.gatewayName=${sixtyFour}`,
+      ],
+      { cwd: repository },
+    ),
+    /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
+  );
+  const sixtyThree = "a".repeat(63);
+  const { stdout } = await execute(
+    helm,
+    [
+      "template",
+      "oce",
+      "deploy/helm/openclaw-enterprise",
+      "--namespace",
+      "openclaw-system",
+      "--values",
+      "deploy/examples/production/values.yaml",
+      "--set-string",
+      `gatewayRouting.gatewayName=${sixtyThree}`,
+    ],
+    { cwd: repository, maxBuffer: 2_000_000 },
+  );
+  const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
+  assert.equal(gateway?.metadata.name, sixtyThree);
 });
 
 test("production Helm values example renders the backendless default chart", tooling, async () => {
@@ -3996,12 +4049,12 @@ test(
   "the chart refuses control-plane node selectors the volume helper refuses",
   tooling,
   async () => {
-    const valueMessage =
-      /controlPlane\.nodeSelector values must be nonempty Kubernetes label values/;
+    const valueMessage = /controlPlane\.nodeSelector values must be Kubernetes label values/;
     const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
     for (const [key, value, message] of [
       ["oce-role", "not valid", valueMessage],
-      ["oce-role", "", valueMessage],
+      ["oce-role", "-control", valueMessage],
+      ["oce-role", "control.", valueMessage],
       ["oce-role", "a".repeat(64), valueMessage],
       ["a-", "control", keyMessage],
       ["bad key", "control", keyMessage],
@@ -4029,10 +4082,38 @@ test(
         strings: {
           "controlPlane.nodeSelector.oce-role": "control",
           "controlPlane.nodeSelector.topology\\.kubernetes\\.io/zone": "east",
+          "controlPlane.nodeSelector.node-role\\.kubernetes\\.io/infra": "",
+          "controlPlane.nodeSelector.edge": "a_b.c-d",
         },
       },
     );
     assert.match(stdout, /oce-role: control/);
     assert.match(stdout, /topology\.kubernetes\.io\/zone: east/);
+    // Kubernetes allows empty label values; charts before #1848 rendered them.
+    assert.match(stdout, /node-role\.kubernetes\.io\/infra: ""/);
+    assert.match(stdout, /edge: a_b\.c-d/);
   },
 );
+
+test("execution chart refuses a harness hostname Compute refuses", tooling, async () => {
+  await assert.rejects(
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-execution",
+        "--set",
+        "routing.hostname=Bad_Host",
+        "--set",
+        "routing.gatewayClassName=private-envoy-gateway",
+        "--set",
+        "routing.tlsSecretName=agents-tls",
+        "--set-json",
+        'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+      ],
+      { cwd: repository },
+    ),
+    /routing\.hostname must be a DNS hostname without a port or path/,
+  );
+});

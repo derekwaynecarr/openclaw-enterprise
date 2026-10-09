@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,12 @@ import (
 )
 
 const defaultTimeoutSeconds = "30"
+
+var dns1123LabelPattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`)
+
+func dns1123Label(name string) bool {
+	return len(name) >= 1 && len(name) <= 63 && dns1123LabelPattern.MatchString(name)
+}
 
 // outputFormatsAnnotation lists the -o values a command accepts; the first replaces
 // the global "table" default.
@@ -170,7 +177,11 @@ func (app *application) namespaceCommand() *cobra.Command {
 		Use:   "create NAME",
 		Short: "Create a Namespace",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
+			// createNamespace existingNamespace: a DNS-1123 label of at most 63 characters.
+			if command.Flags().Changed("existing-namespace") && !dns1123Label(existingNamespace) {
+				return fmt.Errorf("--existing-namespace must be a DNS-1123 label of at most 63 characters")
+			}
 			client, err := app.client()
 			if err != nil {
 				return err

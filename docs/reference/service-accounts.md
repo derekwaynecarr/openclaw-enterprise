@@ -167,6 +167,22 @@ provider, not IAM, Compute, OCC, or the Harness.
 - Provider denial or Kubernetes failure: Creation fails closed; compensation deletes
   only the newly created exact provider account, provider credential, or
   account-owned Secret when durable state confirms it was not committed.
+- Unknown provider outcome: when an account create's reply is lost or unreadable,
+  OCC cannot prove which provider account is its own (OCC requires only write
+  scope and has no account read, and a name is not proof), so it deletes nothing
+  and answers `503`. Check the workspace for an orphan named
+  `<account name>-sa_…` whose ID no OCC account has. A reply that names a disabled
+  account in this workspace removes that account. Provider deletion cannot be undone: if it applied but the request
+  failed, the account stays in OCC and a retried delete completes.
+- Invalid credential reply: a reply that names a credential under the requested
+  account in this workspace revokes that credential before failing; if that fails,
+  the `503` says it could not be removed.
+- Unknown Secret outcome: a failed token Secret create deletes the account-owned
+  Secret holding this request's token, so issuance can be retried. If it cannot
+  read or delete that Secret, it answers `503` and the leftover Secret blocks a
+  retry until an operator deletes it: `service-account-` plus the first 32 hex
+  digits of the account ID's SHA-256, in the Namespace's control namespace. The
+  failed issuance still revokes its token.
 - Expired token: Execution fails closed; automated refresh and rotation are
   not implemented.
 

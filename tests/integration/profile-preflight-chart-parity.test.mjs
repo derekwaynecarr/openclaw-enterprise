@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -112,6 +112,10 @@ function assertParity({ label, controlPlane, values, accepted, chartError }) {
   const { directory, renderer } = renderProfile(input(controlPlane));
   try {
     assert.equal(renderer.ok, accepted, `${label}: renderer\n${renderer.output}`);
+    if (!accepted) {
+      assert.equal(existsSync(join(directory, "values.yaml")), false);
+      assert.equal(existsSync(join(directory, "installation.yaml")), false);
+    }
     let chart;
     if (accepted) {
       chart = helmTemplate([join(directory, "values.yaml")]);
@@ -191,3 +195,47 @@ test("every trusted proxy CIDR in the table gets the API's verdict, apart from z
     }
   }
 });
+
+test(
+  "control-plane node selectors get the same verdict from preflight and the chart",
+  { skip: helmSkip },
+  () => {
+    const selectors = [
+      [{ "oce-role": "control" }, true],
+      [{ "topology.kubernetes.io/zone": "east" }, true],
+      [{ spot: "no", scale: "1e3", hex: "0x1f" }, true],
+      [{ ["a".repeat(63)]: "b".repeat(63) }, true],
+      // Kubernetes allows empty label values, a common node-role pattern.
+      [{ "node-role.kubernetes.io/infra": "" }, true],
+      [{ "node-role.kubernetes.io/infra": "", "oce-role": "control" }, true],
+      [{ "oce-role": "a" }, true],
+      [{ "oce-role": "A_b.c-9" }, true],
+      [{ "oce-role": "-control" }, false],
+      [{ "oce-role": "control-" }, false],
+      [{ "oce-role": "_control" }, false],
+      [{ "oce-role": "control." }, false],
+      [{ "oce-role": " " }, false],
+      [{ "oce-role": "not valid" }, false],
+      [{ "oce-role": "control\n" }, false],
+      [{ "zone\n": "east" }, false],
+      [{ "example.com\n/zone": "east" }, false],
+      [{ "oce-role": "@platform" }, false],
+      [{ "oce-role": "a".repeat(64) }, false],
+      [{ "bad key": "control" }, false],
+      [{ ["a".repeat(64)]: "control" }, false],
+      [{ "Example.com/zone": "east" }, false],
+      [{ "example.com/": "east" }, false],
+      [{ "example.com/a/b": "east" }, false],
+      [{ [`${"a".repeat(64)}.example/zone`]: "east" }, false],
+    ];
+    for (const [nodeSelector, accepted] of selectors) {
+      assertParity({
+        label: JSON.stringify(nodeSelector),
+        controlPlane: { nodeSelector },
+        values: { controlPlane: { nodeSelector } },
+        accepted,
+        chartError: /controlPlane\.nodeSelector (keys|values) must be/,
+      });
+    }
+  },
+);
