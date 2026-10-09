@@ -33,6 +33,7 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision.test.mjs",
       "expectedTests": [
+        "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
         "credential withdrawal work revokes from the active revision without redeploying it",
         "an exhausted credential withdrawal stays pending, reports no attempt in progress, and a replay retries it",
         "a terminally failing credential withdrawal takes the Namespace and Agent before its withdrawal rows",
@@ -67,7 +68,6 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
       "expectedTests": [
-        "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
         "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once",
         "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
         "Agent stop cleans a terminal candidate without an active revision",

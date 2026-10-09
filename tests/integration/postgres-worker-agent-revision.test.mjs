@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
@@ -115,6 +117,308 @@ function codexPluginRevisionState(pluginId) {
 function toolSources(owner) {
   return owner.credentialSources.filter(({ sourceId }) => sourceId !== owner.harnessAuth?.sourceId);
 }
+
+revisionTest(
+  "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
+  async (fixture, context) => {
+    const [
+      { GitHubRepoDriver },
+      { UnixRepositoryCredentialControlClient },
+      { startRegistryCredentialServiceFixture },
+    ] = await Promise.all([
+      import("../../apps/controller/src/drivers/repo/github/driver.ts"),
+      import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
+      import("../fixtures/repository-credentials/registry.mjs"),
+    ]);
+    const clock = createControlledClock();
+    const startedWall = clock.wallNow();
+    const credentials = await startRegistryCredentialServiceFixture(context, {
+      namespaceId: fixture.namespace.id,
+      autoOpen: false,
+      // Worker admission IDs use real wall time. Preserve that progress while
+      // allowing this fixture's provider-retirement expiry to advance explicitly.
+      clock: { ...clock, wallNow: () => Date.now() + clock.wallNow() - startedWall },
+      gateway: { listen: "127.0.0.1:0" },
+    });
+    const driver = new GitHubRepoDriver(
+      {
+        id: credentials.backendId,
+        client: new UnixRepositoryCredentialControlClient({
+          controlSocket: credentials.config.gateway.controlSocket,
+        }),
+        drivers: { repo: "repository-credentials" },
+      },
+      credentials.registry,
+      { sessionDurationSeconds: 60, publicCa: credentials.tls.ca },
+    );
+    // The real resolver admits selection fields and returns the richer frozen
+    // binding. Worker revalidation must project that snapshot back to selections;
+    // the strict registry parser rejects backendId/grant as caller input.
+    const resolution = driver.resolve({
+      namespaceId: fixture.namespace.id,
+      bindings: [{ repositoryRef: "repo-a", profile: "git-read" }],
+    });
+    // Bound admissions require the worker-owned receipt transport and its real
+    // PostgreSQL state; without it the broker correctly refuses the session.
+    const { startRepositoryReceiptServer } =
+      await import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts");
+    const receiptServer = await startRepositoryReceiptServer({
+      state: fixture.state,
+      controlSocket: credentials.config.gateway.controlSocket,
+      driverId: driver.id,
+      implementation: driver.implementation,
+      backendId: credentials.backendId,
+    });
+    context.after(() => receiptServer.close());
+    const { owner, candidate } = await fixture.admitInitialRevision("repository-concrete-driver", {
+      revision: {
+        repositoryCredentials: {
+          driver: { id: driver.id, implementation: driver.implementation },
+          deadlineWallMs: Date.now() + 120_000,
+          bindings: resolution.bindings,
+        },
+      },
+    });
+    const open = driver.open.bind(driver);
+    const close = driver.close.bind(driver);
+    let lostSessionId;
+    const closures = [];
+    // Lose only the first response. The real service owns CLOSED -> DISPOSED,
+    // and the real worker must wait before delivering replacement material.
+    driver.open = async (input, signal) => {
+      const result = await open(input, signal);
+      if (lostSessionId === undefined && result.kind === "created") {
+        lostSessionId = result.session.sessionId;
+        throw new Error("repository admission response lost after creation");
+      }
+      return result;
+    };
+    driver.close = async (sessionId, signal) => {
+      const status = await close(sessionId, signal);
+      closures.push(status?.state);
+      return status;
+    };
+    const material = [];
+    const events = [];
+    const retired = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        validateRepositoryCredentials(harness, sandboxDriverId) {
+          assert.equal(harness.mode, "embedded");
+          assert.equal(sandboxDriverId, undefined);
+        },
+        async prepareRevision(revision, deploymentContext) {
+          material.push(...deploymentContext.repositoryCredentials);
+          return fixture.compute.prepareRevision(revision, deploymentContext);
+        },
+        async retireRevision(revision) {
+          retired.push(revision.id);
+          return fixture.compute.retireRevision(revision);
+        },
+      },
+      {
+        emit: (event) => events.push(event),
+        pool: fixture.workerPool,
+        transformDrivers: (drivers) => ({ ...drivers, repoDriver: driver }),
+      },
+    );
+    const terminal = await waitFor(
+      "the concrete repository revision's terminal result",
+      async () => {
+        const result = await fixture.observerPool.query(
+          "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+          [candidate.idempotencyKey],
+        );
+        return ["succeeded", "failed_permanent"].includes(result.rows[0]?.state)
+          ? result.rows[0]
+          : undefined;
+      },
+    );
+    assert.equal(
+      terminal.state,
+      "succeeded",
+      JSON.stringify(events.filter(({ workId }) => workId === candidate.idempotencyKey)),
+    );
+    assert.ok(terminal.attempt_count >= 2);
+    assert.equal(material.length, 1);
+    assert.equal(material[0].kind, "new");
+    assert.equal(material[0].repositoryRef, "repo-a");
+    assert.equal(JSON.parse(material[0].files["client.json"]).sessionId, material[0].sessionId);
+    assert.equal(material[0].files["ca.pem"], credentials.tls.ca.toString("utf8"));
+    const status = await driver.status(material[0].sessionId, new AbortController().signal);
+    assert.equal(status.state, "OPEN");
+    assert.deepEqual(status.binding, resolution.bindings[0].grant);
+    const attempts = await repositoryAttempts(fixture, candidate);
+    assert.equal(attempts.length, 2);
+    assert.equal(attempts.find(({ sessionId }) => sessionId === lostSessionId).phase, "disposed");
+    assert.ok(closures.includes("CLOSED"));
+    const attempt = attempts.find(({ phase }) => phase === "open");
+    assert.equal(attempt.phase, "open");
+    assert.equal(attempt.sessionId, status.sessionId);
+    const stop = await fixture.requestStop(owner);
+    await fixture.work(stop, "succeeded");
+    // Both the lost admission and the delivered session must settle even when
+    // their cleanup requests share one durable work item.
+    await waitFor("both concrete repository sessions to settle", async () => {
+      const settled = await repositoryAttempts(fixture, candidate);
+      return settled.length === 2 && settled.every(({ phase }) => phase === "disposed")
+        ? true
+        : undefined;
+    });
+    await waitFor("the concrete session's cleanup work to complete", async () => {
+      const cleanup = await fixture.observerPool.query(
+        `SELECT state FROM occ.controller_work
+         WHERE revision_id = $1 AND idempotency_key LIKE $2`,
+        [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
+      );
+      return cleanup.rowCount === 1 && cleanup.rows[0].state === "succeeded" ? true : undefined;
+    });
+    await fixture.requestDeletion(owner);
+    await waitFor("disposed repository evidence to outlive its Agent", async () =>
+      (await fixture.currentAgent(owner)) === undefined ? true : undefined,
+    );
+    const retained = await fixture.state.read((view) =>
+      view.repositorySessions.findAttempt(attempt.admissionId),
+    );
+    assert.equal(retained.phase, "disposed");
+    assert.equal(retained.liveRevisionId, null);
+    assert.equal(retained.revisionId, candidate.id);
+    assert.equal(retained.agentId, owner.id);
+    assert.deepEqual(retained.cleanupContext, {
+      driver: candidate.repositoryCredentials.driver,
+      binding: resolution.bindings[0],
+    });
+
+    // A provider retirement response can be lost after the remote effect. Only
+    // the service's eventual DISPOSED observation settles retained cleanup.
+    const { owner: pendingOwner, candidate: pendingRevision } = await fixture.admitInitialRevision(
+      "repository-pending-deletion",
+      { revision: { repositoryCredentials: candidate.repositoryCredentials } },
+    );
+    await fixture.work(pendingRevision, "succeeded");
+    const pendingMaterial = material.at(-1);
+    const responseStatus = await new Promise((resolve, reject) => {
+      const outgoing = httpsRequest(
+        {
+          hostname: "127.0.0.1",
+          port: credentials.listeners.address.port,
+          path: "/fixture/repository.git/info/refs?service=git-upload-pack",
+          method: "GET",
+          ca: credentials.tls.ca,
+          agent: false,
+          headers: {
+            host: "credentials.example.test",
+            authorization: `Basic ${Buffer.from(`gateway-session:${pendingMaterial.files.bearer}`).toString("base64")}`,
+          },
+        },
+        (incoming) => {
+          incoming.resume();
+          incoming.once("end", () => resolve(incoming.statusCode));
+          incoming.once("error", reject);
+        },
+      );
+      outgoing.once("error", reject);
+      outgoing.end();
+    });
+    assert.equal(responseStatus, 200);
+    const provider = credentials.repositories[0].github;
+    assert.equal(provider.issuesOfTokens.length, 1);
+    provider.disconnectAfterMutation("DELETE", "/installation/token");
+    await fixture.requestDeletion(pendingOwner);
+    await waitFor(
+      "Agent deletion to complete while repository cleanup remains pending",
+      async () =>
+        retired.includes(pendingRevision.id) &&
+        (await fixture.currentAgent(pendingOwner)) === undefined
+          ? true
+          : undefined,
+    );
+    await waitFor("independent cleanup to close the deleted Agent's broker session", async () => {
+      const status = await driver.status(pendingMaterial.sessionId, new AbortController().signal);
+      return status?.state === "CLOSED" ? true : undefined;
+    });
+    const [pendingAttempt] = await repositoryAttempts(fixture, pendingRevision);
+    assert.equal(pendingAttempt.phase, "closing");
+    assert.equal(pendingAttempt.liveRevisionId, null);
+    // Unsettled provider authority must retain durable cleanup without using
+    // the foreground readiness cadence and repeatedly occupying the worker.
+    const deferredCleanup = await waitFor("pending cleanup to release its claim", async () => {
+      const result = await fixture.observerPool.query(
+        `SELECT idempotency_key, state, claim_token, lease_expires_at,
+           EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
+         FROM occ.controller_work WHERE idempotency_key LIKE $1 AND state = 'queued'`,
+        [`agent_revision:${pendingRevision.id}:repository_cleanup:%`],
+      );
+      return events.some(
+        (event) =>
+          event.workId === result.rows[0]?.idempotency_key &&
+          event.code === "REPOSITORY_CLEANUP_PENDING",
+      )
+        ? result.rows[0]
+        : undefined;
+    });
+    assert.ok(Number(deferredCleanup.delay_ms) >= driver.maintenanceIntervalMs - 1_000);
+    assert.equal(deferredCleanup.claim_token, null);
+    assert.equal(deferredCleanup.lease_expires_at, null);
+    const { candidate: nextRevision } = await fixture.admitInitialRevision(
+      "repository-cleanup-neighbor",
+      { revision: { repositoryCredentials: candidate.repositoryCredentials } },
+    );
+    await fixture.work(nextRevision, "succeeded");
+    const scheduled = await fixture.observerPool.query(
+      "SELECT state, available_at > clock_timestamp() AS deferred FROM occ.controller_work WHERE idempotency_key = $1",
+      [deferredCleanup.idempotency_key],
+    );
+    assert.deepEqual(scheduled.rows, [{ state: "queued", deferred: true }]);
+    assert.equal(
+      (
+        await fixture.state.read((view) =>
+          view.repositorySessions.findAttempt(pendingAttempt.admissionId),
+        )
+      ).phase,
+      "closing",
+    );
+    assert.equal(
+      (
+        await fixture.observerPool.query(
+          "SELECT count(*)::integer AS count FROM occ.controller_work WHERE idempotency_key LIKE $1",
+          [`agent_revision:${pendingRevision.id}:repository_cleanup:%`],
+        )
+      ).rows[0].count,
+      1,
+    );
+    await clock.advance(3_600_001);
+    // Advance this exact retry after provider expiry instead of waiting for
+    // the real 30-second interval. The worker still claims and settles it.
+    await fixture.observerPool.query(
+      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1 AND state = 'queued'",
+      [deferredCleanup.idempotency_key],
+    );
+    const settled = await waitFor(
+      "settled provider cleanup to dispose retained evidence",
+      async () => {
+        const attempt = await fixture.state.read((view) =>
+          view.repositorySessions.findAttempt(pendingAttempt.admissionId),
+        );
+        return attempt?.phase === "disposed" ? attempt : undefined;
+      },
+    );
+    assert.equal(settled.phase, "disposed");
+    assert.equal(settled.liveRevisionId, null);
+    assert.equal(settled.deadlineWallMs, pendingAttempt.deadlineWallMs);
+    assert.deepEqual(settled.cleanupContext, pendingAttempt.cleanupContext);
+    assert.equal(provider.issuesOfTokens.length, 1, "deletion must never mint a replacement token");
+    assert.equal(
+      provider.trace.filter(
+        ({ method, target }) => method === "DELETE" && target === "/installation/token",
+      ).length,
+      1,
+      "uncertain provider retirement must not be replayed",
+    );
+  },
+  { timeout: 30_000 },
+);
 
 revisionTest(
   "credential withdrawal work revokes from the active revision without redeploying it",
@@ -2097,6 +2401,100 @@ revisionTest(
       recorded.map((withdrawal) => withdrawal?.state),
       ["pending", "pending", "pending"],
     );
+  },
+);
+
+revisionTest(
+  "Agent deploy, stop, and deletion complete as one persisted lifecycle",
+  async (fixture) => {
+    const owner = await fixture.agent("complete-lifecycle");
+    const effects = [];
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision) {
+        effects.push(`prepare:${revision.id}`);
+        return fixture.compute.prepareRevision(revision);
+      },
+      async stopRevision(revision) {
+        effects.push(`stop:${revision.id}`);
+      },
+      async retireRevision(revision) {
+        effects.push(`retire:${revision.id}`);
+      },
+      async deleteAgentRuntimeCredentials({ agent }) {
+        effects.push(`credentials:${agent.id}`);
+      },
+    });
+
+    const revision = await fixture.revision(owner, 1);
+    await fixture.work(revision, "succeeded");
+    const running = await fixture.currentAgent(owner);
+    assert.equal(running?.desiredRuntimeState, "running");
+    assert.equal(running?.activeRevisionId, revision.id);
+
+    const stop = await fixture.requestStop(owner);
+    await fixture.work(stop, "succeeded");
+    const [stopped, retainedRevision] = await fixture.state.read(async (view) =>
+      Promise.all([
+        view.agents.findAgent(fixture.namespace.id, owner.id),
+        view.revisions.findRevision(fixture.namespace.id, owner.id, revision.id),
+      ]),
+    );
+    assert.equal(stopped?.desiredRuntimeState, "stopped");
+    assert.equal(stopped?.activeRevisionId, undefined);
+    assert.equal(retainedRevision?.id, revision.id);
+
+    await fixture.requestDeletion(owner);
+    await waitFor(`Agent ${owner.id} lifecycle deletion to complete`, async () => {
+      const deleted = await fixture.currentAgent(owner);
+      return deleted === undefined ? true : undefined;
+    });
+    const [deletedRevision, deletedIdentity, remainingWork] = await Promise.all([
+      fixture.state.read((view) =>
+        view.revisions.findRevision(fixture.namespace.id, owner.id, revision.id),
+      ),
+      fixture.observerPool.query(
+        "SELECT count(*)::integer AS count FROM occ.iam_identities WHERE id = $1",
+        [owner.servicePrincipalId],
+      ),
+      fixture.observerPool.query(
+        "SELECT count(*)::integer AS count FROM occ.controller_work WHERE agent_id = $1",
+        [owner.id],
+      ),
+    ]);
+    assert.equal(deletedRevision, undefined);
+    assert.deepEqual(deletedIdentity.rows, [{ count: 0 }]);
+    assert.deepEqual(remainingWork.rows, [{ count: 0 }]);
+    assert.deepEqual(effects, [
+      `prepare:${revision.id}`,
+      `stop:${revision.id}`,
+      `retire:${revision.id}`,
+      `credentials:${owner.id}`,
+    ]);
+
+    const lifecycleAudit = await fixture.observerPool.query(
+      `SELECT action, outcome, details->>'reasonCode' AS reason_code
+       FROM occ.audit_events
+       WHERE namespace_id = $1 AND resource_id = $2
+         AND action IN (
+           'openclaw.agents.lifecycle.stop',
+           'openclaw.agents.lifecycle.delete'
+         )
+       ORDER BY occurred_at`,
+      [fixture.namespace.id, owner.id],
+    );
+    assert.deepEqual(lifecycleAudit.rows, [
+      {
+        action: "openclaw.agents.lifecycle.stop",
+        outcome: "success",
+        reason_code: "AGENT_STOPPED",
+      },
+      {
+        action: "openclaw.agents.lifecycle.delete",
+        outcome: "success",
+        reason_code: "AGENT_DELETED",
+      },
+    ]);
   },
 );
 
