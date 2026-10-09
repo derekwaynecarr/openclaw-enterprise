@@ -37,7 +37,8 @@ const INVALID_EXPORT_TARGET = Symbol("invalid package export target");
 
 type ExportTarget = URL | null | undefined | typeof INVALID_EXPORT_TARGET;
 
-// Node's default conditions for `import()` (no --conditions or --no-addons flags).
+// Node's default conditions for `import()` (no --conditions, --no-addons or
+// --no-experimental-require-module flags; the controller sets none).
 const IMPORT_CONDITIONS: ReadonlySet<string> = new Set([
   "node",
   "import",
