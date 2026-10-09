@@ -74,7 +74,8 @@
     "tests/conformance/console-api-client.test.mjs",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
-    "tests/conformance/grafana-overview-dashboard.test.mjs"
+    "tests/conformance/grafana-overview-dashboard.test.mjs",
+    "tests/conformance/split-layout-tenants.test.mjs"
   ],
   "files": [
     {
@@ -308,6 +309,9 @@
     },
     {
       "path": "tests/conformance/plugin-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/split-layout-tenants.test.mjs"
     }
   ]
 }
