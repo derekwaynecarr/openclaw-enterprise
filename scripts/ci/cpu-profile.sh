@@ -15,6 +15,13 @@ case "${1:-}" in
       done
     ) >"$dir/samples" 2>/dev/null &
     echo $! >"$dir/pid"
+    # Probe: can this kernel do bridge netfilter (k3d NetworkPolicy lanes)?
+    {
+      printf 'netfilter-probe kernel=%s before=%s ' "$(uname -r)" "$(test -e /proc/sys/net/bridge/bridge-nf-call-iptables && echo yes || echo no)"
+      # Report only: loading the module would change Docker bridge filtering for the lane.
+      printf 'module=%s builtin=%s\n' "$(modinfo -n br_netfilter 2>/dev/null || echo none)" \
+        "$(grep -s -c 'br_netfilter' "/lib/modules/$(uname -r)/modules.builtin"; true)"
+    } || true
     ;;
   mark)
     printf '%s %s\n' "${2:-phase}" "$(date +%s)" >>"$dir/marks"
