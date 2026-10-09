@@ -1098,20 +1098,35 @@ function harnessWorkspaceCategories(oauth: boolean) {
  * renamed aside, recreated by uid 1000, and its entries are renamed back. Every
  * step is a rename on one filesystem, and a retried init resumes an interrupted
  * move. An entry already present in the new directory stays aside, and is logged.
+ * A directory the tenant made read-only (chmod 0555) moves too (finding 884).
  * The move assumes no other Pod writes the claim (dedicated Harnesses with node
  * enrollment roll with Recreate).
  */
 export function harnessWorkspacePreparationScript(paths: readonly string[]): string {
   return `{
   const fs = require("node:fs");
+  const uid = process.getuid();
   const move = (from, to) => {
+    // Moving a directory to a new parent needs write on the directory itself, so an owned
+    // directory the tenant made read-only gets u+w for the rename and its mode back after
+    // (an init stopped in between leaves it owner-writable).
+    const stat = fs.lstatSync(from);
+    const locked = stat.isDirectory() && stat.uid === uid && (stat.mode & 0o200) === 0;
+    if (locked) fs.chmodSync(from, (stat.mode & 0o7777) | 0o200);
     try {
       fs.renameSync(from, to);
     } catch (error) {
-      error.message += "; uid " + process.getuid() + " cannot move " + from +
-        " (a sticky claim root or an unwritable directory); chown it to uid 1000 on the node";
+      error.message += "; uid " + uid + " cannot move " + from + (stat.uid === uid
+        ? " (owned by uid " + uid + "): make its parent directory writable by uid " + uid
+        : " (owner uid " + stat.uid + "): chown it to uid " + uid) + " on the node";
+      if (locked) {
+        try {
+          fs.chmodSync(from, stat.mode & 0o7777);
+        } catch {}
+      }
       throw error;
     }
+    if (locked) fs.chmodSync(to, stat.mode & 0o7777);
   };
   for (const path of ${JSON.stringify(paths)}) {
     const aside = path.replace(/\\/([^/]+)$/u, "/.$1.kubelet-created");
@@ -1145,6 +1160,27 @@ export function harnessWorkspacePreparationScript(paths: readonly string[]): str
     }
     fs.chmodSync(path, 0o700);
   }
+}`;
+}
+/**
+ * Init script that removes a Harness claim subdirectory. `rmSync` cannot empty a
+ * directory the tenant made read-only, so owned directories get u+rwx first
+ * (finding 884). It never follows a symbolic link.
+ */
+export function harnessStateRemovalScript(path: string): string {
+  return `{
+  const fs = require("node:fs");
+  const pending = [${JSON.stringify(path)}];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    const stat = fs.lstatSync(directory, { throwIfNoEntry: false });
+    if (!stat?.isDirectory()) continue;
+    if (stat.uid === process.getuid() && (stat.mode & 0o700) !== 0o700) {
+      fs.chmodSync(directory, (stat.mode & 0o7777) | 0o700);
+    }
+    for (const entry of fs.readdirSync(directory)) pending.push(directory + "/" + entry);
+  }
+  fs.rmSync(${JSON.stringify(path)}, { recursive: true, force: true });
 }`;
 }
 const GATEWAY_SESSION_DIRECTORY = "/home/node/.openclaw/agents/main/sessions";
@@ -2087,7 +2123,8 @@ function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): vo
 
 // OpenClaw's default Agent (the sole entry, or a named session store or system owner) keeps
 // its own workspace, while the Gateway, file transfer and workspace files address main. A
-// refusal, not a rewrite: OCC skips this on status reads.
+// refusal, not a rewrite: OCC skips this on status reads. Each refusal names the setting and
+// the rule it breaks, as requireOpenClawRoster's do.
 function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocument): void {
   const agents = asRecord(configuration.agents);
   const roster = asRecord(agents?.entries);
@@ -2095,24 +2132,35 @@ function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocum
   const defaults = asRecord(agents?.defaults);
   // OpenClaw matches normalized ids case-insensitively, as the OpenShell workspace pin does.
   const isMain = (id: unknown) => typeof id === "string" && id.trim().toLowerCase() === "main";
-  const owners = [
-    asRecord(defaults?.sessionStore)?.agentId,
-    asRecord(defaults?.systemAgent)?.agentId,
-  ];
+  for (const owner of ["sessionStore", "systemAgent"] as const) {
+    const agentId = asRecord(defaults?.[owner])?.agentId;
+    if (agentId !== undefined && !isMain(agentId)) {
+      throw new ConfigurationHarnessError(
+        `Dedicated OpenClaw serves the main Agent: set agents.defaults.${owner}.agentId to main, or remove it.`,
+      );
+    }
+  }
   const entries = Object.entries(roster ?? {});
-  // OpenClaw reads an empty roster as `{ main: {} }` unless ownership is explicit.
+  // OpenClaw reads an empty roster as `{ main: {} }` unless ownership is explicit. An explicit
+  // roster without entries has no Agent, so it fails like an empty one.
   const implicitMain = roster !== undefined && entries.length === 0 && !explicit;
-  if (
-    owners.some((owner) => owner !== undefined && !isMain(owner)) ||
-    // An explicit roster without entries has no Agent, so it fails like an empty one.
-    ((agents?.entries !== undefined || explicit) &&
-      !implicitMain &&
-      // Other spellings normalize to ids OpenClaw may match first, so keys must be canonical.
-      (entries.some(([id]) => !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id)) ||
-        !entries.some(([id]) => isMain(id))))
-  ) {
+  if ((agents?.entries === undefined && !explicit) || implicitMain) {
+    return;
+  }
+  // Other spellings normalize to ids OpenClaw may match first, so keys must be canonical.
+  const spelled = entries.find(([id]) => !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id));
+  if (spelled !== undefined) {
     throw new ConfigurationHarnessError(
-      "Dedicated OpenClaw serves the main Agent: agents.entries needs canonical keys including main, and only main may be the default, session store, or system Agent.",
+      agentEntryMessage(
+        spelled[0],
+        (path) =>
+          `Dedicated OpenClaw rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, starting with a letter or digit.`,
+      ),
+    );
+  }
+  if (!entries.some(([id]) => isMain(id))) {
+    throw new ConfigurationHarnessError(
+      "Dedicated OpenClaw serves the main Agent: add agents.entries.main, or rename an entry to main.",
     );
   }
 }
@@ -12682,12 +12730,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       )}`;
       if (oauth) {
         // An OAuth home starts without earlier history, as a new OAuth source does.
-        (initialization.args as string[])[0] += `
-require("node:fs").rmSync("/harness-workspace-state/codex-sessions", { recursive: true, force: true });`;
+        (initialization.args as string[])[0] += `\n${harnessStateRemovalScript(
+          "/harness-workspace-state/codex-sessions",
+        )}`;
       } else {
         // A revision without OAuth must not leave a personal login refreshing on the volume.
-        (initialization.args as string[])[0] += `
-require("node:fs").rmSync("/harness-workspace-state/codex-home", { recursive: true, force: true });`;
+        (initialization.args as string[])[0] += `\n${harnessStateRemovalScript(
+          "/harness-workspace-state/codex-home",
+        )}`;
       }
     }
     if (dedicated && role === "gateway") {
