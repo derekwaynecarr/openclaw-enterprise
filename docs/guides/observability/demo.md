@@ -174,6 +174,10 @@ For a custom release, read its generated Service names with
 `helm get manifest RELEASE -n NAMESPACE` before adapting the port-forward command
 below. Short DNS-label names stay unchanged; other names include the original
 release hash to fit the 63-character Service limit.
+If an upgrade changes the Loki name, update every managed or external Collector
+that saved the old address and refresh its process configuration; see
+[refresh a renamed Loki address](demo-cleanup.md#refresh-a-renamed-loki-address).
+Grafana provisioning does not update separate exporter Secrets.
 
 Services use `ClusterIP`. Prometheus reads Pod metadata, not Secrets. Grafana
 bundles plugins; startup downloads are disabled. Its disposable database is

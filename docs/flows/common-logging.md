@@ -240,6 +240,11 @@ then appends the original release hash. Ending with the hash separates these
 names from unchanged component-suffixed Service names. `templates/deployments.yaml` creates those Services;
 `templates/grafana.yaml` uses the same names in both datasource URLs.
 Deployment names, Pod selectors and discovery identity keep the full release.
+The separately configured Collector endpoint remains in its exporter Secret.
+If an upgrade renames Loki, the operator updates that endpoint and refreshes
+the Collector Pods before new records can reach Loki; the
+[recovery procedure](../guides/observability/demo-cleanup.md#refresh-a-renamed-loki-address)
+covers managed and external exporters.
 
 For the bundled Collector path, Loki retains event names and normalizes attributes
 as structured metadata. Grafana formats metadata at query time without changing
@@ -273,6 +278,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 23:11: Document renamed Loki exporter addresses and Collector refresh after demo upgrades. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 6668e2fc8477ca780b15e25a7320589a7612284f)
 
 - 2026-10-09 21:42: Bound demo Service names and keep Grafana datasource URLs aligned. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 49d1562335120b125d3f149a5a6a64a5c51577a9)
 
