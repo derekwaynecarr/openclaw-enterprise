@@ -5,7 +5,7 @@ import {
   sha256Hex,
   splitModelRef,
 } from "@openclaw-enterprise/utils";
-import { createHash, randomBytes, X509Certificate } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -3853,9 +3853,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       // Someone else's object under this name: nothing of this create's is stored.
       return;
     }
-    if (
-      existing.data?.[SERVICE_ACCOUNT_TOKEN_KEY] !== Buffer.from(accessToken).toString("base64")
-    ) {
+    const stored = Buffer.from(existing.data?.[SERVICE_ACCOUNT_TOKEN_KEY] ?? "");
+    const requested = Buffer.from(Buffer.from(accessToken).toString("base64"));
+    if (stored.length !== requested.length || !timingSafeEqual(stored, requested)) {
       // The account's Secret, but not this request's token: not this create's either.
       return;
     }

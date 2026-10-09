@@ -180,7 +180,9 @@ provider, not IAM, Compute, OCC, or the Harness.
 - Unknown Secret outcome: a failed token Secret create deletes the account-owned
   Secret holding this request's token, so issuance can be retried. If it cannot
   read or delete that Secret, it answers `503` and the leftover Secret blocks a
-  retry until an operator deletes it; the failed issuance still revokes its token.
+  retry until an operator deletes it: `service-account-` plus the first 32 hex
+  digits of the account ID's SHA-256, in the Namespace's control namespace. The
+  failed issuance still revokes its token.
 - Expired token: Execution fails closed; automated refresh and rotation are
   not implemented.
 

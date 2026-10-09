@@ -4633,9 +4633,15 @@ test("a ServiceAccount credential Secret create that applied but answered an err
 
   for (const [name, mutate] of [
     [
-      "a foreign owner",
+      "a foreign owner annotation",
       (stored) => {
         stored.metadata.annotations["openclaw.dev/service-account-id"] = "sa_another";
+      },
+    ],
+    [
+      "a foreign owner label",
+      (stored) => {
+        stored.metadata.labels["openclaw.dev/service-account"] = "sa_another";
       },
     ],
     [
@@ -4661,6 +4667,31 @@ test("a ServiceAccount credential Secret create that applied but answered an err
     await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
     assert.equal(objects.has(key), true);
     assert.deepEqual(calls.deletes, []);
+  });
+
+  await t.test("a Secret already gone at delete counts as removed", async () => {
+    const { driver, calls } = await harness({ applied: true, deleteStatus: 404 });
+    await assert.rejects(driver.storeServiceAccountCredential(input), (error) => error === dropped);
+    assert.equal(calls.deletes.length, 1);
+  });
+
+  await t.test("a Secret without a resource version is not deleted blindly", async () => {
+    const { driver, objects, key, calls } = await harness({
+      applied: true,
+      mutate: (stored) => {
+        delete stored.metadata.resourceVersion;
+      },
+    });
+    await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
+    assert.equal(objects.has(key), true);
+    assert.deepEqual(calls.deletes, []);
+  });
+
+  await t.test("a Secret changed before the delete is kept as unknown", async () => {
+    const { driver, objects, key, calls } = await harness({ applied: true, deleteStatus: 409 });
+    await assert.rejects(driver.storeServiceAccountCredential(input), unknown);
+    assert.equal(objects.has(key), true);
+    assert.equal(calls.deletes.length, 1);
   });
 
   await t.test("the cleanup delete fails: the outcome is reported as unknown", async () => {
