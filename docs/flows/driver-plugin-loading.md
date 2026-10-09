@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-09-01
-last_updated_session: codex/01a05f95-dd80-7011-990f-d1c46b5bb3cc
+updated: 2026-10-09
+last_updated_session: authoring-run/480d2d81-8f6a-43f5-854d-6ce9ee130ea5
 ---
 
 # Installation Driver Package Loading Flow
@@ -22,8 +22,7 @@ without startup YAML uses the defaults traced in [platform startup](platform-sta
 - Source:
   `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
   `apps/controller/src/composition/driver-packages.ts:loadDriverPackage`,
-  `apps/controller/src/composition/production.ts:composeProduction`, and
-  `apps/controller/src/worker.ts:ControllerWorker.start`.
+  `apps/controller/src/composition/production.ts:composeProduction`.
 - Assumptions: An operator has installed and selected the reviewed package;
   [Install Driver packages](../reference/drivers/selection.md) owns installation,
   package formats, configuration examples, private registries, and deployment.
@@ -68,7 +67,12 @@ it has no package-loading path. The
 pinning, registry, and configuration contract. TypeBox checks each selected
 Driver's closed schema before implementation-owned semantic validation;
 invalid package exports, identity, capability, or lifecycle wiring reject
-startup without fallback.
+startup without fallback. The package root export resolver follows ordered target
+arrays through the existing `import`, `node`, and `default` conditions. Invalid
+targets and unmatched conditions can select a later array entry; a matched null
+condition ends that condition branch. Once a file target is selected, resolution,
+compiled ESM checks, package containment, and import must succeed before Driver
+construction. Missing files and import failures do not select another target.
 
 For packageless Compute, the exact id `compute-ssh` selects `SshComputeDriver`
 with implementation `occ/ssh`. Every other packageless id retains Kubernetes
@@ -157,6 +161,8 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 22:04: Admit compiled Driver export target arrays through startup and preserve selected-file failure boundaries. (authoring-run/480d2d81-8f6a-43f5-854d-6ce9ee130ea5 - dc95c2261d4b46cff8aca703e13e43cdd71d153e)
 
 - 2026-09-01 19:09: Include Secret and Sandbox construction and the API-only Provider/ServiceAccount branch in the current loading trace. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
 - 2026-08-28 17:58: Updated moved feature-reference links for the documentation organization. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)

@@ -121,6 +121,11 @@ A standard npm package manifest provides identity and an ESM entry point:
 }
 ```
 
+The root export also accepts ordered target arrays under `import`, `node`, or
+`default`. Invalid targets and unmatched conditions permit another array entry.
+A selected missing file or failed import stops startup. Conditional keys retain
+their priority order.
+
 The entry point exports the existing Driver contract, not a separate plugin
 manifest or public plugin SDK. The controller validates its closed JSON Schema
 with TypeBox, then applies the Driver's own semantic validation:
