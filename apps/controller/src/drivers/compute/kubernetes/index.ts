@@ -2040,9 +2040,9 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
 
 // Every topology here (embedded OpenClaw, dedicated OpenClaw or Codex) runs the pinned OpenClaw
 // Gateway on the admitted document. Its config validation rejects these roster shapes and the
-// Gateway then exits at startup (EX_CONFIG) instead of serving, so refuse them here. It drops
-// only an empty agents.list beside an implicit empty roster. A refusal, not a rewrite: OCC
-// skips this on status reads.
+// Gateway then exits at startup (EX_CONFIG) instead of serving, so refuse them here. The
+// Gateway drops only an empty agents.list beside an implicit empty roster, so that one passes.
+// A refusal, not a rewrite: OCC skips this on status reads.
 function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): void {
   // Each refusal names the setting and the rule it breaks. Keys come from the caller's own
   // Configuration; agentEntryMessage quotes and bounds them.
@@ -2124,11 +2124,11 @@ function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): vo
 // OpenClaw's default Agent (the sole entry, or a named session store or system owner) keeps
 // its own workspace, while the Gateway, file transfer and workspace files address main. A
 // refusal, not a rewrite: OCC skips this on status reads. Each refusal names the setting and
-// the rule it breaks, as requireOpenClawRoster's do.
+// the rule it breaks, as requireOpenClawRoster's do. It runs after requireOpenClawRoster, so
+// agents and agents.entries are objects when present, and an explicit roster has at least one
+// entry.
 function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocument): void {
   const agents = asRecord(configuration.agents);
-  const roster = asRecord(agents?.entries);
-  const explicit = agents?.ownership === "explicit";
   const defaults = asRecord(agents?.defaults);
   // OpenClaw matches normalized ids case-insensitively, as the OpenShell workspace pin does.
   const isMain = (id: unknown) => typeof id === "string" && id.trim().toLowerCase() === "main";
@@ -2140,11 +2140,10 @@ function requireNativeMainAgentDefault(configuration: OpenClawConfigurationDocum
       );
     }
   }
-  const entries = Object.entries(roster ?? {});
-  // OpenClaw reads an empty roster as `{ main: {} }` unless ownership is explicit. An explicit
-  // roster without entries has no Agent, so it fails like an empty one.
-  const implicitMain = roster !== undefined && entries.length === 0 && !explicit;
-  if ((agents?.entries === undefined && !explicit) || implicitMain) {
+  const entries = Object.entries(asRecord(agents?.entries) ?? {});
+  // OpenClaw reads a missing or empty roster as `{ main: {} }` unless ownership is explicit,
+  // which requireOpenClawRoster refuses.
+  if (entries.length === 0) {
     return;
   }
   // Other spellings normalize to ids OpenClaw may match first, so keys must be canonical.
