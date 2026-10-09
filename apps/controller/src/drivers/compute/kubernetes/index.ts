@@ -1206,13 +1206,21 @@ const RESOURCE_REQUIREMENTS_SCHEMA = Object.freeze({
     },
   },
 });
+const POD_LABEL_VALUE_PATTERN = "^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)?$";
+const POD_LABEL_VALUE = new RegExp(POD_LABEL_VALUE_PATTERN);
+const POD_LABELS_SCHEMA = {
+  type: "object",
+  minProperties: 1,
+  additionalProperties: { type: "string", maxLength: 63, pattern: POD_LABEL_VALUE_PATTERN },
+};
+
 const WORKLOAD_PEER_SCHEMA = Object.freeze({
   type: "object",
   required: ["namespace", "podLabels"],
   additionalProperties: false,
   properties: {
     namespace: { type: "string" },
-    podLabels: { type: "object", additionalProperties: { type: "string" } },
+    podLabels: POD_LABELS_SCHEMA,
   },
 });
 
@@ -1392,6 +1400,23 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string): void 
     required(key, `${description} label key`);
     if (typeof label !== "string") {
       throw new ConfigurationFailure(`${description} labels must be strings.`);
+    }
+    const parts = key.split("/");
+    const name = parts.at(-1) ?? "";
+    const prefix = parts.length === 2 ? parts[0] : undefined;
+    if (
+      parts.length > 2 ||
+      name.length === 0 ||
+      name.length > 63 ||
+      !POD_LABEL_VALUE.test(name) ||
+      (prefix !== undefined && !isKubernetesResourceName(prefix))
+    ) {
+      throw new ConfigurationFailure(`${description} label keys must be Kubernetes label keys.`);
+    }
+    if (label.length > 63 || !POD_LABEL_VALUE.test(label)) {
+      throw new ConfigurationFailure(
+        `${description} label values must be Kubernetes label values.`,
+      );
     }
   }
 }
@@ -2416,7 +2441,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 properties: {
                   hostname: { type: "string" },
                   namespace: { type: "string" },
-                  podLabels: { type: "object", additionalProperties: { type: "string" } },
+                  podLabels: POD_LABELS_SCHEMA,
                   port: { type: "integer" },
                 },
               },
