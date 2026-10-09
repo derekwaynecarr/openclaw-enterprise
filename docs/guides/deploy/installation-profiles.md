@@ -280,8 +280,9 @@ Skip both configuration-generation branches and continue at the
 The runbook covers Secret creation, Helm installation, bootstrap key retrieval,
 and authenticated API verification.
 
-`controlPlane.nodeSelector` requires Kubernetes label keys and nonempty label
-values of at most 63 characters, matching Helm and bootstrap-volume preparation.
+`controlPlane.nodeSelector` requires Kubernetes label keys and label values
+that are empty or a label name of at most 63 characters, matching Helm and
+bootstrap-volume preparation.
 Preflight rejects invalid placement labels before writing deployment files.
 
 If rendering fails or either YAML file is absent, stop and fix the input. Do not

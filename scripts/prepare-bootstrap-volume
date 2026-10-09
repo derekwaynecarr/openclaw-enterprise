@@ -70,10 +70,10 @@ is_label_key() {
   is_label_name "$value"
 }
 
+# Kubernetes allows an empty label value, as in node-role.kubernetes.io/infra=.
 is_label_value() {
   local value=$1
-  [[ -n "$value" ]] || return 1
-  is_label_name "$value"
+  [[ -z "$value" ]] || is_label_name "$value"
 }
 
 immutable_image() {
@@ -88,7 +88,7 @@ add_node_selector() {
   key=${selector%%=*}
   value=${selector#*=}
   is_label_key "$key" || die "--node-selector key must be a Kubernetes label key."
-  is_label_value "$value" || die "--node-selector value must be a nonempty Kubernetes label value."
+  is_label_value "$value" || die "--node-selector value must be a Kubernetes label value."
   if ((${#node_selectors[@]})); then
     for existing in "${node_selectors[@]}"; do
       [[ "${existing%%=*}" != "$key" ]] || die "--node-selector repeats key $key."

@@ -542,6 +542,7 @@ test("label values that YAML 1.1 would retype stay strings", () => {
     hex: "0x1f",
     octal: "0o17",
     yes: "keep",
+    "node-role.kubernetes.io/infra": "",
   };
   const input = baseInput();
   input.controlPlane.nodeSelector = labels;
@@ -569,7 +570,7 @@ test("Helm renders YAML 1.1 lookalike label values as strings", { skip: helmSkip
   assertPreflightFailure(
     "openclaw",
     rejected,
-    /controlPlane\.nodeSelector values must be nonempty Kubernetes label values/,
+    /controlPlane\.nodeSelector values must be Kubernetes label values/,
   );
 });
 

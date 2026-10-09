@@ -193,6 +193,31 @@ test("prepare-bootstrap-volume requires explicit cluster selectors and immutable
     ),
     /--node-selector must use KEY=VALUE/,
   );
+  // Empty values are allowed; nonempty values still follow the label-value rule.
+  for (const selector of ["pool=-a", "pool=a-", "pool=a b", `pool=${"a".repeat(64)}`]) {
+    await assert.rejects(
+      execute(
+        helper,
+        [
+          "--kubeconfig",
+          kubeconfig,
+          "--context",
+          "ctx",
+          "--namespace",
+          "openclaw-system",
+          "--claim",
+          "claim",
+          "--image",
+          image,
+          "--node-selector",
+          selector,
+        ],
+        base,
+      ),
+      /--node-selector value must be a Kubernetes label value/,
+      selector,
+    );
+  }
 });
 
 test("prepare-bootstrap-volume creates a hardened preparation Pod and removes it only after verified success", async (t) => {
@@ -418,11 +443,17 @@ test("prepare-bootstrap-volume preserves YAML-scalar node selector keys and valu
       "--image",
       image,
       ...keys.flatMap((key) => ["--node-selector", `${key}=${key}`]),
+      // Kubernetes allows empty label values, as the chart does.
+      "--node-selector",
+      "node-role.kubernetes.io/infra=",
     ],
     { cwd: repository, env: { PATH: `${directory}:${process.env.PATH}` } },
   );
   const manifest = loadYaml(await readFile(manifestPath, "utf8"));
-  assert.deepEqual(manifest.spec.nodeSelector, Object.fromEntries(keys.map((key) => [key, key])));
+  assert.deepEqual(manifest.spec.nodeSelector, {
+    ...Object.fromEntries(keys.map((key) => [key, key])),
+    "node-role.kubernetes.io/infra": "",
+  });
 });
 
 test("prepare-bootstrap-volume refuses non-ASCII names under a UTF-8 locale", async (t) => {
@@ -471,7 +502,7 @@ test("prepare-bootstrap-volume refuses non-ASCII names under a UTF-8 locale", as
       { image: `registry.example.invalid/controller@sha256:${"é".repeat(64)}` },
       /--image must be an approved immutable SHA-256 image reference/,
     ],
-    [{ selector: "pool=ä" }, /--node-selector value must be a nonempty Kubernetes label value/],
+    [{ selector: "pool=ä" }, /--node-selector value must be a Kubernetes label value/],
     [{ selector: "é.example/pool=a" }, /--node-selector key must be a Kubernetes label key/],
   ]) {
     await assert.rejects(execute(helper, argumentsFor(overrides), base), (error) => {
