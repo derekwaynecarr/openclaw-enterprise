@@ -108,9 +108,10 @@ jobs:
       # the seccomp profile.
       # Runners: the k3d fixture and observability lanes need ubuntu-22.04,
       # whose kernel has bridge netfilter for the NetworkPolicy proofs. The
-      # blacksmith 8vcpu label exposes 2 CPUs to the job and 16vcpu exposes 4;
-      # lanes whose tests keep more than 2 CPUs busy use 16vcpu. A label no
-      # runner serves leaves the job queued, so use only labels in use here.
+      # other lanes use blacksmith 16vcpu, which exposes 4 CPUs to the job
+      # (8vcpu exposes 2) and rarely waits for a runner (8vcpu jobs often
+      # wait minutes). A label no runner serves leaves the job queued, so use
+      # only labels already in use here.
       - id: matrix
         name: Build lane matrix
         env:
@@ -122,20 +123,20 @@ jobs:
               {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "postgres", "title": "PostgreSQL Migrations", "profile": "postgres", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "postgres-platform", "title": "PostgreSQL Platform", "profile": "postgres", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "postgres", "title": "PostgreSQL Migrations", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "postgres-platform", "title": "PostgreSQL Platform", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "images-model-probes", "title": "Image Model Probes", "profile": "images", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "images-model-probes", "title": "Image Model Probes", "profile": "images", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
               {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "ubuntu-22.04"},
-              {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-8vcpu-ubuntu-2404"},
-              {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-8vcpu-ubuntu-2404"},
+              {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-platform", "title": "Repository Credentials Platform", "profile": "k3d", "timeout": 60, "runner": "blacksmith-16vcpu-ubuntu-2404"}
             ]
         run: |
@@ -224,7 +225,8 @@ jobs:
 
   audit:
     name: Suite Audit
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    # 8vcpu jobs often wait minutes for a runner; 16vcpu rarely waits.
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -247,7 +249,7 @@ jobs:
     # test fixture, so they run beside the test lanes in every mode instead of
     # before Checks and Conformance 1's tests (about 40 s of its critical path).
     if: ${{ needs.impact.outputs.mode == 'docs' || needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
