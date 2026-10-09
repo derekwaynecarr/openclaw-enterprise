@@ -1781,7 +1781,7 @@ test("the chart maps exactly the characters the API's URL parser maps to IPv4 sy
     let mapped;
     try {
       const { hostname } = new URL(`https://q${character}q.example`);
-      mapped = /^q([\x00-\x7f]*)q\.example$/.exec(hostname)?.[1];
+      mapped = /^q([ -~]*)q\.example$/.exec(hostname)?.[1];
     } catch {
       mapped = undefined;
     }
