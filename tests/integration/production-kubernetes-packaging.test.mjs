@@ -308,69 +308,6 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
 });
 
 test(
-  "the chart refuses tenant Gateway ports Compute refuses for the runtime status port",
-  tooling,
-  async () => {
-    const sandboxValues = {
-      ...gatewayRoutingValues,
-      "gatewayRouting.sandbox.enabled": "true",
-      "gatewayRouting.sandbox.domain": "previews.example.test",
-      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
-      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-        "public-ingress",
-    };
-    const compute = (gatewayPort, sandbox) => {
-      const options = conformanceKubernetesOptions({
-        gatewayTrustedProxyCidrs: ["10.0.0.0/8"],
-        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-      });
-      // Routed Compute takes no direct gateway clients.
-      const { gatewayClients, ...network } = options.network;
-      return createKubernetesComputeDriver({
-        ...options,
-        network: { ...network, gatewayPort },
-        gatewayRouting: {
-          gatewayName: "oce-agent-gateways",
-          gatewayNamespace: "openclaw-system",
-          envoyNamespace: "envoy-gateway-system",
-          ...(sandbox ? { sandbox: { domain: "previews.example.test" } } : {}),
-        },
-      });
-    };
-    // tenantGatewayPort must equal Compute's network.gatewayPort, so Helm refuses exactly
-    // what controller startup refuses instead of installing a controller that cannot start.
-    for (const [gatewayPort, sandbox, refused] of [
-      [PLUGIN_RUNTIME_STATUS_PORT, false, true],
-      [PLUGIN_RUNTIME_STATUS_PORT, true, true],
-      [PLUGIN_RUNTIME_STATUS_PORT - 1, true, true],
-      [PLUGIN_RUNTIME_STATUS_PORT - 1, false, false],
-      [PLUGIN_RUNTIME_STATUS_PORT + 1, true, false],
-      [8080, true, false],
-    ]) {
-      const row = JSON.stringify({ gatewayPort, sandbox });
-      const chartValues = {
-        ...(sandbox ? sandboxValues : gatewayRoutingValues),
-        "gatewayRouting.tenantGatewayPort": String(gatewayPort),
-      };
-      if (refused) {
-        assert.throws(() => compute(gatewayPort, sandbox), /reserved runtime status port/, row);
-        await assert.rejects(
-          render(chartValues),
-          ({ code, stderr }) =>
-            code !== 0 &&
-            stderr.includes("gatewayRouting.tenantGatewayPort") &&
-            stderr.includes(`reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}`),
-          row,
-        );
-      } else {
-        assert.doesNotThrow(() => compute(gatewayPort, sandbox), row);
-        await render(chartValues);
-      }
-    }
-  },
-);
-
-test(
   "gateway routing refuses fractional YAML ports before emitting resources",
   tooling,
   async (t) => {
@@ -473,6 +410,69 @@ function chartAllowsIngress(objects, destination, source, port, protocol = "TCP"
     )
   );
 }
+
+test(
+  "the chart refuses tenant Gateway ports Compute refuses for the runtime status port",
+  tooling,
+  async () => {
+    const sandboxValues = {
+      ...gatewayRoutingValues,
+      "gatewayRouting.sandbox.enabled": "true",
+      "gatewayRouting.sandbox.domain": "previews.example.test",
+      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
+      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "public-ingress",
+    };
+    const compute = (gatewayPort, sandbox) => {
+      const options = conformanceKubernetesOptions({
+        gatewayTrustedProxyCidrs: ["10.0.0.0/8"],
+        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      });
+      // Routed Compute takes no direct gateway clients.
+      const { gatewayClients, ...network } = options.network;
+      return createKubernetesComputeDriver({
+        ...options,
+        network: { ...network, gatewayPort },
+        gatewayRouting: {
+          gatewayName: "oce-agent-gateways",
+          gatewayNamespace: "openclaw-system",
+          envoyNamespace: "envoy-gateway-system",
+          ...(sandbox ? { sandbox: { domain: "previews.example.test" } } : {}),
+        },
+      });
+    };
+    // tenantGatewayPort must equal Compute's network.gatewayPort, so Helm refuses exactly
+    // what controller startup refuses instead of installing a controller that cannot start.
+    for (const [gatewayPort, sandbox, refused] of [
+      [PLUGIN_RUNTIME_STATUS_PORT, false, true],
+      [PLUGIN_RUNTIME_STATUS_PORT, true, true],
+      [PLUGIN_RUNTIME_STATUS_PORT - 1, true, true],
+      [PLUGIN_RUNTIME_STATUS_PORT - 1, false, false],
+      [PLUGIN_RUNTIME_STATUS_PORT + 1, true, false],
+      [8080, true, false],
+    ]) {
+      const row = JSON.stringify({ gatewayPort, sandbox });
+      const chartValues = {
+        ...(sandbox ? sandboxValues : gatewayRoutingValues),
+        "gatewayRouting.tenantGatewayPort": String(gatewayPort),
+      };
+      if (refused) {
+        assert.throws(() => compute(gatewayPort, sandbox), /reserved runtime status port/, row);
+        await assert.rejects(
+          render(chartValues),
+          ({ code, stderr }) =>
+            code !== 0 &&
+            stderr.includes("gatewayRouting.tenantGatewayPort") &&
+            stderr.includes(`reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}`),
+          row,
+        );
+      } else {
+        assert.doesNotThrow(() => compute(gatewayPort, sandbox), row);
+        await render(chartValues);
+      }
+    }
+  },
+);
 
 test(
   "two-cluster packaging separates remote API identities without optional services",
