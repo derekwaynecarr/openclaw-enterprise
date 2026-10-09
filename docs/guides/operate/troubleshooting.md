@@ -38,7 +38,9 @@ Both local k3d profiles start their node with `IPTABLES_MODE=legacy`. A host who
 Docker uses nftables never loads the legacy netfilter modules, and the node cannot
 load them itself. kube-proxy then exits with
 `can't initialize iptables table 'nat': Table does not exist`, K3s shuts down, and
-cluster creation fails about ten minutes later with `k3d failed: exit status 1`.
+cluster creation fails when the startup timeout expires with
+`k3d failed: exit status 1`: ten minutes by default for the Kubernetes-only
+profile, five for the Compose profile.
 
 In a second terminal, while that wait is still running, read the node log.
 `<cluster>` is the cluster name from the startup output.
