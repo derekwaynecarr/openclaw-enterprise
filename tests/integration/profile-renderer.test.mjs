@@ -1467,3 +1467,21 @@ test("profiles refuse ChatGPT credential lifetimes the API refuses", () => {
     /codex.managedServiceAccounts.credentialTtlSeconds must be an integer from 1 through 2592000/,
   );
 });
+
+test("profiles refuse administrator emails the bootstrap Job refuses", () => {
+  const accepted = render(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...baseInput().controlPlane, adminEmail: " Admin@Example.invalid " },
+    }),
+  );
+  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+  assert.match(accepted.values, /adminEmail: " Admin@Example.invalid "/);
+  for (const adminEmail of ["not-an-email", "admin@example", "a @b.c"]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ controlPlane: { ...baseInput().controlPlane, adminEmail } }),
+      /controlPlane.adminEmail must be a valid administrator email/,
+    );
+  }
+});
