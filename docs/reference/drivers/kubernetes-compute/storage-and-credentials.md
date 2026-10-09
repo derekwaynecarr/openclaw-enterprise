@@ -215,7 +215,10 @@ There is no Gateway Secret mirror.
 
 New credentials use `transport-<agent-hash>` (configured prefix) with only
 `app-server-token`, and `gateway-password-<agent-hash>` with only
-`gateway-password`, in either execution mode. Mode changes preserve these sources.
+`gateway-password`, in either execution mode. The hash is 12 hexadecimal
+characters. Startup refuses a prefix when `<prefix>-<hash>` is not a DNS-safe
+Kubernetes resource name, the same check credential provisioning already applies.
+Mode changes preserve these sources.
 Legacy combined transport Secrets remain readable. Before rendering new workloads,
 Compute copies their password into an owned separate source; the legacy Secret
 survives for older Gateway Pods. Conflicting password sources fail closed.
