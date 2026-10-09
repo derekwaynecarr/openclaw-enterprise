@@ -557,8 +557,9 @@ const timeoutGraceMs = 5_000;
 const liveGroups = new Set();
 
 function killGroup(pgid, signal) {
-  // Only a group this runner created: a pid from its own spawn, never 0 or 1,
-  // which process.kill would turn into this runner's own group or every process.
+  // Membership is the real guard: only a group this runner spawned and whose
+  // leader has not exited yet. Never 0 or 1, which process.kill would turn into
+  // this runner's own group or every process.
   if (!liveGroups.has(pgid) || !Number.isSafeInteger(pgid) || pgid <= 1) {
     return;
   }
@@ -572,8 +573,10 @@ function killGroup(pgid, signal) {
 const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"];
 
 function forwardSignal(signal) {
+  // This runner ends at once, so nothing would follow up on a file that ignores
+  // the signal, and nothing reads the runners' reports any more.
   for (const pgid of liveGroups) {
-    killGroup(pgid, signal);
+    killGroup(pgid, "SIGKILL");
   }
   for (const other of forwardedSignals) {
     process.removeListener(other, forwardSignal);
@@ -602,10 +605,12 @@ function addLiveGroup(pgid) {
 // the pipes (after timeoutGraceMs for a timeout), so a grandchild holding them
 // cannot keep the file running. Child stderr is not retained.
 //
-// The Node test runner leads its own process group. SIGTERM reaches only the runner,
-// which reports the interrupted tests and exits, but can leave the isolated test-file
-// child (and anything it started) running. So once the runner has exited, or the
-// grace period is over, the whole group gets SIGKILL.
+// The Node test runner leads its own process group. The timeout's SIGTERM reaches
+// only the runner, which reports the interrupted tests and exits, but can leave the
+// isolated test-file child (and anything it started) running. So the whole group
+// gets SIGKILL once the grace period is over, and whenever the runner exits:
+// anything still in its group then has outlived its file. ENOBUFS discards the
+// rest of the output, so it kills the group at once.
 function runNode(args, { cwd, env, timeout }) {
   return new Promise((resolvePromise) => {
     const chunks = [];
@@ -623,11 +628,6 @@ function runNode(args, { cwd, env, timeout }) {
     if (pgid !== undefined) {
       addLiveGroup(pgid);
     }
-    const killStoppedGroup = () => {
-      if (error !== undefined) {
-        killGroup(pgid, "SIGKILL");
-      }
-    };
     const closePipes = () => {
       child.stdout.destroy();
       child.stderr.destroy();
@@ -635,14 +635,14 @@ function runNode(args, { cwd, env, timeout }) {
     const stop = (code) => {
       if (error === undefined) {
         error = Object.assign(new Error(`child ${code}`), { code });
-        child.kill("SIGTERM");
         if (code === "ETIMEDOUT") {
+          child.kill("SIGTERM");
           graceTimer = setTimeout(() => {
-            killStoppedGroup();
+            killGroup(pgid, "SIGKILL");
             closePipes();
           }, timeoutGraceMs);
         } else {
-          killStoppedGroup();
+          killGroup(pgid, "SIGKILL");
           closePipes();
         }
       } else if (code === "ENOBUFS") {
@@ -684,7 +684,7 @@ function runNode(args, { cwd, env, timeout }) {
     };
     child.on("exit", () => {
       // The runner has reported; whatever it left in its group goes now.
-      killStoppedGroup();
+      killGroup(pgid, "SIGKILL");
       liveGroups.delete(pgid);
     });
     child.on("error", (spawnError) => {

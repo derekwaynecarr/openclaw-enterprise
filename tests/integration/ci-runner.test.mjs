@@ -613,7 +613,7 @@ test(
     // Never leave the fixture's processes behind, whatever the outcome: only the exact
     // pids the fixture recorded, still in the fixture's group, never a group.
     t.after(() => {
-      for (const pid of [pids?.file, pids?.grandchild]) {
+      for (const pid of [pids?.runner, pids?.file, pids?.grandchild]) {
         if (Number.isSafeInteger(pid) && pid > 1 && procStat(pid)?.pgid === pids.pgid) {
           try {
             process.kill(pid, "SIGKILL");
@@ -638,7 +638,7 @@ test(
         "--results",
         join(root, "results/orphan.json"),
       ],
-      { CI_RUNNER_TEST_TIMEOUT_MS: "4000", CI_RUNNER_ORPHAN_RECORD: recordPath },
+      { CI_RUNNER_TEST_TIMEOUT_MS: "5000", CI_RUNNER_ORPHAN_RECORD: recordPath },
     );
 
     assert.equal(result.status, 1);
@@ -646,7 +646,7 @@ test(
     // The timeout record still comes from the runner's reporter before the group dies.
     const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
     assert.equal(record.reason, "timeout");
-    assert.equal(record.timeoutMs, 4000);
+    assert.equal(record.timeoutMs, 5000);
     assert.deepEqual(record.interruptedTests, [{ name: "outlives its runner", line: 4 }]);
     assert.deepEqual(record.output.lines, ["stdout: waiting with SIGTERM ignored"]);
     // Killed processes are reaped by their new parent asynchronously; a zombie is gone.
