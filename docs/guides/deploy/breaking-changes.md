@@ -12,10 +12,21 @@ real Installation.
 
 ## 2026-10-09: sandbox domains longer than 214 characters are refused
 
-Helm and the controller now refuse a `gatewayRouting.sandbox.domain` over 214
-characters, so each dedicated Agent hostname (`agent-<32 hex>.<domain>`) fits
-the 253-character limit. Such Installations could not route dedicated Agent
-previews anyway; pick a shorter domain and wildcard certificate, then upgrade.
+**What breaks.** Since #1823, Helm refuses a `gatewayRouting.sandbox.domain`
+over 214 characters (`must not exceed 214 characters, leaving room for the
+agent-<32 hex>. prefix`), and the controller refuses to start with
+`Sandbox domain must not exceed 214 characters`. Each dedicated Agent hostname,
+`agent-<32 hex>.<domain>`, must fit the 253-character Gateway API limit.
+
+**Who is affected.** Installations with sandbox routing and a 215-253 character
+domain. Their dedicated Agent preview routes were already refused at deploy.
+
+**How to tell.**
+`helm get values <release> -o json | jq '.gatewayRouting.sandbox.domain // "" | length'`
+prints more than 214.
+
+**Steps.** Pick a shorter preview domain, issue its wildcard certificate and
+DNS, set the new domain, then upgrade.
 
 ## 2026-10-07: migration 0049 refuses managed ChatGPT service-account Agents
 
