@@ -274,7 +274,13 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
       .spec.listeners.find((item) => item.name === "sandbox").hostname,
     `*.${longestDomain}`,
   );
-  for (const domain of ["a..b.com", "example.com-", "example.-com", `${"a".repeat(64)}.test`]) {
+  for (const domain of [
+    "a..b.com",
+    "example.com-",
+    "example.-com",
+    `${"a".repeat(64)}.test`,
+    "localhost",
+  ]) {
     await assert.rejects(
       render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
       /must be a DNS hostname/,

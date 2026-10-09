@@ -3070,7 +3070,7 @@ test("sandbox routing keeps generated HTML off the administrative origin and bac
   );
 });
 
-test("sandbox routing caps the domain so dedicated Agent hostnames fit 253 characters", () => {
+test("sandbox routing caps the domain length and requires two labels", () => {
   const label = "a".repeat(63);
   const sandboxDriver = (domain) =>
     createKubernetesComputeDriver(
@@ -3097,6 +3097,13 @@ test("sandbox routing caps the domain so dedicated Agent hostnames fit 253 chara
     });
   }
   assert.throws(() => sandboxDriver("a..b.test"), /Sandbox domain must be a DNS hostname/);
+  // The chart requires a dot too; a single label could never get a usable wildcard certificate.
+  for (const domain of ["localhost", "previews", "a".repeat(63)]) {
+    assert.throws(() => sandboxDriver(domain), {
+      message: "Sandbox domain must have at least two DNS labels, such as previews.example.com.",
+    });
+  }
+  assert.doesNotThrow(() => sandboxDriver("previews.localhost"));
 });
 
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {
