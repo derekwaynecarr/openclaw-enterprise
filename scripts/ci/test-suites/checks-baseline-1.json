@@ -27,6 +27,7 @@
     "tests/integration/device-authorization-api.test.mjs",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.mjs",
+    "tests/integration/profile-preflight-chart-parity.test.mjs",
     "tests/conformance/runtime-logs-content.test.mjs",
     "tests/conformance/node-enrollment-client.test.mjs",
     "tests/integration/startup-ipv6-loopback.test.mjs",
@@ -223,6 +224,10 @@
     {
       "path": "tests/integration/profile-renderer.test.mjs",
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
+    },
+    {
+      "path": "tests/integration/profile-preflight-chart-parity.test.mjs",
+      "expectedTests": ["trusted proxy CIDRs get the same verdict from the preflight and the chart"]
     },
     {
       "path": "tests/integration/bootstrap-output.test.mjs"

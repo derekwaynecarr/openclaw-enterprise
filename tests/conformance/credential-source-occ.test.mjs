@@ -1137,10 +1137,14 @@ test("withdrawal is recorded for the active revision and queued once, and the re
     }),
     ScopeViolationError,
   );
-  // A withdrawn source stays referenced by the active revision until a redeploy replaces it.
+  // A withdrawn source stays referenced by the active revision until a redeploy replaces it,
+  // and that reference, not the queued withdrawal, is what the refusal names.
   await assert.rejects(
     controller.deleteCredentialSource(administrator, namespace.id, source.id),
-    ResourceConflictError,
+    (error) =>
+      error instanceof ResourceConflictError &&
+      error.name === "ResourceStateConflictError" &&
+      error.message.startsWith("An Agent, active revision, or pending deployment"),
   );
 
   // A later deployment's pending withdrawal with no attempt outstanding, as exhausted attempts

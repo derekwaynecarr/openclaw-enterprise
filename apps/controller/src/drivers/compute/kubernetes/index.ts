@@ -97,6 +97,7 @@ import {
   agentEntryMessage,
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
+  CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -1500,6 +1501,26 @@ function validateDnsHostname(value: string, description: string): void {
   }
 }
 
+// Dedicated Agent sandbox routes use agent-<32 hex>.<domain>; the 39-character prefix must
+// still fit the Gateway API Hostname limit of 253, so the domain itself stops at 214.
+const SANDBOX_DOMAIN_MAX_LENGTH = 253 - "agent-.".length - 32;
+
+function validateSandboxDomain(value: string): void {
+  validateDnsHostname(value, "Sandbox domain");
+  // Like the chart, require two labels: browsers and Node refuse a wildcard certificate
+  // directly under a single label (*.localhost), so such a domain could never serve previews.
+  if (!value.includes(".")) {
+    throw new ConfigurationFailure(
+      "Sandbox domain must have at least two DNS labels, such as previews.example.com.",
+    );
+  }
+  if (value.length > SANDBOX_DOMAIN_MAX_LENGTH) {
+    throw new ConfigurationFailure(
+      `Sandbox domain must not exceed ${SANDBOX_DOMAIN_MAX_LENGTH} characters, leaving room for the agent-<32 hex>. prefix of dedicated Agent hostnames.`,
+    );
+  }
+}
+
 function validateKubernetesResourceName(value: string, description: string): void {
   if (
     value.length > 253 ||
@@ -2709,7 +2730,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       validatePort(routing.envoyHttpsTargetPort ?? 10443, "Envoy HTTPS target port");
       if (routing.sandbox !== undefined) {
-        validateDnsHostname(required(routing.sandbox.domain, "Sandbox domain"), "Sandbox domain");
+        validateSandboxDomain(required(routing.sandbox.domain, "Sandbox domain"));
         validatePort(routing.sandbox.publicPort ?? 443, "Public sandbox port");
         validatePort(options.network.gatewayPort + 1, "Gateway sandbox port");
         if (options.runtime === undefined) {
@@ -5813,13 +5834,39 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Revokes one credential source from the revision's paired Sandbox. The Sandbox identity is
    * derived exactly as provisioning created it; a missing Namespace or Sandbox has nothing left
-   * to revoke.
+   * to revoke. A configuration that cannot reach the Sandbox, or an object this Driver does
+   * not own, is a CredentialWithdrawalRefusedError: retrying cannot change it.
    */
   async withdrawCredentialSource(
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
     options: { readonly recheck?: boolean } = {},
+  ): Promise<CredentialAttachmentStatus> {
+    try {
+      return await this.withdrawSandboxCredentialSource(revision, source, signal, options);
+    } catch (error) {
+      if (error instanceof ConfigurationFailure || error instanceof ConfigurationHarnessError) {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+          error.message,
+        );
+      }
+      if (error instanceof OwnershipFailure) {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+          error.message,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async withdrawSandboxCredentialSource(
+    revision: Readonly<AgentRevision>,
+    source: Readonly<CredentialSource>,
+    signal: AbortSignal,
+    options: { readonly recheck?: boolean },
   ): Promise<CredentialAttachmentStatus> {
     if (
       revision.compute.id !== this.id ||
