@@ -1747,6 +1747,29 @@ test("the chart refuses repository backend IDs the controller refuses", tooling,
       JSON.stringify(backendId),
     );
   }
+  await assert.rejects(
+    render(repositoryCredentialValues, {
+      strings: { "repositoryCredentials.backendId": "😀".repeat(101) },
+    }),
+    /repositoryCredentials\.backendId must fit in 200 UTF-16 code units for a GitHub Backend, because repository bindings store it under that bound/,
+    "101 emoji",
+  );
+  for (const backendId of ["github-primary", "😀".repeat(100)]) {
+    const objects = await resources(
+      (
+        await render(repositoryCredentialValues, {
+          strings: { "repositoryCredentials.backendId": backendId },
+        })
+      ).stdout,
+    );
+    const broker = objects
+      .find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "worker",
+      )
+      .spec.template.spec.containers.find(({ name }) => name === "repository-credentials");
+    assert.equal(broker.args[broker.args.indexOf("--backend-id") + 1], backendId, backendId);
+  }
 });
 
 test("the chart refuses installation names the bootstrap Job refuses", tooling, async () => {
