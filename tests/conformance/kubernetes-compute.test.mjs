@@ -4716,11 +4716,14 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
     credentialGatewayDriver,
   });
   withdrawals.length = 0;
-  await assert.rejects(unaddressable.withdrawCredentialSource(revision, source, signal), (error) => {
-    assert.ok(error instanceof CredentialWithdrawalRefusedError);
-    assert.equal(error.code, "CREDENTIAL_WITHDRAWAL_MISCONFIGURED");
-    return true;
-  });
+  await assert.rejects(
+    unaddressable.withdrawCredentialSource(revision, source, signal),
+    (error) => {
+      assert.ok(error instanceof CredentialWithdrawalRefusedError);
+      assert.equal(error.code, "CREDENTIAL_WITHDRAWAL_MISCONFIGURED");
+      return true;
+    },
+  );
   assert.equal(withdrawals.length, 0);
 
   // Without the Namespace there is no Sandbox left to revoke, and the gateway is not called.

@@ -979,6 +979,11 @@ test(
   "a replay during a running attempt takes over a withdrawal it denied, and the attempt retries instead of failing",
   requiresPostgres,
   async (context) => {
+    // Registered before the fixture's cleanup so a failed assertion cannot leave the worker's
+    // stop waiting on the held gateway call.
+    const gatewayCall = Promise.withResolvers();
+    const gatewayReleased = Promise.withResolvers();
+    context.after(() => gatewayReleased.resolve());
     const fixture = await setup(context, { maxAttempts: 2 });
     const owner = await fixture.agent("withdraw-replay-running", {
       auth: "credential_source",
@@ -987,9 +992,6 @@ test(
     const active = await fixture.revision(owner, 1);
     const [allowed, deniedSource] = toolSources(owner).map(({ sourceId }) => sourceId);
     const withdrawn = [];
-    const gatewayCall = Promise.withResolvers();
-    const gatewayReleased = Promise.withResolvers();
-    context.after(() => gatewayReleased.resolve());
     const compute = {
       ...fixture.compute,
       async withdrawCredentialSource(_revision, source) {
@@ -1716,7 +1718,8 @@ test(
     const retry = await queuedWithdrawal(fixture, second);
     assert.equal(retry.idempotencyKey, `${secondAttempt.idempotencyKey}:recovery:1`);
 
-    // A replay while the retry is queued queues nothing more and reports it in progress.
+    // A replay while the retry is queued queues nothing more, reports it in progress, and lets
+    // the retry run now instead of at its scheduled time.
     revoke = true;
     const replayed = await fixture.controller.withdrawAgentCredentialSource(
       fixture.actor.id,
@@ -1727,7 +1730,6 @@ test(
     assert.equal(replayed.withdrawalInProgress, true);
     assert.equal((await withdrawalAttempts(fixture, third)).length, 1);
     assert.equal((await withdrawalAttempts(fixture, second)).length, 2);
-    await runScheduledRetryNow(fixture, retry);
     await fixture.work(retry, "succeeded");
     await fixture.stop();
     const revoked = await read();
