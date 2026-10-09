@@ -343,7 +343,7 @@ function optionalPositiveInteger(source, path, diagnostics, { max } = {}) {
   return value;
 }
 
-function labelMap(source, path, diagnostics, { nonempty = true } = {}) {
+function labelMap(source, path, diagnostics, { nonempty = true, emptyValues = false } = {}) {
   const value = source[path.at(-1)];
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     diagnostics.errors.push(`${path.join(".")} must be an object of Kubernetes labels.`);
@@ -353,17 +353,20 @@ function labelMap(source, path, diagnostics, { nonempty = true } = {}) {
     diagnostics.errors.push(`${path.join(".")} must contain at least one Kubernetes label.`);
   }
   for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry !== "string" || entry.length === 0) {
-      diagnostics.errors.push(`${path.join(".")}.${key} must be a nonempty string.`);
+    if (typeof entry !== "string" || (!emptyValues && entry.length === 0)) {
+      diagnostics.errors.push(
+        `${path.join(".")}.${key} must be a ${emptyValues ? "" : "nonempty "}string.`,
+      );
     }
   }
   return value;
 }
 
 // Match the control-plane selector contract in Helm and prepare-bootstrap-volume.
+// Kubernetes allows empty label values, as in `node-role.kubernetes.io/infra: ""`.
 function controlPlaneNodeSelector(source, diagnostics) {
   const path = ["controlPlane", "nodeSelector"];
-  const labels = labelMap(source, path, diagnostics);
+  const labels = labelMap(source, path, diagnostics, { emptyValues: true });
   const labelName = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
   for (const [key, value] of Object.entries(labels)) {
     const parts = key.split("/");
@@ -381,10 +384,12 @@ function controlPlaneNodeSelector(source, diagnostics) {
     ) {
       diagnostics.errors.push("controlPlane.nodeSelector keys must be Kubernetes label keys.");
     }
-    if (typeof value === "string" && (value.length > 63 || labelName.exec(value)?.[0] !== value)) {
-      diagnostics.errors.push(
-        "controlPlane.nodeSelector values must be nonempty Kubernetes label values.",
-      );
+    if (
+      typeof value === "string" &&
+      value !== "" &&
+      (value.length > 63 || labelName.exec(value)?.[0] !== value)
+    ) {
+      diagnostics.errors.push("controlPlane.nodeSelector values must be Kubernetes label values.");
     }
   }
   return labels;
