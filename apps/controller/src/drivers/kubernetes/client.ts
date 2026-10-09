@@ -171,7 +171,8 @@ export function reuseRequestDispatcher(
     }
     // client-node passes these same connect and TLS options to these
     // constructors; its tls.ConnectionOptions type is only looser about
-    // optional fields.
+    // optional fields. undici's ProxyAgent ignores `connect` (no TCP keepalive
+    // on the tunnel); it is passed only to mirror client-node.
     const dispatcher =
       options.type === "agent"
         ? new Agent({

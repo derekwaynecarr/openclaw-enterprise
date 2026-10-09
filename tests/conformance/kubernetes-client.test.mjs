@@ -86,7 +86,10 @@ async function apiServer(directory, clientCertificates, { keepAliveHint } = {}) 
       if (socket.idleRecord === undefined) {
         socket.idleRecord = { lastResponseAt: undefined, clientClosedAt: undefined };
         idle.push(socket.idleRecord);
-        socket.on("end", () => (socket.idleRecord.clientClosedAt = Date.now()));
+        // "close" covers a client that resets the socket instead of ending it.
+        for (const event of ["end", "close"]) {
+          socket.on(event, () => (socket.idleRecord.clientClosedAt ??= Date.now()));
+        }
       }
       response.on("finish", () => (socket.idleRecord.lastResponseAt = Date.now()));
     }
@@ -221,11 +224,11 @@ async function connectProxy() {
 // undici keeps an Agent's options under Symbol("options"), and a ProxyAgent's
 // inner Agent under Symbol("proxy agent"). It has no public accessor for them.
 function undiciSymbol(object, description) {
-  const symbol = Object.getOwnPropertySymbols(object).find(
+  const symbols = Object.getOwnPropertySymbols(object).filter(
     (candidate) => candidate.description === description,
   );
-  assert.ok(symbol, `undici no longer keeps ${description} where this test reads it`);
-  return object[symbol];
+  assert.equal(symbols.length, 1, `undici no longer keeps ${description} where this test reads it`);
+  return object[symbols[0]];
 }
 
 test("Kubernetes API dispatchers carry the keep-alive limits, directly and through an HTTP proxy", async (t) => {
@@ -304,7 +307,8 @@ for (const viaProxy of [false, true]) {
       );
       const idleFor = record.clientClosedAt - record.lastResponseAt;
       assert.ok(
-        idleFor >= limit - 100 && idleFor < limit + 1_500,
+        // The upper bound only has to stay under undici's 4 s default.
+        idleFor >= limit - 100 && idleFor < limit + 2_500,
         `${keepAliveHint}: the client closed the connection after ${idleFor} ms idle, expected about ${limit} ms`,
       );
     }
