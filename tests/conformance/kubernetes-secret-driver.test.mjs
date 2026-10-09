@@ -12,6 +12,7 @@ import {
   currentComputeAbortSignal,
   withComputeAbortSignal,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
 
 function clone(value) {
   return structuredClone(value);
@@ -201,38 +202,6 @@ class FakeCoreV1Api {
     return {};
   }
 }
-
-// Runs an operation with mocked timers, firing each retry pause as soon as it is
-// scheduled, and appends each pause's length to `pauses` (the mocked clock moves
-// by exactly the pending pause). Request deadlines use AbortSignal.timeout, which
-// stays real, and the loop spins until the operation settles: keep operations that
-// wait for a real deadline out of it. Not reentrant.
-async function withRetryTimers(operation, pauses = []) {
-  mock.timers.enable({ apis: ["setTimeout", "Date"] });
-  try {
-    let settled = false;
-    const result = operation();
-    result.then(
-      () => (settled = true),
-      () => (settled = true),
-    );
-    while (!settled) {
-      await new Promise((resolve) => setImmediate(resolve));
-      const before = Date.now();
-      mock.timers.runAll();
-      if (Date.now() > before) {
-        pauses.push(Date.now() - before);
-      }
-    }
-    return await result;
-  } finally {
-    mock.timers.reset();
-  }
-}
-
-// A copy of the driver's READ_RETRY_DELAYS_MS, as a pin: five pauses, about four
-// seconds in all. A change to the schedule updates both.
-const READ_RETRY_PAUSES_MS = [100, 250, 500, 1_000, 2_000];
 
 function secretId() {
   return `sec_${randomUUID()}`;
@@ -762,5 +731,33 @@ test("kubernetes-secret-driver ends a retry pause at once when the owner cancels
     // Settles the read even when an assertion above failed first.
     owner.abort();
     mock.timers.reset();
+  }
+});
+
+test("kubernetes-secret-driver reports a read the owner cancels in flight as cancelled", async () => {
+  const client = new FakeCoreV1Api();
+  const { driver, secret } = await storedSecret(client);
+  const owner = new AbortController();
+  const reads = client.reads;
+  // The read waits for its abort signal, then rejects with the abort reason.
+  client.readSecretTimesOut = true;
+  const result = withComputeAbortSignal(owner.signal, () => driver.resolve(secret));
+  try {
+    for (let turn = 0; client.reads === reads; turn += 1) {
+      assert.ok(turn < 100, "the read was never sent");
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    owner.abort(new Error("claim lost"));
+    await assert.rejects(
+      result,
+      (error) =>
+        error instanceof SecretBackendUnavailableError &&
+        error.message === "The Kubernetes Secret read was cancelled.",
+    );
+    assert.equal(client.reads - reads, 1, "no read after the cancellation");
+  } finally {
+    // Settles the read even when an assertion above failed first.
+    owner.abort(new Error("claim lost"));
+    await result.catch(() => {});
   }
 });
