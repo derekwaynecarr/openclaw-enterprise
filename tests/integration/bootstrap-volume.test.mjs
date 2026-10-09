@@ -422,3 +422,76 @@ test("prepare-bootstrap-volume preserves YAML-scalar node selector keys and valu
   const manifest = loadYaml(await readFile(manifestPath, "utf8"));
   assert.deepEqual(manifest.spec.nodeSelector, Object.fromEntries(keys.map((key) => [key, key])));
 });
+
+// Bash regex ranges such as [a-z0-9] follow the locale: under en_US.UTF-8
+// they also match letters like ä, é and ß. Pick that locale when the host
+// has it, so the check is exercised where the old helper accepted them.
+async function utf8Locale() {
+  try {
+    const { stdout } = await execute("locale", ["-a"]);
+    const available = stdout.split("\n").map((name) => name.trim().toLowerCase());
+    if (available.includes("en_us.utf8") || available.includes("en_us.utf-8")) {
+      return "en_US.UTF-8";
+    }
+  } catch {
+    // `locale` is missing on some minimal hosts; C.UTF-8 is built into glibc.
+  }
+  return "C.UTF-8";
+}
+
+test("prepare-bootstrap-volume refuses non-ASCII names under a UTF-8 locale", async (t) => {
+  const { directory, kubeconfig, statePath } = await fixture(t);
+  const locale = await utf8Locale();
+  if (locale !== "en_US.UTF-8") {
+    t.diagnostic("en_US.UTF-8 is not installed; C.UTF-8 does not reproduce the range bug");
+  }
+  const base = {
+    cwd: repository,
+    env: { PATH: `${directory}:${process.env.PATH}`, LANG: locale, LC_ALL: locale },
+  };
+  const argumentsFor = (overrides) => {
+    const values = {
+      namespace: "openclaw-system",
+      claim: "claim",
+      image,
+      ...overrides,
+    };
+    return [
+      "--kubeconfig",
+      kubeconfig,
+      "--context",
+      "ctx",
+      "--namespace",
+      values.namespace,
+      "--claim",
+      values.claim,
+      "--image",
+      values.image,
+      ...(values.selector ? ["--node-selector", values.selector] : []),
+    ];
+  };
+  for (const [overrides, message] of [
+    [{ namespace: "ä" }, /--namespace must be a DNS label/],
+    [{ namespace: "openclaw-ß" }, /--namespace must be a DNS label/],
+    [{ claim: "ä" }, /--claim must be a DNS subdomain/],
+    [{ claim: "é.example" }, /--claim must be a DNS subdomain/],
+    [{ claim: "claim-٣" }, /--claim must be a DNS subdomain/],
+    [
+      { image: `registry.example.invalid/contrôleur@sha256:${"a".repeat(64)}` },
+      /--image must be an approved immutable SHA-256 image reference/,
+    ],
+    [
+      { image: `registry.example.invalid/controller@sha256:${"é".repeat(64)}` },
+      /--image must be an approved immutable SHA-256 image reference/,
+    ],
+    [{ selector: "pool=ä" }, /--node-selector value must be a nonempty Kubernetes label value/],
+    [{ selector: "é.example/pool=a" }, /--node-selector key must be a Kubernetes label key/],
+  ]) {
+    await assert.rejects(execute(helper, argumentsFor(overrides), base), (error) => {
+      assert.match(error.stderr, message);
+      return true;
+    });
+  }
+  // Every refusal happens before kubectl runs.
+  await assert.rejects(readFile(statePath, "utf8"), { code: "ENOENT" });
+});
