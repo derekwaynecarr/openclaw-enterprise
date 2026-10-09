@@ -1018,9 +1018,12 @@ function buildRendered(profile, parsed, diagnostics) {
     validate: (value) => value.length <= 53 && helmReleaseName.test(value),
     description: "a valid Helm release name of at most 53 characters",
   });
-  const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics, {
-    ...namespaceRule,
-  });
+  const namespace = asString(
+    controlPlane,
+    ["controlPlane", "namespace"],
+    diagnostics,
+    namespaceRule,
+  );
   // The bootstrap Job applies isName to installation.name, and the chart mirrors that rule.
   const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics, {
     validate: isName,

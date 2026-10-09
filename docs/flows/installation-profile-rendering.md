@@ -95,8 +95,9 @@ same rule to `gatewayNamespace` and `envoyNamespace`, and the chart to
 `gatewayRouting.envoyNamespace`. `controlPlane.apiClients[].namespace` and
 `controlPlane.dns.namespace` follow the same rule, as the chart does for
 `api.clients` and `dns`: NetworkPolicies select those peers by
-`kubernetes.io/metadata.name`, which only holds Namespace names. A dot, a slash, an uppercase letter, or a longer
-name fails before any deployable file is written. The shared `digestImage` check in `buildRendered`
+`kubernetes.io/metadata.name`, which only holds Namespace names. A dot, a
+slash, an uppercase letter, or a longer name fails before any deployable file
+is written. The shared `digestImage` check in `buildRendered`
 requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters for
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`.
 Noncanonical digest casing adds a field-specific diagnostic; the final error

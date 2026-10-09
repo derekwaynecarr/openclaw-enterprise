@@ -4271,7 +4271,8 @@ test(
         (object) => object.kind === "NetworkPolicy" && object.metadata.name === "oce-harness-proxy",
       );
     // Compute validatePort takes integers from 1 to 65535; Sprig int would truncate 10443.5.
-    for (const port of ["0", "65536", "10443.5", "-1", "true"]) {
+    // Sprig int turns a value too big for 64 bits into 0, which the lower bound catches.
+    for (const port of ["0", "65536", "10443.5", "-1", "true", "99999999999999999999"]) {
       await assert.rejects(
         template("--set", `routing.envoyHttpsTargetPort=${port}`),
         /routing\.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535/,

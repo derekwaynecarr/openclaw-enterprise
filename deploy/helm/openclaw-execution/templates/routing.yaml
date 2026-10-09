@@ -19,7 +19,7 @@
 {{- fail "routing.envoyNamespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" }}
 {{- end }}
 {{- /* Compute validatePort refuses the same Envoy HTTPS target port at startup. Sprig int truncates 10443.5, so check the spelling first. */ -}}
-{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $r.envoyHttpsTargetPort))) (gt (int $r.envoyHttpsTargetPort) 65535) }}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $r.envoyHttpsTargetPort))) (lt (int $r.envoyHttpsTargetPort) 1) (gt (int $r.envoyHttpsTargetPort) 65535) }}
 {{- fail "routing.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535" }}
 {{- end }}
 {{- /* The harness proxy egress selects the DNS peer by its kubernetes.io/metadata.name label, which holds a Namespace name. */ -}}

@@ -114,7 +114,7 @@ holding a DNS hostname without a port or path, the same rule Compute applies to
 also refuses, as Compute does, a `routing.gatewayName` that is not a DNS-safe
 name of at most 63 characters, a `routing.envoyNamespace` that is not a DNS
 label of at most 63 characters, and a `routing.envoyHttpsTargetPort` that is
-not an integer from 1 to 65535. `dns.namespace` must also be a DNS label. For k3d, `serviceType: LoadBalancer` uses its service load balancer. The chart creates component ServiceAccounts,
+not an integer from 1 to 65535. `dns.namespace` must also be a DNS label of at most 63 characters. For k3d, `serviceType: LoadBalancer` uses its service load balancer. The chart creates component ServiceAccounts,
 namespace-level ClusterRoles and bindings, tenant-role definitions, Gateway API
 resources, and the exact Envoy NetworkPolicy. It does not grant tenant access
 or issue cluster credentials.
