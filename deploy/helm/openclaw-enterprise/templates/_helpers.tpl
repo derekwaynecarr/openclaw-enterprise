@@ -326,6 +326,26 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (eq .Values.database.caKey ".") (eq .Values.database.caKey "..") (not (regexMatch "^[A-Za-z0-9._-]+$" .Values.database.caKey)) -}}
 {{- fail "database.caKey must be a simple basename" -}}
 {{- end -}}
+{{- /* The CA is mounted in API, worker, migration and bootstrap. Kubernetes requires each container's mount paths to be unique. */ -}}
+{{- $reservedCaMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" (toString .Values.bootstrap.password.mountPath) -}}
+{{- if .Values.executionCluster.enabled -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/execution" -}}
+{{- end -}}
+{{- if .Values.repositoryCredentials.enabled -}}
+{{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/repository-registry" "/etc/openclaw/repository-ca" "/var/run/secrets/kubernetes.io/serviceaccount" "/run/openclaw/repository-control") -}}
+{{- end -}}
+{{- if .Values.gatewayRouting.enabled -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/gateway-api-key" -}}
+{{- if or (not .Values.gatewayRouting.issuerRef.name) .Values.gatewayRouting.caSecretName -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/gateway-ca" -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.backend.chatgpt.enabled -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/chatgpt" -}}
+{{- end -}}
+{{- if has (toString .Values.database.caMountPath) $reservedCaMounts -}}
+{{- fail "database.caMountPath must be distinct from other active mounts in the production database clients" -}}
+{{- end -}}
 {{- end -}}
 {{- if or (eq .Values.installation.secretName .Values.database.secretName) (eq .Values.installation.secretName .Values.auth.secretName) -}}
 {{- fail "installation startup configuration must use a dedicated Secret" -}}

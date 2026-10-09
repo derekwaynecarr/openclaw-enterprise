@@ -29,6 +29,8 @@ export interface RuntimeLogCursorPosition {
    * occurrence), for overlap de-duplication.
    */
   readonly lastHashes: readonly string[];
+  /** The fetched tail did not omit earlier occurrences at the delivered frontier. */
+  readonly frontierComplete?: boolean;
   /** Container PEM context; absent on legacy cursors and unknown initial tails. */
   readonly pemOpen?: boolean;
   /** Conservative delivered-time frontier; null cannot establish forward chronology. */
@@ -106,6 +108,7 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
     hashes.length > MAX_HASHES ||
     !hashes.every((hash) => typeof hash === "string" && /^[A-Za-z0-9_-]{16}$/.test(hash)) ||
     !Number.isSafeInteger(record.i) ||
+    (record.fc !== undefined && typeof record.fc !== "boolean") ||
     (hasPem &&
       (typeof record.po !== "boolean" ||
         (record.pt !== null &&
@@ -124,6 +127,7 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
     lastTime: record.t as string | null,
     lastHashes: hashes as string[],
     issuedAt: record.i as number,
+    ...(record.fc === undefined ? {} : { frontierComplete: record.fc as boolean }),
     ...(hasPem ? { pemOpen: record.po as boolean, pemAfterTime: record.pt as string | null } : {}),
   };
 }
@@ -146,6 +150,7 @@ export function createRuntimeLogCursorCodec(secret: string): RuntimeLogCursorCod
           t: value.lastTime,
           h: value.lastHashes.slice(-MAX_HASHES),
           i: value.issuedAt,
+          fc: value.frontierComplete,
           po: value.pemOpen,
           pt: value.pemAfterTime,
         }),

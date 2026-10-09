@@ -33,12 +33,56 @@ interface LoadedDriverPackage {
 
 const PACKAGE_NAME = /^(?:@[a-zA-Z0-9][a-zA-Z0-9._~-]*\/)?[a-zA-Z0-9][a-zA-Z0-9._~-]*$/;
 
-function importEntrypoint(value: unknown): string | undefined {
+const INVALID_EXPORT_TARGET = Symbol("invalid package export target");
+
+type ImportEntrypoint = string | null | undefined | typeof INVALID_EXPORT_TARGET;
+
+function importEntrypoint(value: unknown): ImportEntrypoint {
   if (typeof value === "string") {
+    if (!value.startsWith("./")) {
+      return INVALID_EXPORT_TARGET;
+    }
+    // Node refuses traversing and node_modules segments, including encoded spellings.
+    let malformedEncoding = false;
+    const segments = value
+      .slice(2)
+      .split(/[\\/]/)
+      .map((segment) => {
+        try {
+          return decodeURIComponent(segment);
+        } catch {
+          malformedEncoding = true;
+          return segment;
+        }
+      });
+    if (segments.some((segment) => /^(?:\.|\.\.|node_modules)$/i.test(segment))) {
+      return INVALID_EXPORT_TARGET;
+    }
+    if (malformedEncoding) {
+      // Invalid package targets fall through first; malformed selectable URLs are fatal.
+      throw new Error("The selected package export target has malformed percent encoding.");
+    }
     return value;
   }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return undefined;
+  if (Array.isArray(value)) {
+    // Fallbacks concern export targets, not missing files or failed module imports.
+    let selected: ImportEntrypoint = value.length === 0 ? null : undefined;
+    for (const target of value) {
+      const candidate = importEntrypoint(target);
+      if (typeof candidate === "string") {
+        return candidate;
+      }
+      if (candidate !== undefined) {
+        selected = candidate;
+      }
+    }
+    return selected;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "object") {
+    return value === undefined ? undefined : INVALID_EXPORT_TARGET;
   }
 
   const conditions = value as Record<string, unknown>;
@@ -133,7 +177,7 @@ export async function loadDriverPackage(
     throw new Error(`${path}.package must be pinned to its exact installed production version.`);
   }
   const exportedEntrypoint = importEntrypoint(installedManifest.exports);
-  if (exportedEntrypoint === undefined || !exportedEntrypoint.startsWith("./")) {
+  if (typeof exportedEntrypoint !== "string") {
     throw new Error(`${path}.package must declare an exported compiled ESM entry.`);
   }
   let entryPath: string;

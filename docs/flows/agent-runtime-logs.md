@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-10-07
-last_updated_session: authoring-run/9ac89b09-043f-44ba-8069-d0a90859ed7b
+updated: 2026-10-09
+last_updated_session: authoring-run/ce414344-4cec-4d51-accd-f66b2ece9e0f
 ---
 
 # Agent runtime logs flow
@@ -115,7 +115,16 @@ continues from this read, as a view that has delivered nothing yet does. The pag
 emits `window_exceeded` dated at that line: it and the lines logged after
 it until this read are lost. A carried PEM block then keeps no delivered frontier,
 so it stays masked for the rest of the view. OCC
-drops lines already delivered at the cursor time, emits `stream_replaced`,
+drops earlier lines and consumes one remembered hash per delivered occurrence at
+the cursor time. Identical lines beyond the remembered count stay visible only
+when the signed cursor's `frontierComplete` is true and fewer than 16 hashes are
+remembered. A new frontier is complete when its consumed prefix is ordered and
+starts after the earliest fetched timestamp, or the Driver page is shorter than
+the requested tail and not byte-cut. The bit persists while the frontier timestamp
+stays the same. A missing or false bit, or a full hash history, keeps matching-text
+suppression until the timestamp advances: expanding a previously cut tail must not
+make an older occurrence appear new. A page byte cut retains counts for delivered
+lines, allowing undelivered copies at a complete frontier to resume. It emits `stream_replaced`,
 `window_exceeded`, `cursor_expired` or `truncated` gaps, and passes the rest to
 `runtime-logs/sanitize.ts:sanitizeRuntimeLogChunk`, the only producer of
 `SanitizedRuntimeLogRecord`. It classifies the whole page first, so
@@ -225,6 +234,12 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 22:24: Authenticate frontier completeness and retain conservative suppression for cut or legacy timestamp groups. (authoring-run/ce414344-4cec-4d51-accd-f66b2ece9e0f - f060fefd260b552e44d5549f549436d6147a474c)
+
+- 2026-10-09 22:12: Preserve matching-text suppression when the 16-hash frontier may have forgotten earlier occurrences. (authoring-run/ce414344-4cec-4d51-accd-f66b2ece9e0f - 66845c95cde0c7ef6adf358eb7daa1474c5fd443)
+
+- 2026-10-09 21:59: Count delivered occurrences when de-duplicating container lines at the cursor time. (authoring-run/ce414344-4cec-4d51-accd-f66b2ece9e0f - dc95c2261d4b46cff8aca703e13e43cdd71d153e)
 
 - 2026-10-07 05:26: Point CLI runtime reads and log polling to their dedicated source owner; clarify the existing revision selection. (authoring-run/9ac89b09-043f-44ba-8069-d0a90859ed7b - 61590165cdbb)
 
