@@ -14,14 +14,9 @@ const repoRoot = resolve(scriptDir, "..");
 const profilesDir = resolve(repoRoot, "deploy/profiles");
 const allowedProfiles = new Set(["openclaw", "codex"]);
 const dnsSubdomain = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
-// A Kubernetes object name such as a PVC: a DNS subdomain of at most 253 characters whose
-// labels are at most 63, as the chart and prepare-bootstrap-volume check it.
+// Kubernetes DNS-subdomain object names cap the whole name, not each segment.
 function isDnsSubdomainName(value) {
-  return (
-    value.length <= 253 &&
-    dnsSubdomain.test(value) &&
-    value.split(".").every((label) => label.length <= 63)
-  );
+  return value.length <= 253 && dnsSubdomain.test(value);
 }
 // Kubernetes Service names are DNS-1035 labels. The chart refuses any other
 // repositoryCredentials.serviceName.
@@ -434,10 +429,7 @@ function nodeSelector(source, path, diagnostics) {
       parts.length > 2 ||
       name.length > 63 ||
       labelName.exec(name)?.[0] !== name ||
-      (prefix !== undefined &&
-        (prefix.length > 253 ||
-          dnsSubdomain.exec(prefix)?.[0] !== prefix ||
-          prefix.split(".").some((label) => label.length > 63)))
+      (prefix !== undefined && (prefix.length > 253 || dnsSubdomain.exec(prefix)?.[0] !== prefix))
     ) {
       diagnostics.errors.push(`${path.join(".")} keys must be Kubernetes label keys.`);
     }

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-10-09
-last_updated_session: authoring-run/9a3fd823-79af-431c-b422-44c0ba255013
+updated: 2026-10-10
+last_updated_session: authoring-run/4a617af9-0745-4870-a679-848dba61de53
 ---
 
 # Installation Profile Rendering Flow
@@ -135,7 +135,10 @@ Kubernetes label-key and label-value rules (values may be empty). Compute copies
 the runtime selectors into Pod specs, where Kubernetes applies the same rule.
 Invalid placement labels fail preflight without deployment files; legal YAML
 lookalike values remain strings. The bootstrap password claim name must be a DNS
-subdomain, and a repository Backend ID must follow the Backend ID rule within
+subdomain of at most 253 characters total, as are qualified node-label prefixes.
+Their segments are not capped at 63; Namespace and unqualified label names remain
+limited to 63. The chart and `scripts/prepare-bootstrap-volume:is_dns_subdomain`
+apply the same Kubernetes validation. A repository Backend ID follows its rule within
 200 UTF-16 code units, as in the chart.
 
 ### 4. Build Helm values
@@ -265,6 +268,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 00:30: Match Kubernetes DNS-subdomain limits in the accompanying setup validation change. (authoring-run/4a617af9-0745-4870-a679-848dba61de53 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
 
 - 2026-10-09: Apply the chart's sign-in Secret, runtime node selector, claim name and Backend ID rules, and escape characters Helm's YAML parser changes.
 
