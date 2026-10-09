@@ -1251,6 +1251,129 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
   );
   assert.match(accepted.values, /channelDirectoryProxyUrl: http:\/\/192\.0\.2\.10:8080/);
   assert.match(accepted.installation, /proxyUrl: http:\/\/192\.0\.2\.10:8080/);
+  KubernetesComputeDriver.validateConfiguration(
+    loadYaml(accepted.installation).drivers.compute.configuration,
+  );
+});
+
+for (const profile of ["openclaw", "codex"]) {
+  for (const proxyUrl of ["http://192.0.2.10:80", "https://192.0.2.10:443"]) {
+    test(`${profile} preserves explicit default channel proxy port in ${proxyUrl}`, (t) => {
+      const input = profile === "codex" ? codexInput() : baseInput();
+      input.channels = { directoryProxyUrl: proxyUrl, runtimeProxyUrl: proxyUrl };
+      const output = render(profile, input);
+      t.after(() => rmSync(output.directory, { recursive: true, force: true }));
+      assert.equal(output.preflight.ok, true);
+      assert.equal(loadYaml(output.values).api.channelDirectoryProxyUrl, proxyUrl);
+      const compute = loadYaml(output.installation).drivers.compute.configuration;
+      assert.equal(compute.runtime.channels.proxyUrl, proxyUrl);
+      // Installation validation runs even before an Agent enables a channel.
+      assert.doesNotThrow(() => KubernetesComputeDriver.validateConfiguration(compute));
+    });
+  }
+}
+
+test("channel proxy validation preserves explicit ports and exact managed peers", (t) => {
+  const output = render("openclaw", baseInput());
+  t.after(() => rmSync(output.directory, { recursive: true, force: true }));
+  const compute = loadYaml(output.installation).drivers.compute.configuration;
+  const managed = structuredClone(compute.runtime.channels);
+  assert.equal(managed.managedProxy.port, 3128);
+  KubernetesComputeDriver.validateConfiguration(compute);
+
+  // IPv6 is supported by Compute directly; profile input intentionally remains IPv4-only.
+  for (const proxyUrl of [
+    " http://192.0.2.10:8080 ",
+    "http://[2001:db8::10]:80",
+    "https://[2001:db8::10]:443/",
+    "http://192.0.2.10:443",
+    "https://192.0.2.10:80/",
+  ]) {
+    compute.runtime.channels = { proxyUrl };
+    assert.doesNotThrow(() => KubernetesComputeDriver.validateConfiguration(compute), proxyUrl);
+  }
+  for (const [scheme, port] of [
+    ["http", 80],
+    ["https", 443],
+  ]) {
+    compute.runtime.channels = {
+      ...managed,
+      proxyUrl: `${scheme}://${managed.managedProxy.hostname}:${port}/`,
+      managedProxy: { ...managed.managedProxy, port },
+    };
+    assert.doesNotThrow(() => KubernetesComputeDriver.validateConfiguration(compute));
+  }
+
+  for (const proxyUrl of [
+    "http://192.0.2.10",
+    "https://[2001:db8::10]",
+    "http://192.0.2.10:0",
+    "http://192.0.2.10:65536",
+    syntheticCredentialUrl({
+      protocol: "http",
+      username: "proxy-user",
+      password: "synthetic-password",
+      host: "192.0.2.10",
+      port: 80,
+    }),
+    "http://192.0.2.10:80/path",
+    "http://192.0.2.10:80?query=1",
+    "https://192.0.2.10:443#fragment",
+    "ftp://192.0.2.10:80",
+    "http://proxy.example.invalid:80",
+  ]) {
+    compute.runtime.channels = { proxyUrl };
+    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), /Channel proxy/i);
+  }
+  // A valid peer grant never authorizes a different Service, port, or URL credentials.
+  for (const proxyUrl of [
+    "http://other.openclaw-system.svc:80",
+    `http://${managed.managedProxy.hostname}:443`,
+    `http://${managed.managedProxy.hostname}`,
+    syntheticCredentialUrl({
+      protocol: "http",
+      username: "proxy-user",
+      password: "synthetic-password",
+      host: managed.managedProxy.hostname,
+      port: 80,
+    }),
+  ]) {
+    compute.runtime.channels = {
+      ...managed,
+      proxyUrl,
+      managedProxy: { ...managed.managedProxy, port: 80 },
+    };
+    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), /channel proxy/i);
+  }
+});
+
+test("channel proxy validation preserves omitted-port endpoint diagnostics", (t) => {
+  const output = render("openclaw", baseInput());
+  t.after(() => rmSync(output.directory, { recursive: true, force: true }));
+  const compute = loadYaml(output.installation).drivers.compute.configuration;
+  const managed = structuredClone(compute.runtime.channels);
+
+  for (const proxyUrl of [
+    "http://192.0.2.10",
+    "https://[2001:db8::10]",
+    "http://proxy.example.invalid:8080",
+    "http://192.0.2.10:8080/path",
+  ]) {
+    compute.runtime.channels = { proxyUrl };
+    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), {
+      message: "Channel proxy URL must identify one credential-free HTTP(S) IP endpoint.",
+    });
+  }
+  for (const proxyUrl of [
+    `http://${managed.managedProxy.hostname}`,
+    `http://${managed.managedProxy.hostname}:8080`,
+    "http://other.openclaw-system.svc:3128",
+  ]) {
+    compute.runtime.channels = { ...managed, proxyUrl };
+    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), {
+      message: "Managed channel proxy URL must match the exact configured Service host and port.",
+    });
+  }
 });
 
 test("profiles refuse database CA keys the chart refuses", () => {
