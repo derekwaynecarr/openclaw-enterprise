@@ -7,6 +7,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
 import {
+  failureInputLimit,
   failureSecrets,
   redactFailure,
   redactFailureDetail,
@@ -467,7 +468,8 @@ function sanitizeError(error) {
 }
 
 // Preparation errors may contain command arguments, credentials and child output.
-// Only this closed diagnostic contract is safe to include in CI artifacts.
+// Only this closed diagnostic contract goes to the results and the job log; the
+// diagnostics report also gets the redacted message (preparationFailureText).
 function sanitizePreparationError(error) {
   const result = { name: "Error" };
   const { code, stage, failure, exitCode, signal, timedOut } = error ?? {};
@@ -496,6 +498,31 @@ function sanitizePreparationError(error) {
   return result;
 }
 
+// The diagnostics report's copy of a preparation error: its message and stack
+// frames with the failure-detail redaction (the results keep only the closed
+// contract above). Command output attached to the error is never included.
+function preparationFailureText(error, lane, root) {
+  if (!(error instanceof Error)) {
+    return {};
+  }
+  const message = typeof error.message === "string" ? error.message : "";
+  const stack = typeof error.stack === "string" ? error.stack : "";
+  // The stack starts with the message; keep only its frames.
+  const frames = stack
+    .slice(stack.includes(message) ? stack.indexOf(message) + message.length : 0)
+    .split("\n")
+    .filter((line) => /^\s+at\s/u.test(line))
+    .map((line) => line.trim())
+    .join("\n");
+  return (
+    redactFailureDetail(
+      { message: message.slice(0, failureInputLimit), stack: frames.slice(0, failureInputLimit) },
+      failureSecrets([process.env, lane.env]),
+      root,
+    ) ?? {}
+  );
+}
+
 function validatePreparedEnv(value) {
   if (value === undefined) {
     return {};
@@ -513,24 +540,38 @@ function validatePreparedEnv(value) {
 
 const maxReporterBytes = 50 * 1024 * 1024;
 
+// After the timeout's SIGTERM, the Node test runner reports the interrupted tests
+// and the file's output tail before it exits; read them for this long.
+const timeoutGraceMs = 5_000;
+
 // spawnSync's contract, without blocking the runner while other files run: stdout
 // is kept up to maxReporterBytes (ENOBUFS past it), stdin is closed at once, and the
 // timeout sends SIGTERM and reports ETIMEDOUT. Like spawnSync, stopping also closes
-// the pipes, so a grandchild holding them cannot keep the file running. Child
-// stderr is not retained.
+// the pipes (after timeoutGraceMs for a timeout), so a grandchild holding them
+// cannot keep the file running. Child stderr is not retained.
 function runNode(args, { cwd, env, timeout }) {
   return new Promise((resolvePromise) => {
     const chunks = [];
     let bytes = 0;
     let error;
     let settled = false;
+    let graceTimer;
     const child = spawn(process.execPath, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    const closePipes = () => {
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
     const stop = (code) => {
       if (error === undefined) {
         error = Object.assign(new Error(`child ${code}`), { code });
         child.kill("SIGTERM");
-        child.stdout.destroy();
-        child.stderr.destroy();
+        if (code === "ETIMEDOUT") {
+          graceTimer = setTimeout(closePipes, timeoutGraceMs);
+        } else {
+          closePipes();
+        }
+      } else if (code === "ENOBUFS") {
+        closePipes();
       }
     };
     const timer = setTimeout(() => stop("ETIMEDOUT"), timeout);
@@ -558,6 +599,7 @@ function runNode(args, { cwd, env, timeout }) {
       }
       settled = true;
       clearTimeout(timer);
+      clearTimeout(graceTimer);
       resolvePromise({
         status,
         signal,
@@ -573,9 +615,15 @@ function runNode(args, { cwd, env, timeout }) {
   });
 }
 
-function parseReporter(stdout) {
+// A child stopped at the timeout can exit mid-line; only that unfinished last line
+// is skipped.
+function parseReporter(stdout, timedOut = false) {
   const events = [];
-  for (const line of stdout.split("\n")) {
+  const lines = stdout.split("\n");
+  if (timedOut) {
+    lines.pop();
+  }
+  for (const line of lines) {
     if (line.length === 0) {
       continue;
     }
@@ -607,7 +655,7 @@ function testStatus(event) {
 }
 
 // The job log and results keep 600 characters of a failure; the lane's
-// diagnostics report (uploaded as diagnostics-<prefix>-<lane>) keeps the whole
+// diagnostics report (uploaded as diagnostics-<prefix>-<lane>-attempt-<N>) keeps the whole
 // redacted message, stack and the file's last output lines for the first failed
 // files.
 const maxFailureDetailFiles = 8;
@@ -615,27 +663,65 @@ const maxFailureDetailTests = 20;
 const failureOutputLineChars = 1_000;
 const failureDetailFiles = new Set();
 
+// The reporter sends the tail as one batch, or after an interruption as batches
+// newest first, each counting the lines before it; a cut can lose the oldest.
+function outputTailLines(events) {
+  const batches = events
+    .filter((event) => event.type === "test:output" && Array.isArray(event.data?.lines))
+    .map(({ data }) => ({
+      lines: data.lines.filter((line) => typeof line === "string"),
+      omitted: Number.isSafeInteger(data.omitted) && data.omitted >= 0 ? data.omitted : 0,
+    }))
+    .sort((a, b) => a.omitted - b.omitted);
+  return {
+    lines: batches.flatMap((batch) => batch.lines),
+    omitted: batches[0]?.omitted ?? 0,
+  };
+}
+
+function testName(name, absolutePath, secrets) {
+  return name === absolutePath ? "(file)" : redactLogLine(String(name), secrets, 200);
+}
+
 function failureDetails(events, absolutePath, secrets, root) {
   const failed = events.filter((event) => event.type === "test:fail" && event.data?.error);
-  const output = events.find((event) => event.type === "test:output")?.data;
-  const lines = Array.isArray(output?.lines)
-    ? output.lines.filter((line) => typeof line === "string")
-    : [];
-  if (failed.length === 0 && lines.length === 0) {
+  const output = outputTailLines(events);
+  // Tests a runner timeout interrupted, without the file itself.
+  const running = (
+    events.find((event) => event.type === "test:interrupted")?.data?.running ?? []
+  ).filter((test) => typeof test?.name === "string" && test.name !== absolutePath);
+  if (failed.length === 0 && output.lines.length === 0 && running.length === 0) {
     return undefined;
   }
   return {
+    ...(running.length > 0
+      ? {
+          interruptedTests: running.map((test) => ({
+            name: testName(test.name, absolutePath, secrets),
+            line: Number.isSafeInteger(test.line) ? test.line : undefined,
+          })),
+        }
+      : {}),
     tests: failed.slice(0, maxFailureDetailTests).map(({ data }) => ({
-      name: data.name === absolutePath ? "(file)" : redactLogLine(String(data.name), secrets, 200),
+      name: testName(data.name, absolutePath, secrets),
       line: data.error.location?.line ?? data.line,
       ...redactFailureDetail(data.error, secrets, root),
     })),
     omittedTests: Math.max(0, failed.length - maxFailureDetailTests),
     output: {
-      lines: lines.map((line) => redactOutputLine(line, secrets, root, failureOutputLineChars)),
-      omittedLines: Number.isSafeInteger(output?.omitted) ? output.omitted : 0,
+      lines: output.lines.map((line) =>
+        redactOutputLine(line, secrets, root, failureOutputLineChars),
+      ),
+      omittedLines: output.omitted,
     },
   };
+}
+
+// Shares the diagnostics file with the k3d capture; keep it out of other setup.
+async function recordFailure(setup, statePath, lane, file, details) {
+  await setup(() => recordFailureDetails(statePath, lane, file, details)).catch(() => {
+    console.error(`[run:${lane}] failure details unavailable for ${file}`);
+  });
 }
 
 async function recordFailureDetails(statePath, lane, file, details) {
@@ -728,12 +814,17 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         throw new Error("prepareFile cleanup must be a function");
       }
     } catch (error) {
+      const sanitized = sanitizePreparationError(error);
       issues.push(
         issue("prepare-failed", `prepareFile failed for ${relativePath}`, {
           file: relativePath,
-          error: sanitizePreparationError(error),
+          error: sanitized,
         }),
       );
+      await recordFailure(setup, statePath, lane.name, relativePath, {
+        reason: "prepare",
+        error: { ...sanitized, ...preparationFailureText(error, lane, root) },
+      });
       return emptyFileResult(relativePath, issues);
     }
   }
@@ -754,6 +845,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   let tests = [];
   let fileFailure;
   let details;
+  let nodeElapsedMs;
   let agentActivity;
   let measurements = [];
   try {
@@ -770,13 +862,15 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       });
       // The capture names a private directory for the file's container log records.
       Object.assign(env, agentActivity?.env);
+      const nodeStarted = performance.now();
       nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
         cwd: root,
         env,
         timeout: testTimeoutMs(),
       });
+      nodeElapsedMs = Math.round(performance.now() - nodeStarted);
 
-      const events = parseReporter(nodeResult.stdout);
+      const events = parseReporter(nodeResult.stdout, nodeResult.error?.code === "ETIMEDOUT");
       // The job env holds OCC_TEST_* values the child never got; the child env
       // holds prepared values (database URLs) the job never had. Redact both.
       const secrets = failureSecrets([process.env, env]);
@@ -897,13 +991,15 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
   const nodeExitCode = nodeResult ? (nodeResult.status ?? (nodeResult.signal ? 1 : 0)) : null;
   const status = nodeExitCode === 0 && issues.length === 0 ? "passed" : "failed";
-  if (status === "failed" && details !== undefined) {
-    // Shares the diagnostics file with the k3d capture; keep it out of other setup.
-    await setup(() => recordFailureDetails(statePath, lane.name, relativePath, details)).catch(
-      () => {
-        console.error(`[run:${lane.name}] failure details unavailable for ${relativePath}`);
-      },
-    );
+  // A file the runner timeout stopped always gets a record, even with nothing captured.
+  const timedOut = nodeResult?.error?.code === "ETIMEDOUT";
+  if (status === "failed" && (details !== undefined || timedOut)) {
+    await recordFailure(setup, statePath, lane.name, relativePath, {
+      ...(timedOut
+        ? { reason: "timeout", timeoutMs: testTimeoutMs(), elapsedMs: nodeElapsedMs }
+        : { reason: "failed" }),
+      ...(details ?? { tests: [], omittedTests: 0, output: { lines: [], omittedLines: 0 } }),
+    });
   }
 
   return {
@@ -1026,7 +1122,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
   logIssues(allIssues);
   for (const path of failureDetailFiles) {
     process.stderr.write(
-      `run-tests: whole failure messages, stacks and output tails are in ${path} (artifact diagnostics-<prefix>-${laneName})\n`,
+      `run-tests: whole failure messages, stacks and output tails are in ${path} (artifact diagnostics-<prefix>-${laneName}-attempt-${process.env.GITHUB_RUN_ATTEMPT || "<N>"})\n`,
     );
   }
   return summary.exitCode;

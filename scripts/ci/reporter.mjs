@@ -608,6 +608,30 @@ function outputTail() {
   };
 }
 
+const interruptedTestLimit = 20;
+const interruptedOutputBatchChars = 32 * 1024;
+
+// Node exits soon after an interruption and can cut what is still queued, so the
+// tail goes out in small batches, newest first: a cut loses the oldest lines and
+// at most one partial JSON line, which run-tests skips.
+function* interruptedOutput({ lines, omitted }) {
+  let end = lines.length;
+  while (end > 0) {
+    let start = end - 1;
+    let chars = lines[start].length;
+    while (start > 0 && chars + lines[start - 1].length <= interruptedOutputBatchChars) {
+      start -= 1;
+      chars += lines[start].length;
+    }
+    yield `${JSON.stringify({
+      type: "test:output",
+      // Every line before this batch, so run-tests can count the ones a cut lost.
+      data: { lines: lines.slice(start, end), omitted: omitted + start },
+    })}\n`;
+    end = start;
+  }
+}
+
 function location(data = {}) {
   const error = data.details?.error;
   const cause = error?.cause ?? error;
@@ -671,7 +695,38 @@ function location(data = {}) {
 export default async function* jsonLinesReporter(source) {
   const output = outputTail();
   let failed = false;
+  let outputSent = false;
+  // Tests dequeued and not yet complete: the ones a timeout interrupted.
+  const running = new Map();
+  const runningKey = (data) => `${data.nesting}:${data.line}:${data.column}:${data.name}`;
   for await (const event of source) {
+    if (event.type === "test:dequeue" && typeof event.data?.name === "string") {
+      running.set(runningKey(event.data), event.data);
+      continue;
+    }
+    if (event.type === "test:complete" && typeof event.data?.name === "string") {
+      running.delete(runningKey(event.data));
+      continue;
+    }
+    if (event.type === "test:interrupted") {
+      // The runner's timeout sent SIGTERM and Node exits right after this event,
+      // so send the names first and the output once, newest lines first.
+      yield `${JSON.stringify({
+        type: "test:interrupted",
+        data: {
+          running: [...running.values()].slice(-interruptedTestLimit).map((data) => ({
+            name: data.name,
+            line: data.line,
+            nesting: data.nesting,
+          })),
+        },
+      })}\n`;
+      if (!outputSent) {
+        outputSent = true;
+        yield* interruptedOutput(output.finish());
+      }
+      continue;
+    }
     if (event.type === "test:stdout" || event.type === "test:stderr") {
       if (typeof event.data?.message === "string") {
         output.add(event.type.slice(5), event.data.message);
@@ -716,7 +771,7 @@ export default async function* jsonLinesReporter(source) {
     })}\n`;
   }
   // Passing files send nothing extra.
-  if (failed) {
+  if (failed && !outputSent) {
     yield `${JSON.stringify({ type: "test:output", data: output.finish() })}\n`;
   }
 }

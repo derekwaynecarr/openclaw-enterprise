@@ -162,7 +162,7 @@ neither that result nor an empty inventory proves cleanup. The separate tag
 created by the runtime-images test, other resource kinds, and private environment
 values are excluded. Export or upload failure and runner loss can prevent retention.
 
-Fixture bootstrap failures also upload `diagnostics-<artifact-prefix>-<lane>`
+Fixture bootstrap failures also upload `diagnostics-<artifact-prefix>-<lane>-attempt-<N>`
 separately from test results. Cleanup removes the cluster and private state; the
 diagnostic remains available for upload but cannot satisfy required test results.
 
