@@ -307,7 +307,8 @@ function ipv4(value: string): number | undefined {
   }
   let result = 0;
   for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) {
+    // Same no-leading-zero rule as production trusted proxies and Compute: "010" is not 10.
+    if (!/^(?:0|[1-9][0-9]{0,2})$/.test(part)) {
       return undefined;
     }
     const octet = Number(part);
@@ -325,7 +326,13 @@ function cidrContains(cidr: string, address: string): boolean {
     throw new Error("Development trusted CIDRs must use IPv4 CIDR notation.");
   }
   const prefix = Number(prefixText);
-  if (!/^\d+$/.test(prefixText) || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) {
+  // "08" is not prefix 8. Production parseCidr refuses that spelling, and so does Compute.
+  if (
+    !/^(?:0|[1-9][0-9]{0,2})$/.test(prefixText) ||
+    !Number.isInteger(prefix) ||
+    prefix < 0 ||
+    prefix > 32
+  ) {
     throw new Error("Development trusted CIDRs must use IPv4 CIDR notation.");
   }
   const networkValue = ipv4(network);
