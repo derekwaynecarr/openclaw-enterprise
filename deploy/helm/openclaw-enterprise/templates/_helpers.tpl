@@ -510,6 +510,20 @@ capabilities:
 {{- default "git" .Values.repositoryCredentials.serviceName -}}
 {{- end -}}
 
+{{/* Decimal, matching JavaScript Number. Sprig int is octal, so it must not parse these.
+     A values file delivers a float64, and toString prints 1000000 and above as an exponent. */}}
+{{- define "openclaw.positiveSafeInteger" -}}
+{{- $raw := toString .value -}}
+{{- if and (kindIs "float64" .value) (eq (floor .value) .value) -}}
+{{- $raw = printf "%.0f" .value -}}
+{{- end -}}
+{{- $parsed := atoi $raw -}}
+{{- if or (not (regexMatch "^[0-9]+$" $raw)) (lt $parsed 1) (gt $parsed 9007199254740991) -}}
+{{- fail (printf "%s must be a positive safe integer" .name) -}}
+{{- end -}}
+{{- $raw -}}
+{{- end -}}
+
 {{/* Reject obvious quantity syntax errors; Kubernetes owns full quantity validation.
      Preserve its JSON-text whitespace handling without emulating exponent bounds or numeric parsing. */}}
 {{- define "openclaw.quantity" -}}
