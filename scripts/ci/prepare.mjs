@@ -877,6 +877,12 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
       "buildx",
       "build",
       "--load",
+      // An image ID covers each history entry's creation time. A fixed epoch lets
+      // builders that write the same layers agree on the ID, so reuseEngineImage
+      // can match an image another job built. It sets the config and history
+      // timestamps and WORKDIR directory mtimes; RUN steps do not see it.
+      "--build-arg",
+      "SOURCE_DATE_EPOCH=0",
       "--cache-from",
       `${cache},timeout=60s`,
       // One writer per image among the parallel image lanes; on main the warm job
