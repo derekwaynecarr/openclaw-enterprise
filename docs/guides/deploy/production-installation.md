@@ -196,7 +196,8 @@ before running the checks:
 
 - `values.yaml`: set auth URL, admin email, database and cluster CIDRs,
   control-plane node selector, database CA, DNS, API clients, and bootstrap
-  password claim. Keep native admin enabled for the password profile, and gateway
+  password claim. Keep `bootstrap.password.mountPath` absolute; the bootstrap Job
+  refuses a relative output file. Keep native admin enabled for the password profile, and gateway
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
   `auth.baseUrl` that is not an `https` origin (`http` only for `localhost` or
   `127.0.0.1`), has a path other than `/`, a query, fragment or user info (even a
@@ -223,6 +224,8 @@ Configure native admin domains through [native admin setup](native-admin.md#step
 For Slack Agents, configure both proxy paths in the
 [Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
+
+`images.controller` must be an immutable reference `prepare-bootstrap-volume --image` accepts: a letter or digit, then only letters, digits, `.`, `_`, `:`, `/`, and `-`, and a lowercase `sha256` digest.
 
 Run every check below before provisioning the password profile:
 
@@ -385,7 +388,8 @@ scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG_FILE" --context "$CON
 
 Replace `--node-selector oce-role=control` with the `controlPlane.nodeSelector`
 labels, one option per label, so preparation and initialization share volume
-topology.
+topology. Helm refuses a key or value that helper refuses: a Kubernetes label
+key, and a nonempty label value of at most 63 characters.
 
 The helper refuses any nonfresh mounted root except `lost+found`, schedules with
 the supplied node selector before storage binds, reports `Prepared bootstrap
