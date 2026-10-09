@@ -137,6 +137,15 @@ An optional `controlPlane.databaseCa.key` must be a simple basename. The chart
 refuses `.`, `..`, and any other key that is not letters, digits, `.`, `_`, or
 `-`. Omit the key to use `ca.pem`.
 
+`validateDatabaseCaMount` checks the generated values against the chart's active
+database-client mounts. With a database CA Secret, `mountPath` cannot equal the
+Installation, worker runtime, bootstrap, gateway key, or private gateway CA mount.
+Repository mounts are reserved only when repository credentials are enabled;
+the ChatGPT mount is reserved only when managed service accounts are configured.
+Profiles do not enable execution-cluster mounts. No CA configuration adds no
+restriction; an omitted path keeps `/etc/openclaw/database-ca`. A collision adds
+a field-specific preflight error and prevents both deployable files.
+
 The Helm values select the control-plane image, Better Auth base URL,
 bootstrap administrator, database and cluster egress CIDRs, API client
 selectors, DNS peer, metrics, native admin, private gateway routing, optional

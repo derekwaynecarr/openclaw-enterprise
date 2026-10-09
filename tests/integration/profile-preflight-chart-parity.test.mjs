@@ -82,13 +82,13 @@ function baselineDirectory() {
   return baseline.directory;
 }
 
-function renderProfile(profileInput) {
+function renderProfile(profileInput, profile = "openclaw") {
   const directory = mkdtempSync(join(tmpdir(), "oce-profile-parity-"));
   writeFileSync(join(directory, "input.json"), JSON.stringify(profileInput));
   const renderer = run(process.execPath, [
     "scripts/render-installation-profile.mjs",
     "--profile",
-    "openclaw",
+    profile,
     "--input",
     join(directory, "input.json"),
     "--out-dir",
@@ -110,8 +110,16 @@ function helmTemplate(valueFiles) {
 
 // The renderer's own values must render when it accepts. When it refuses, the same value
 // placed over a good profile must make the chart refuse too, with the expected message.
-function assertParity({ label, controlPlane, values, accepted, chartError }) {
-  const { directory, renderer } = renderProfile(input(controlPlane));
+function assertParity({
+  label,
+  controlPlane,
+  values,
+  accepted,
+  chartError,
+  profile = "openclaw",
+  extraInput = {},
+}) {
+  const { directory, renderer } = renderProfile({ ...input(controlPlane), ...extraInput }, profile);
   try {
     assert.equal(renderer.ok, accepted, `${label}: renderer\n${renderer.output}`);
     if (!accepted) {
@@ -447,6 +455,118 @@ test(
         values: { images: { controller: controllerImage } },
         accepted,
         chartError: /images\.controller must be an approved immutable SHA-256 image reference/,
+      });
+    }
+  },
+);
+
+test(
+  "database CA mounts follow active profile features and the production chart",
+  { skip: helmSkip },
+  () => {
+    const chartError = /database.caMountPath must be distinct from other active mounts/;
+    const repositoryInput = {
+      enabled: true,
+      image: `registry.example.invalid/repository@sha256:${"c".repeat(64)}`,
+      backendId: "github-primary",
+      registryConfigMapName: "occ-repository-registry",
+      serviceConfigSecretName: "occ-repository-config",
+      appKeySecretName: "occ-repository-app-key",
+      tlsSecretName: "occ-repository-tls",
+      publicCaSecretName: "occ-repository-ca",
+      upstreamCidrs: ["192.0.2.30/32"],
+    };
+    for (const profile of ["openclaw", "codex"]) {
+      const extraInput =
+        profile === "codex"
+          ? {
+              runtime: { ...input({}).runtime, codexSeccompProfile: "profiles/codex.json" },
+              codex: { modelDiscoveryCidrs: [] },
+            }
+          : {};
+      for (const mountPath of [
+        undefined,
+        "/etc/company/postgres-ca",
+        "/etc/openclaw/execution", // Profiles do not enable executionCluster mounts.
+        "/etc/openclaw/installation",
+        "/run/openclaw-worker",
+        "/var/lib/openclaw/bootstrap",
+        "/etc/openclaw/gateway-api-key",
+        "/etc/openclaw/gateway-ca",
+      ]) {
+        const accepted =
+          mountPath === undefined ||
+          ["/etc/company/postgres-ca", "/etc/openclaw/execution"].includes(mountPath);
+        assertParity({
+          label: `${profile}: ${mountPath ?? "default CA mount"}`,
+          profile,
+          extraInput,
+          controlPlane: {
+            databaseCa: {
+              secretName: "occ-db-ca",
+              ...(mountPath === undefined ? {} : { mountPath }),
+            },
+          },
+          values: { database: { caSecretName: "occ-db-ca", caMountPath: mountPath } },
+          accepted,
+          chartError,
+        });
+      }
+      // No CA mount creates no collision, even when every other feature uses its defaults.
+      assertParity({ label: `${profile}: no database CA`, profile, extraInput, accepted: true });
+      for (const mountPath of [
+        "/etc/openclaw/repository-registry",
+        "/etc/openclaw/repository-ca",
+        "/var/run/secrets/kubernetes.io/serviceaccount",
+        "/run/openclaw/repository-control",
+        "/etc/openclaw/repository-inputs", // Broker-only mounts cannot collide with its absent CA.
+      ]) {
+        for (const enabled of [false, true]) {
+          assertParity({
+            label: `${profile}: repository ${enabled}: ${mountPath}`,
+            profile,
+            extraInput: { ...extraInput, repository: enabled ? repositoryInput : { enabled } },
+            controlPlane: { databaseCa: { secretName: "occ-db-ca", mountPath } },
+            values: {
+              database: { caSecretName: "occ-db-ca", caMountPath: mountPath },
+              repositoryCredentials: { ...repositoryInput, enabled },
+            },
+            accepted: !enabled || mountPath === "/etc/openclaw/repository-inputs",
+            chartError,
+          });
+        }
+      }
+    }
+    const mountPath = "/etc/openclaw/chatgpt";
+    for (const enabled of [false, true]) {
+      const accounts = {
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        adminSecretName: "occ-chatgpt-admin",
+        providerCidr: "192.0.2.21/32",
+      };
+      assertParity({
+        label: `codex: managed accounts ${enabled}`,
+        profile: "codex",
+        extraInput: {
+          runtime: { ...input({}).runtime, codexSeccompProfile: "profiles/codex.json" },
+          codex: {
+            modelDiscoveryCidrs: [],
+            ...(enabled ? { managedServiceAccounts: accounts } : {}),
+          },
+        },
+        controlPlane: { databaseCa: { secretName: "occ-db-ca", mountPath } },
+        values: {
+          database: { caSecretName: "occ-db-ca", caMountPath: mountPath },
+          backend: {
+            chatgpt: {
+              enabled,
+              secretName: accounts.adminSecretName,
+              providerCidr: accounts.providerCidr,
+            },
+          },
+        },
+        accepted: !enabled,
+        chartError,
       });
     }
   },

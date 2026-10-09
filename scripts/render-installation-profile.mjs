@@ -337,6 +337,39 @@ function simpleBasename(value) {
   return value !== "." && value !== ".." && /^[A-Za-z0-9._-]+$/.test(value);
 }
 
+function validateDatabaseCaMount(values, diagnostics) {
+  if (!values.database.caSecretName) {
+    return;
+  }
+  // Profiles use the chart's bootstrap mount and private gateway CA, with no
+  // executionCluster override. Match the active database-client mounts only.
+  const reserved = new Set([
+    "/etc/openclaw/installation",
+    "/run/openclaw-worker",
+    "/var/lib/openclaw/bootstrap",
+    "/etc/openclaw/gateway-api-key",
+    "/etc/openclaw/gateway-ca",
+  ]);
+  if (values.repositoryCredentials.enabled) {
+    for (const path of [
+      "/etc/openclaw/repository-registry",
+      "/etc/openclaw/repository-ca",
+      "/var/run/secrets/kubernetes.io/serviceaccount",
+      "/run/openclaw/repository-control",
+    ]) {
+      reserved.add(path);
+    }
+  }
+  if (values.backend?.chatgpt.enabled) {
+    reserved.add("/etc/openclaw/chatgpt");
+  }
+  if (reserved.has(values.database.caMountPath)) {
+    diagnostics.errors.push(
+      "controlPlane.databaseCa.mountPath must be distinct from other active mounts in the production database clients.",
+    );
+  }
+}
+
 function optionalString(source, path, diagnostics, { pattern, validate, description } = {}) {
   const value = source[path.at(-1)];
   if (value === undefined) {
@@ -1596,6 +1629,8 @@ function buildRendered(profile, parsed, diagnostics) {
       port: 8443,
     };
   }
+
+  validateDatabaseCaMount(values, diagnostics);
 
   diagnostics.prerequisites.push(
     "Default ReadWriteOnce storage class available for dedicated Codex workspace claims.",
