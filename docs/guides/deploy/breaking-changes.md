@@ -60,8 +60,9 @@ before it changes anything. See
 [split-layout installations](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
 
 **Who is affected.** Single-cluster Installations created by the 2026-09-28
-release, or by any main before `dd344a97c`, that have at least one Namespace.
-The experimental two-cluster profile is not affected.
+release, or by any main before `dd344a97c`, with at least one Namespace.
+Bootstrap creates `default`, so that is nearly all of them. The experimental
+two-cluster profile is not affected.
 
 **How to tell.**
 
@@ -72,26 +73,30 @@ kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespa
 A row with an empty `NAMESPACE` column is a split-layout tenant.
 
 **What you lose.** No migration moves the old namespaces, so their tenants are
-exported, deleted and re-created. These come back, under new IDs: Namespaces,
-Secrets (you supply the values again), Configurations, Presets, credential
-sources, Roles, access bindings, service accounts (without issued credentials)
-and Agents with their `AGENTS.md`, `SOUL.md`, `IDENTITY.md` and `USER.md`.
-Agents that were running are deployed again. These do not come back:
+exported, deleted and re-created under new IDs. A deleted Namespace's name stays
+reserved, so each Namespace comes back under a new name. These come back:
+Secrets (you supply the values again), Configurations that an Agent uses,
+Presets, credential sources, Roles, access bindings, service accounts (without
+issued credentials) and Agents. Agents that were running are deployed again,
+and a copy of each running Agent's Harness workspace can be put back. These do
+not come back:
 
-- chat history and other Gateway state;
-- Harness workspace files beyond those four, generated images and Codex
-  threads;
+- chat history and other Gateway state (the copy keeps the transcripts for
+  reference; loading them into the new Gateway is untested);
 - Agent revision history and bindings to old revisions;
+- group, Installation-wide and resource-less bindings (re-create them by hand);
 - issued service-account credentials and Agent runtime credentials;
-- the old IDs, so update anything outside OCE that names them.
+- the old IDs and Namespace names, so update anything outside OCE that uses them.
 
 Accounts, Installation service keys and the audit history stay in the database.
 
-**Steps.** Run these from a checkout of the target release, with `occ` set up
-for the old release as an administrator (`OCC_URL`,
-`OCC_SERVICE_KEY_FILE`, `OCC_CA_BUNDLE`). The script talks to OCC only. Keep its
-files private: the bundle holds Configurations and workspace files, and the
-values file holds Secrets.
+**Steps.** Tested on a 2026-09-28 release Installation with three Namespaces
+and three Agents: the commands took about two minutes, plus the two image
+releases (about 35 seconds each). Run them from a checkout of the target
+release, with `occ` set up for the old release as an administrator (`OCC_URL`,
+`OCC_SERVICE_KEY_FILE`, `OCC_CA_BUNDLE`) and `kubectl` for the cluster. The
+script talks to OCC only. Keep every file below private: they hold
+Configurations, workspace files, transcripts and Secret values.
 
 1. Export every Namespace from the old release:
 
@@ -99,36 +104,80 @@ values file holds Secrets.
    node scripts/split-layout-tenants.mjs export --out /secure/occ/tenants.json
    ```
 
-2. Write the Secret values to a `0600` file such as
-   `/secure/occ/tenant-secrets.json`, keyed by Namespace name, then Secret name:
-   `{"team-a": {"model-key": "..."}}`. List the names with
-   `jq '.namespaces[] | {name, secrets: [.secrets[].name]}' /secure/occ/tenants.json`.
-3. Delete them on the old release. The command refuses if a Namespace gained an
-   Agent or Secret after the export:
+   It reads `AGENTS.md`, `SOUL.md`, `IDENTITY.md` and `USER.md` only where
+   [workspace routing](workspace-routing.md) is configured and the Agent runs.
+   Step 2 copies the whole workspace instead.
+
+2. Copy each running Agent's Harness workspace and Gateway state:
 
    ```bash
-   node scripts/split-layout-tenants.mjs discard --bundle /secure/occ/tenants.json --yes
+   ARCHIVE=/secure/occ/tenant-archive
+   mkdir -m 700 -p "$ARCHIVE"
+   kubectl get pods -A -l openclaw.dev/agent -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name} {.metadata.labels.openclaw\.dev/workload-role} {.metadata.labels.openclaw\.dev/agent}{"\n"}{end}' |
+   while read -r ns pod role agent; do
+     case $role in
+       gateway) paths='.openclaw/state .openclaw/agents/main/agent .openclaw/media .openclaw/agents/main/sessions' ;;
+       agent) paths='workspace .codex/generated_images' ;;
+       *) continue ;;
+     esac
+     kubectl -n "$ns" exec "$pod" -c "$role" -- tar -C /home/node --exclude=codex-home -cf - $paths \
+       >"$ARCHIVE/$agent-$role.tar" </dev/null || echo "failed: $agent $role"
+   done
+   ```
+
+3. Write the Secret values to a `0600` file such as
+   `/secure/occ/tenant-secrets.json`, keyed by the old Namespace name, then
+   Secret name: `{"team-a": {"model-key": "..."}}`. List the names with
+   `jq '.namespaces[] | {name, secrets: [.secrets[].name]}' /secure/occ/tenants.json`.
+4. Delete the tenants on the old release. The command refuses if a Namespace
+   gained an Agent or Secret after the export, or if the export could not read an
+   Agent's workspace files; once step 2 has the copy, add
+   `--allow-unread-workspace-files`:
+
+   ```bash
+   node scripts/split-layout-tenants.mjs discard --bundle /secure/occ/tenants.json \
+     --yes --allow-unread-workspace-files
    kubectl get namespaces -l openclaw.dev/gateway-namespace
    ```
 
-   Continue when no `oce-gateways-*` namespace is left.
+   Continue when no `oce-gateways-*` namespace is left. A Configuration that no
+   Agent uses is not exported and blocks its Namespace's delete; the error says
+   how to find and delete it. Then run `discard` again.
 
-4. [Upgrade the control plane](production-upgrade.md#upgrade-the-control-plane)
-   as usual. The preflight now passes.
-5. Re-create the tenants:
+5. [Upgrade the control plane](production-upgrade.md#upgrade-the-control-plane)
+   and the runtime as usual. The preflight now passes.
+6. Re-create the tenants under new Namespace names. `--skip` leaves out a
+   Namespace you no longer need, such as an unused `default`:
 
    ```bash
    node scripts/split-layout-tenants.mjs import --bundle /secure/occ/tenants.json \
-     --secret-values /secure/occ/tenant-secrets.json --map /secure/occ/tenant-ids.json
+     --secret-values /secure/occ/tenant-secrets.json --map /secure/occ/tenant-ids.json \
+     --rename team-a=team-a-2 --skip default
    ```
 
    It creates the Namespaces and exits `3` until they are `ready`.
    [Grant tenant RoleBindings](production-agents.md#grant-tenant-rolebindings)
    for each one, then run the same command again. The ID map records every old
-   and new ID, so a rerun after any failure resumes. Exit `4` lists Agents whose
-   deploy failed, such as a service-account Agent without an issued credential.
+   and new ID, so a rerun after any failure resumes. Exit `4` lists what needs a
+   hand: Agents whose deploy failed, such as a service-account Agent without an
+   issued credential, and access bindings it could not re-create.
 
-6. Check the Agents (`occ agent list`) and re-issue any service-account
+7. Put each Harness workspace back once the new Agent's Harness Pod runs:
+
+   ```bash
+   for tarball in "$ARCHIVE"/*-agent.tar; do
+     old=$(basename "$tarball" -agent.tar)
+     new=$(jq -r --arg old "$old" '.ids[$old] // empty' /secure/occ/tenant-ids.json)
+     [ -n "$new" ] || { echo "skipped: $old was not imported"; continue; }
+     read -r ns pod < <(kubectl get pods -A -l "openclaw.dev/agent=$new,openclaw.dev/workload-role=agent" \
+       -o jsonpath='{.items[0].metadata.namespace} {.items[0].metadata.name}')
+     [ -n "${pod:-}" ] || { echo "skipped: $new has no running Harness"; continue; }
+     kubectl -n "$ns" exec -i "$pod" -c agent -- tar -C /home/node --no-overwrite-dir -xf - <"$tarball" \
+       && echo "restored $old -> $new" || echo "failed: $old -> $new"
+   done
+   ```
+
+8. Check the Agents (`occ agent list`) and re-issue any service-account
    credentials.
 
 ## 2026-10-01: released dedicated Agents fail to redeploy

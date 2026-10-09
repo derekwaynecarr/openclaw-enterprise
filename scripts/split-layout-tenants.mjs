@@ -50,7 +50,8 @@ export function currentHarnessAuth(harnessAuth, namespaceId) {
 const usage = `Usage:
   node scripts/split-layout-tenants.mjs export --out FILE
   node scripts/split-layout-tenants.mjs discard --bundle FILE --yes [--allow-unread-workspace-files]
-  node scripts/split-layout-tenants.mjs import --bundle FILE --secret-values FILE --map FILE [--no-deploy]
+  node scripts/split-layout-tenants.mjs import --bundle FILE --secret-values FILE --map FILE
+      [--rename OLD=NEW]... [--skip NAME]... [--no-deploy]
 Environment: OCC_URL, OCC_SERVICE_KEY_FILE, optional OCC_CA_BUNDLE.`;
 
 export class SplitLayoutError extends Error {}
@@ -320,12 +321,17 @@ export async function importTenants(
     save = () => {},
     deploy = true,
     log = () => {},
-    readyTimeoutMs = 120_000,
+    names = {},
+    skip = [],
+    readyTimeoutMs = 20_000,
     intervalMs = 3_000,
     sleep = defaultSleep,
   } = {},
 ) {
-  const problems = checkImport(bundle, secretValues);
+  // A deleted Namespace's name stays reserved, so the copies usually need new names.
+  const namespaces = bundle.namespaces.filter(({ name }) => !skip.includes(name));
+  const targetName = (namespace) => names[namespace.name] ?? namespace.name;
+  const problems = checkImport({ ...bundle, namespaces }, secretValues);
   if (problems.length > 0) {
     throw new SplitLayoutError(problems.join("\n"));
   }
@@ -341,31 +347,53 @@ export async function importTenants(
 
   // Namespaces first: each needs its tenant RoleBindings before it becomes ready.
   const existing = await list(api, "/namespaces");
-  for (const namespace of bundle.namespaces) {
+  for (const namespace of namespaces) {
     if (ids.has(namespace.id)) {
       continue;
     }
-    const same = existing.find(({ name }) => name === namespace.name);
-    const created =
-      same ?? (await api.expect("POST", "/namespaces", { name: namespace.name })).data;
-    record(namespace.id, created.id);
-    log(`${same ? "reusing" : "created"} Namespace ${namespace.name}: ${created.id}`);
-  }
-  for (const namespace of bundle.namespaces) {
-    const id = ids.get(namespace.id);
-    const ready = await waitUntil(
-      async () => (await api.expect("GET", ns(id))).data?.status === "ready",
-      { timeoutMs: readyTimeoutMs, intervalMs, sleep },
-    );
-    if (!ready) {
-      pending.push(`${namespace.name} (${id})`);
+    const name = targetName(namespace);
+    const same = existing.find((live) => live.name === name);
+    let created = same;
+    if (created === undefined) {
+      const result = await api.call("POST", "/namespaces", { name });
+      if (result.status === 409) {
+        throw new SplitLayoutError(
+          `Namespace name ${name} is taken (${result.error?.message ?? ""}); ` +
+            `add --rename '${namespace.name}=<new name>' or --skip '${namespace.name}'`,
+        );
+      }
+      if (result.status !== 201) {
+        throw new SplitLayoutError(
+          `POST /namespaces: HTTP ${result.status} ${result.error?.code ?? "UNKNOWN"}`,
+        );
+      }
+      created = result.data;
     }
+    record(namespace.id, created.id);
+    log(`${same ? "reusing" : "created"} Namespace ${name}: ${created.id}`);
   }
+  // One short shared wait: a Namespace stays provisioning until its RoleBindings exist.
+  const notReady = async () => {
+    const waiting = [];
+    for (const namespace of namespaces) {
+      const id = ids.get(namespace.id);
+      if ((await api.expect("GET", ns(id))).data?.status !== "ready") {
+        waiting.push(`${targetName(namespace)} (${id})`);
+      }
+    }
+    return waiting;
+  };
+  await waitUntil(async () => (await notReady()).length === 0, {
+    timeoutMs: readyTimeoutMs,
+    intervalMs,
+    sleep,
+  });
+  pending.push(...(await notReady()));
   if (pending.length > 0) {
     return { complete: false, pendingNamespaces: pending, failedDeploys, skippedBindings };
   }
 
-  for (const namespace of bundle.namespaces) {
+  for (const namespace of namespaces) {
     const base = ns(ids.get(namespace.id));
     // A named item that already exists here was created by an interrupted earlier run
     // (or lives in a reused Namespace): adopt it rather than fail on its name.
@@ -558,11 +586,18 @@ export async function importTenants(
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
-  const options = { command };
+  const options = { command, names: {}, skip: [] };
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
     if (["--yes", "--no-deploy", "--allow-unread-workspace-files"].includes(flag)) {
       options[flag.slice(2)] = true;
+    } else if (flag === "--rename" && /^[^=]+=[^=]+$/u.test(rest[index + 1] ?? "")) {
+      const [from, to] = rest[index + 1].split("=");
+      options.names[from] = to;
+      index += 1;
+    } else if (flag === "--skip" && rest[index + 1] !== undefined) {
+      options.skip.push(rest[index + 1]);
+      index += 1;
     } else if (
       ["--out", "--bundle", "--secret-values", "--map"].includes(flag) &&
       rest[index + 1] !== undefined
@@ -634,6 +669,8 @@ export async function main(argv) {
       state,
       save: (value) => writePrivateJson(options.map, value),
       deploy: !options["no-deploy"],
+      names: options.names,
+      skip: options.skip,
       log,
     });
     if (!result.complete) {
