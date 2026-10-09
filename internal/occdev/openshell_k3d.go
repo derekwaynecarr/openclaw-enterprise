@@ -137,6 +137,9 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	if err := r.pinEndpoint(ctx); err != nil {
 		return err
 	}
+	if err := r.checkLegacyNATTable(ctx); err != nil {
+		return err
+	}
 	if err := r.validateDevelopmentImageRevisions(ctx); err != nil {
 		return err
 	}

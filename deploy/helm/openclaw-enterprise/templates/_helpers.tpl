@@ -4,7 +4,8 @@
 {{- if hasKey .Values "integrations" -}}{{- fail "integrations is retired; configure ChatGPT packaging under backend.chatgpt" -}}{{- end -}}
 {{- if hasKey .Values "workspaceFiles" -}}{{- fail "workspaceFiles is retired; configure private Envoy Gateway routing under gatewayRouting" -}}{{- end -}}
 {{- range $name, $image := .Values.images -}}
-{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $image) -}}
+{{- /* prepare-bootstrap-volume --image: a letter or digit, then letters, digits, dot, underscore, colon, slash, or hyphen, and a lowercase sha256 digest. */ -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$" $image) -}}
 {{- fail (printf "images.%s must be an approved immutable SHA-256 image reference" $name) -}}
 {{- end -}}
 {{- end -}}
@@ -204,6 +205,16 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not .Values.bootstrap.password.claimName) (not .Values.bootstrap.password.mountPath) (not .Values.bootstrap.password.fileName) -}}
 {{- fail "bootstrap.password must reference an existing protected PVC output path" -}}
 {{- end -}}
+{{- /* prepare-bootstrap-volume is_dns_subdomain: at most 253 characters, each label a DNS label of at most 63. */ -}}
+{{- $claimName := toString .Values.bootstrap.password.claimName -}}
+{{- if or (gt (len $claimName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $claimName)) -}}
+{{- fail "bootstrap.password.claimName must be a DNS subdomain of at most 253 characters" -}}
+{{- end -}}
+{{- range $label := splitList "." $claimName -}}
+{{- if gt (len $label) 63 -}}
+{{- fail "bootstrap.password.claimName must be a DNS subdomain of at most 253 characters" -}}
+{{- end -}}
+{{- end -}}
 {{- if or (not .Values.bootstrap.serviceKey) (not .Values.bootstrap.serviceKey.fileName) -}}
 {{- fail "bootstrap.serviceKey.fileName must identify the service key output file name" -}}
 {{- end -}}
@@ -214,6 +225,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if eq .Values.bootstrap.password.fileName .Values.bootstrap.serviceKey.fileName -}}
 {{- fail "bootstrap service key and password output file names must be distinct" -}}
+{{- end -}}
+{{- /* The bootstrap Job's bootstrapOutputPath requires an absolute file. A relative mount path joins into a relative OCC_BOOTSTRAP_PASSWORD_FILE. */ -}}
+{{- if not (hasPrefix "/" (toString .Values.bootstrap.password.mountPath)) -}}
+{{- fail "bootstrap.password.mountPath must be an absolute path" -}}
 {{- end -}}
 {{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. */ -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString .Values.api.port))) (gt (int .Values.api.port) 65535) -}}
@@ -240,7 +255,29 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if and (hasKey .Values.controlPlane "nodeSelector") (not (kindIs "invalid" .Values.controlPlane.nodeSelector)) (not (kindIs "map" .Values.controlPlane.nodeSelector)) -}}{{- fail "controlPlane.nodeSelector must be a map of Kubernetes node labels" -}}{{- end -}}
+{{- if and (hasKey .Values.controlPlane "nodeSelector") (not (kindIs "invalid" .Values.controlPlane.nodeSelector)) -}}
+{{- if not (kindIs "map" .Values.controlPlane.nodeSelector) -}}{{- fail "controlPlane.nodeSelector must be a map of Kubernetes node labels" -}}{{- end -}}
+{{- /* prepare-bootstrap-volume is_label_key and is_label_value. A qualified key is a DNS subdomain prefix plus a label name. */ -}}
+{{- $labelName := "^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$" -}}
+{{- range $key, $value := .Values.controlPlane.nodeSelector }}
+{{- if or (not (kindIs "string" $value)) (eq $value "") (gt (len $value) 63) (not (regexMatch $labelName $value)) -}}
+{{- fail "controlPlane.nodeSelector values must be nonempty Kubernetes label values" -}}
+{{- end -}}
+{{- if contains "/" $key -}}
+{{- $parts := splitList "/" $key -}}
+{{- $prefix := index $parts 0 -}}
+{{- $name := index $parts 1 -}}
+{{- if or (ne (len $parts) 2) (gt (len $prefix) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $prefix)) (gt (len $name) 63) (not (regexMatch $labelName $name)) -}}
+{{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}
+{{- end -}}
+{{- range $label := splitList "." $prefix -}}
+{{- if gt (len $label) 63 -}}{{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}{{- end -}}
+{{- end -}}
+{{- else if or (gt (len $key) 63) (not (regexMatch $labelName $key)) -}}
+{{- fail "controlPlane.nodeSelector keys must be Kubernetes label keys" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if and .Values.controlPlane.installationChecksum (not (regexMatch "^[a-f0-9]{64}$" .Values.controlPlane.installationChecksum)) -}}{{- fail "controlPlane.installationChecksum must be an empty string or a lowercase SHA-256 digest" -}}{{- end -}}
 {{- if eq .Values.database.appUrlKey .Values.database.migrationUrlKey -}}
 {{- fail "database application and migration credentials must use different Secret keys" -}}
@@ -321,6 +358,16 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- range $name := list "backendId" "registryConfigMapName" "registryKey" "serviceConfigSecretName" "serviceConfigKey" "appKeySecretName" "appKeyKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
 {{- if not (index $credentials $name) -}}{{- fail (printf "repositoryCredentials.%s is required when enabled" $name) -}}{{- end -}}
+{{- end -}}
+{{- /* Installation startup checks a GitHub Backend ID with isBackendId, then refuses one longer than 200 UTF-16 code units because repository bindings store it under that bound. */ -}}
+{{- $backendId := toString $credentials.backendId -}}
+{{- if or (ne $backendId (trim $backendId)) (hasPrefix "\uFEFF" $backendId) (hasSuffix "\uFEFF" $backendId) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $backendId)) -}}
+{{- fail "repositoryCredentials.backendId must follow the Backend ID rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators" -}}
+{{- end -}}
+{{- /* A code point above U+FFFF is one character and two UTF-16 code units. */ -}}
+{{- $utf16Units := add (len (regexFindAll "." $backendId -1)) (len (regexFindAll "[\\x{10000}-\\x{10FFFF}]" $backendId -1)) -}}
+{{- if gt $utf16Units 200 -}}
+{{- fail "repositoryCredentials.backendId must fit in 200 UTF-16 code units for a GitHub Backend, because repository bindings store it under that bound" -}}
 {{- end -}}
 {{- $secrets := dict "installation" .Values.installation.secretName "database" .Values.database.secretName "auth" .Values.auth.secretName -}}
 {{- if .Values.backend.chatgpt.enabled -}}{{- $_ := set $secrets "chatgpt" .Values.backend.chatgpt.secretName -}}{{- end -}}

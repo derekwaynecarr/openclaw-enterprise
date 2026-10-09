@@ -562,12 +562,19 @@ test("label values that YAML 1.1 would retype stay strings", () => {
 
 test("Helm renders YAML 1.1 lookalike label values as strings", { skip: helmSkip }, () => {
   const input = baseInput();
-  input.controlPlane.nodeSelector = { spot: "no", scale: "1e3", team: "@platform" };
+  input.controlPlane.nodeSelector = { spot: "no", scale: "1e3", hex: "0x1f" };
   const manifests = helmTemplate(render("openclaw", input));
   assert.match(manifests, /spot: ["']no["']/);
   assert.match(manifests, /scale: ["']1e3["']/);
-  assert.match(manifests, /team: ["']@platform["']/);
+  assert.match(manifests, /hex: ["']0x1f["']/);
   assert.doesNotMatch(manifests, /spot: false/);
+  const rejected = baseInput();
+  rejected.controlPlane.nodeSelector = { team: "@platform" };
+  const error = renderError(() => helmTemplate(render("openclaw", rejected)));
+  assert.match(
+    `${error.stdout ?? ""}${error.stderr ?? ""}`,
+    /controlPlane\.nodeSelector values must be nonempty Kubernetes label values/,
+  );
 });
 
 test("renderer rejects the removed default profile", () => {
