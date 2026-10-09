@@ -43,7 +43,7 @@ import {
   ConfigurationOwnershipError,
   ConfigurationValidationError,
 } from "../drivers/configuration/kubernetes/index.ts";
-import { loggedErrorText } from "../logging.ts";
+import { loggedErrorText, resemblesCredential } from "../logging.ts";
 import {
   collapseScalarUnions,
   jsonPointer,
@@ -471,7 +471,8 @@ function loggedErrorClass(error: object): string | undefined {
       typeof candidate === "string" &&
       candidate !== "Error" &&
       candidate !== "Object" &&
-      LOGGED_ERROR_CLASS.test(candidate),
+      LOGGED_ERROR_CLASS.test(candidate) &&
+      !resemblesCredential(candidate),
   );
 }
 
@@ -481,7 +482,9 @@ function loggedErrorCode(error: object): string | number | undefined {
   if (typeof code === "number") {
     return Number.isSafeInteger(code) ? code : undefined;
   }
-  return typeof code === "string" && LOGGED_ERROR_CODE.test(code) ? code : undefined;
+  return typeof code === "string" && LOGGED_ERROR_CODE.test(code) && !resemblesCredential(code)
+    ? code
+    : undefined;
 }
 
 /**
@@ -517,7 +520,7 @@ export function dependencyUnavailableLogFields(error: Error): {
     cause = (cause as { readonly cause?: unknown }).cause;
   }
   const errorClass = loggedErrorClass(error);
-  const message = loggedErrorText(error.message);
+  const message = typeof error.message === "string" ? loggedErrorText(error.message) : undefined;
   return {
     ...(errorClass === undefined ? {} : { errorClass }),
     ...(message === undefined ? {} : { message }),

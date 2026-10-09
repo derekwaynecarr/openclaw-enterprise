@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import test from "node:test";
 import { ConfigurationBackendUnavailableError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { dependencyUnavailableLogFields } from "../../apps/controller/src/http/errors.ts";
 import { createOccLogger, WITHHELD_ERROR_TEXT } from "../../apps/controller/src/logging.ts";
-import { DependencyUnavailableError } from "../../packages/occ/src/index.ts";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import {
+  DependencyUnavailableError,
+  RuntimeCredentialsForbiddenByClusterError,
+} from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -36,10 +42,11 @@ function capturedLogger() {
 
 // OCC passes a Configuration Driver's DependencyUnavailableError through to HTTP unchanged, as it
 // does a ServiceAccount Driver's.
-async function configurationFixture(t, createError) {
+async function configurationFixture(t, createError, options = {}) {
   const { lines, logger } = capturedLogger();
   const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
   const fixture = await createConsoleAppFixture(t, {
+    ...options,
     logger,
     configurationDriver,
     secretDriver: createTestSecretDriver({ id: "console-secret" }),
@@ -132,6 +139,90 @@ test("responses other than a dependency 503 log no dependency warning", async (t
   assert.deepEqual(dependencyWarnings(lines), []);
 });
 
+test("a dependency error answered with its own code logs no dependency warning", async (t) => {
+  const { fixture, lines, namespace } = await configurationFixture(
+    t,
+    new RuntimeCredentialsForbiddenByClusterError({
+      verb: "get",
+      resource: "secrets",
+      kubernetesNamespace: "tenant-dependency-log",
+      plane: "control",
+      status: 403,
+    }),
+  );
+  const response = await createConfiguration(fixture, namespace);
+  assert.equal(response.status, 503, JSON.stringify(response.body));
+  assert.equal(response.body.error.code, "RUNTIME_CREDENTIALS_CLUSTER_RBAC");
+  assert.deepEqual(dependencyWarnings(lines), []);
+});
+
+test("a dependency 503 that no dependency error raised logs no dependency warning", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const { fixture, lines, namespace } = await configurationFixture(t, undefined, { auditSink });
+  const limited = await fixture.createAccountWithPolicy("dependency-log-member", () => {});
+  const session = await fixture.signIn(limited.credentials);
+  // The denial's audit write fails, so the denial answers a dependency 503 of its own.
+  auditSink.append = async () => {
+    throw new DependencyUnavailableError("The platform audit repository is unavailable.");
+  };
+  const response = await fixture.request("GET", `/namespaces/${namespace.id}`, { session });
+  assert.equal(response.status, 503, JSON.stringify(response.body));
+  assert.deepEqual(response.body.error, { code: "DEPENDENCY_UNAVAILABLE", message: GENERIC });
+  assert.deepEqual(dependencyWarnings(lines), []);
+});
+
+test("a dependency error whose fields cannot be read keeps its 503 and a bare warning", async (t) => {
+  const error = new DependencyUnavailableError("unused");
+  Object.defineProperty(error, "message", { value: 42 });
+  error.cause = {
+    get code() {
+      throw new Error(CLIENT_TEXT);
+    },
+  };
+  const { fixture, lines, namespace } = await configurationFixture(t, error);
+  const response = await createConfiguration(fixture, namespace);
+  assert.equal(response.status, 503, JSON.stringify(response.body));
+  assert.deepEqual(response.body.error, { code: "DEPENDENCY_UNAVAILABLE", message: GENERIC });
+  const warnings = dependencyWarnings(lines);
+  assert.equal(warnings.length, 1, JSON.stringify(warnings));
+  assert.deepEqual(Object.keys(warnings[0]).sort(), [
+    "event",
+    "method",
+    "requestId",
+    "route",
+    "service",
+    "severity",
+    "time",
+  ]);
+  assert.equal(JSON.stringify(lines).includes("clienttoken"), false);
+});
+
+test("an OpenShell call that fails without a gRPC status keeps only the error class", async () => {
+  const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const grpc = require("@grpc/grpc-js");
+  const client = new GrpcOpenShellGatewayClient({ endpoint: "127.0.0.1:1" });
+  // A local client failure, thrown before any gRPC status exists.
+  client.client = Promise.resolve({
+    grpc,
+    client: {
+      GetSandbox() {
+        throw new TypeError(`invalid argument ${CLIENT_TEXT}`);
+      },
+    },
+  });
+  await assert.rejects(
+    client.getSandbox(
+      { name: "sandbox-log", workspace: "workspace-log" },
+      AbortSignal.timeout(2_000),
+    ),
+    (error) => {
+      assert.ok(error instanceof DependencyUnavailableError);
+      assert.equal(error.message, "OpenShell GetSandbox failed: TypeError");
+      return true;
+    },
+  );
+});
+
 test("dependency log fields keep only the class and code of a bounded cause chain", () => {
   const first = Object.assign(new Error(CLIENT_TEXT), { code: "not a code: Bearer x" });
   const second = Object.assign(new Error(CLIENT_TEXT), { name: "Bearer abc", code: 1.5 });
@@ -157,6 +248,22 @@ test("dependency log fields keep only the class and code of a bounded cause chai
     fields.causes.map(({ code }) => code),
     ["L5", "L4", "L3", "L2"],
   );
-  const url = new DependencyUnavailableError("Fetch https://user:pass@example.test/x failed.");
-  assert.equal(dependencyUnavailableLogFields(url).message, WITHHELD_ERROR_TEXT);
+  for (const message of [
+    "Fetch https://user:pass@example.test/x failed.",
+    "Fetch https://example.test/x?sig=abc failed.",
+    // A credential that straddles the 512-character cut is still withheld.
+    `${"a".repeat(500)} Bearer abcdefghijklmnopqrstuvwxyz`,
+  ]) {
+    const withheld = new DependencyUnavailableError(message);
+    assert.equal(dependencyUnavailableLogFields(withheld).message, WITHHELD_ERROR_TEXT, message);
+  }
+  const long = dependencyUnavailableLogFields(new DependencyUnavailableError("b".repeat(600)));
+  assert.equal(long.message, "b".repeat(512));
+  // A class name or code that resembles a credential is dropped, never logged.
+  const credentialLike = new DependencyUnavailableError("Outage.");
+  credentialLike.cause = Object.assign(new Error("x"), {
+    name: "AKIA0123456789ABCDEF",
+    code: "AKIA0123456789ABCDEF",
+  });
+  assert.deepEqual(dependencyUnavailableLogFields(credentialLike).causes, [{}]);
 });

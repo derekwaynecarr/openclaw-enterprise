@@ -3969,13 +3969,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       isDependencyUnavailable(error)
     ) {
       // The response keeps its text (the caller learns nothing more); the operator finds the
-      // cause here by request ID.
+      // cause here by request ID. Reading the error must never change the response.
+      let fields: ReturnType<typeof dependencyUnavailableLogFields> = {};
+      try {
+        fields = dependencyUnavailableLogFields(error);
+      } catch {
+        // An error whose fields cannot be read is logged without them.
+      }
       app.log.warn({
         event: "http.dependency_unavailable",
         requestId: request.id,
         method: request.method,
         route: request.routeOptions.url ?? "unmatched",
-        ...dependencyUnavailableLogFields(error),
+        ...fields,
       });
     }
     if (mapped.code === "INTERNAL_ERROR") {

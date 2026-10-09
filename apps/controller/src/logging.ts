@@ -136,9 +136,16 @@ function safeString(value: string): string | undefined {
   return value;
 }
 
-// A URL with user information (`scheme://user:password@host`).
-const URL_USER_INFO = /\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]*@/i;
+// A URL with user information (`scheme://user:password@host`), or a query parameter that
+// usually carries a credential.
+const URL_CREDENTIAL =
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]*@|[?&](?:access_token|api_key|key|password|secret|sig|signature|token)=/i;
 export const WITHHELD_ERROR_TEXT = "The message was withheld because it resembles a credential.";
+
+/** Whether text resembles a credential (a bearer token, API key, private key, or URL secret). */
+export function resemblesCredential(text: string): boolean {
+  return SECRET_VALUE.test(text) || URL_CREDENTIAL.test(text);
+}
 
 /**
  * Error text for a local operator log: one line of at most 512 characters, or fixed text when it
@@ -146,11 +153,12 @@ export const WITHHELD_ERROR_TEXT = "The message was withheld because it resemble
  * second line of defense, not a sanitizer for provider or request text.
  */
 export function loggedErrorText(value: string): string | undefined {
-  const text = [...value.replace(/[\s\p{Cc}]+/gu, " ").trim()].slice(0, 512).join("");
-  if (text === "") {
+  const line = value.replace(/[\s\p{Cc}]+/gu, " ").trim();
+  if (line === "") {
     return undefined;
   }
-  return SECRET_VALUE.test(text) || URL_USER_INFO.test(text) ? WITHHELD_ERROR_TEXT : text;
+  // Checked before the cut, so a credential that straddles it is withheld too.
+  return resemblesCredential(line) ? WITHHELD_ERROR_TEXT : [...line].slice(0, 512).join("");
 }
 
 function safePath(value: unknown): string | undefined {
