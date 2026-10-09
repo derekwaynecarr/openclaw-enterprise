@@ -746,7 +746,7 @@ export class CredentialWithdrawalRefusedError extends Error {
 export class CredentialWithdrawalInProgressError extends ResourceStateConflictError {
   constructor() {
     super(
-      "A credential withdrawal is still queued or running for an Agent revision that held the source. Wait for it to finish (it retries for up to about an hour), or delete the Agent it was withdrawn from, then retry.",
+      "A credential withdrawal is still queued or running for an Agent revision that held the source. Wait for it to finish (it retries for up to about an hour), or delete that revision's Agent, then retry.",
     );
     this.name = "CredentialWithdrawalInProgressError";
   }

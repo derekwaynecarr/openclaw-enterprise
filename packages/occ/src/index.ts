@@ -4210,7 +4210,7 @@ export class OpenClawController {
         );
       }
       if (blocking === "withdrawal_work") {
-        // A redeploy has already dropped the source, so only waiting or Agent deletion helps.
+        // No active revision or pending work holds the source, so only waiting or Agent deletion helps.
         throw new CredentialWithdrawalInProgressError();
       }
       const owner = this.ownedCredentialGatewayDriver(found.driverId);

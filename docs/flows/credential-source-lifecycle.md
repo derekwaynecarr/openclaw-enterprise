@@ -186,8 +186,8 @@ the model source. The next owner is the [OpenShell Sandbox provisioning flow](op
 
 The first transaction authorizes `delete`, requires a selected gateway (`409`),
 locks the source, and returns `409` while an Agent draft, active revision, or
-pending deployment references it (`CREDENTIAL_WITHDRAWAL_IN_PROGRESS` when only
-withdrawal work blocks), or `503` if another driver registered it. Only
+pending deployment references it, `CREDENTIAL_WITHDRAWAL_IN_PROGRESS` while only
+withdrawal work holds it, or `503` if another driver registered it. Only
 then does it move a `registering` or `ready` record to `deleting`; triggers
 prevent leaving `deleting` and returning to `registering`. Outside the
 transaction, OCC calls `removeSource`. The OpenShell Driver deletes and confirms
