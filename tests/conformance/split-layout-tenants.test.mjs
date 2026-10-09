@@ -125,20 +125,18 @@ test("export reads every tenant resource the import needs, without Secret values
 test("import re-creates tenants under new IDs, waits for readiness, and resumes", async () => {
   const fixture = await createFixture();
   const seeded = await seedTenant(fixture);
-  const exported = await exportTenants(fixture.api);
-  // The old Namespace stays (deletion needs the worker), so the copy gets a new name.
-  const bundle = {
-    ...exported,
-    namespaces: exported.namespaces
-      .filter(({ name }) => name === "team-a")
-      .map((namespace) => ({ ...namespace, name: "team-a restored" })),
-  };
-  assert.deepEqual(checkImport(bundle, {}), ["no value for Secret team-a restored/model-key"]);
-  await assert.rejects(importTenants(fixture.api, bundle, {}), /no value for Secret/u);
-
-  const values = { "team-a restored": { "model-key": "new-value" } };
+  const bundle = await exportTenants(fixture.api);
+  const others = bundle.namespaces.map(({ name }) => name).filter((name) => name !== "team-a");
+  assert.ok(others.length > 0, "bootstrap's default Namespace is in the bundle too");
+  // A deleted Namespace's name stays reserved, so the copy is renamed; the rest are skipped.
+  const names = { "team-a": "team-a restored" };
+  const scope = { names, skip: others };
+  assert.deepEqual(checkImport(bundle, {}), ["no value for Secret team-a/model-key"]);
+  await assert.rejects(importTenants(fixture.api, bundle, {}, scope), /no value for Secret/u);
+  const values = { "team-a": { "model-key": "new-value" } };
   let saved;
   const options = {
+    ...scope,
     save: (state) => (saved = structuredClone(state)),
     sleep: noSleep,
     intervalMs: 0,
