@@ -200,6 +200,71 @@ test("Configuration metadata and selected substrate generation divergence fails 
   );
 });
 
+test("a Configuration update that applied but answered an error is rolled back with its metadata", async () => {
+  const { configuration, configurationDriver, controller, namespace } = await fixture();
+  const reference = { id: configuration.id, namespaceId: namespace.id };
+  const update = configurationDriver.update;
+  const updateInput = (model) => ({
+    namespaceId: namespace.id,
+    configurationId: configuration.id,
+    values: { model },
+  });
+
+  // The replace lands but its response is lost (a timeout after the API server applied it).
+  // The metadata transaction rolls back, so the stored document must return to generation 1
+  // instead of staying one generation ahead (finding 911).
+  configurationDriver.update = async (next) => {
+    configurationDriver.update = update;
+    await update(next);
+    throw new Error("synthetic Configuration update response loss");
+  };
+  await assert.rejects(
+    controller.updateConfiguration(administrator, updateInput("applied-but-lost")),
+    DependencyUnavailableError,
+  );
+  assert.deepEqual(await configurationDriver.read(reference), configuration);
+  assert.deepEqual(
+    await controller.getConfiguration(administrator, namespace.id, configuration.id),
+    configuration,
+  );
+
+  // A replace that never applied leaves the stored document alone and keeps its own error.
+  configurationDriver.update = async () => {
+    configurationDriver.update = update;
+    throw new Error("synthetic Configuration outage");
+  };
+  await assert.rejects(
+    controller.updateConfiguration(administrator, updateInput("never-applied")),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "The selected Configuration Driver is unavailable.",
+  );
+  assert.deepEqual(await configurationDriver.read(reference), configuration);
+
+  // When the backend cannot even be read, OCC cannot tell whether the replace applied, so it
+  // says the rollback failed instead of claiming the write did not happen.
+  const read = configurationDriver.read;
+  configurationDriver.update = async () => {
+    configurationDriver.update = update;
+    configurationDriver.read = async () => {
+      configurationDriver.read = read;
+      throw new Error("synthetic Configuration outage");
+    };
+    throw new Error("synthetic Configuration outage");
+  };
+  await assert.rejects(
+    controller.updateConfiguration(administrator, updateInput("unknown")),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "A Driver could not roll back a failed resource mutation.",
+  );
+  assert.deepEqual(await configurationDriver.read(reference), configuration);
+
+  const updated = await controller.updateConfiguration(administrator, updateInput("applied"));
+  assert.equal(updated.generation, 2);
+  assert.deepEqual((await configurationDriver.read(reference)).values, { model: "applied" });
+});
+
 test("native Configuration documents remain bound to their exact Namespace", async () => {
   const { controller, namespace } = await fixture();
   const otherNamespace = await controller.createNamespace(administrator, {
