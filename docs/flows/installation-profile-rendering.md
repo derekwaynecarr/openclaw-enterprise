@@ -94,6 +94,13 @@ requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters 
 Noncanonical digest casing adds a field-specific diagnostic; the final error
 branch writes only `preflight.json`, leaving no deployable artifacts.
 
+Preflight gives `controlPlane.trustedProxy.cidrs` the API's `parseCidr` rules
+(`apps/controller/src/auth/client-address.ts`): no zone ID, a prefix of 1 through
+32 for an IPv4-mapped address, and no range that covers every IPv4 peer. It checks
+`controlPlane.adminEmail` with the bootstrap Job's `normalizeBootstrapAdminEmail`.
+`tests/integration/profile-preflight-chart-parity.test.mjs` runs each case through
+the renderer and `helm template`.
+
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), and paired metrics scraper selectors. Invalid
