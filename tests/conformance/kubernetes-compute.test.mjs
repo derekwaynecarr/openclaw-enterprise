@@ -3137,6 +3137,25 @@ test("gateway routing caps the Gateway name at a label value's 63 characters", (
       message: "Gateway routing Gateway name must be a DNS-safe Kubernetes resource name.",
     });
   }
+  // The two-cluster harness Gateway is labelled the same way.
+  const twoCluster = twoClusterOptions();
+  assert.throws(
+    () =>
+      createKubernetesComputeDriver({
+        ...twoCluster,
+        executionCluster: {
+          ...twoCluster.executionCluster,
+          harnessRouting: {
+            ...twoCluster.executionCluster.harnessRouting,
+            gatewayName: "a".repeat(64),
+          },
+        },
+      }),
+    {
+      message:
+        "Gateway routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
+    },
+  );
 });
 
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {
