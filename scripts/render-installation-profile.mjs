@@ -7,7 +7,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isKubernetesNamespaceName } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
 
-import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/index.ts";
+import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
