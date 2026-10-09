@@ -18,3 +18,16 @@ app.kubernetes.io/component: {{ .component }}
 {{- if or (empty .namespace) (empty .podLabels) }}{{ fail "grafana.clients requires namespace and nonempty podLabels" }}{{ end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /* Service names are DNS labels, while Helm permits dots and leading digits in release names. Keep admissible short names stable and hash the original release whenever normalization or shortening is needed. */ -}}
+{{- define "demo.serviceName" -}}
+{{- $name := printf "%s-%s" .root.Release.Name .component -}}
+{{- if and (le (len $name) 63) (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $name) -}}
+{{- $name -}}
+{{- else -}}
+{{- $prefix := replace "." "-" .root.Release.Name -}}
+{{- if not (regexMatch "^[a-z]" $prefix) -}}{{- $prefix = printf "demo-%s" $prefix -}}{{- end -}}
+{{- $suffix := printf "-%s-%s" (.root.Release.Name | sha256sum | trunc 12) .component -}}
+{{- printf "%s%s" ($prefix | trunc (int (sub 63 (len $suffix))) | trimSuffix "-") $suffix -}}
+{{- end -}}
+{{- end -}}

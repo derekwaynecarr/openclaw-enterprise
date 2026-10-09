@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-08
-last_updated_session: authoring-run/95ed7983-818c-4af2-8875-1330333f5e41
+updated: 2026-10-09
+last_updated_session: authoring-run/8adc169e-fc08-40ad-823f-a80486252608
 ---
 
 # Common Operational Logging Flow
@@ -230,6 +230,13 @@ service, worker reconciliation, or PostgreSQL audit persistence.
 
 `deploy/helm/openclaw-observability-demo/templates/grafana.yaml:logs.json`
 
+`deploy/helm/openclaw-observability-demo/templates/_helpers.tpl:demo.serviceName`
+preserves short DNS-label Service names. For dotted, leading-digit or overlong
+release names, it normalizes a prefix and appends the original release hash
+and component name. `templates/deployments.yaml` creates those Services;
+`templates/grafana.yaml` uses the same names in both datasource URLs.
+Deployment names, Pod selectors and discovery identity keep the full release.
+
 For the bundled Collector path, Loki retains event names and normalizes attributes
 as structured metadata. Grafana formats metadata at query time without changing
 records. External and Driver-owned pipelines require separate operator review.
@@ -262,6 +269,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 21:42: Bound demo Service names and keep Grafana datasource URLs aligned. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 49d1562335120b125d3f149a5a6a64a5c51577a9)
 
 - 2026-10-08 10:17: Document Collector quantity syntax checks in the accompanying chart change. (authoring-run/95ed7983-818c-4af2-8875-1330333f5e41 - 1fce0eef361dd584212cc3f2ac4d75ab92eb8ff7)
 

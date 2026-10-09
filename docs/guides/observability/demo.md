@@ -170,6 +170,11 @@ dashboard and NetworkPolicy changes. A changed configuration restarts Prometheus
 Grafana, and Loki: their disposable data is lost, and a `kubectl port-forward` to
 Grafana stops working until you start it again.
 
+For a custom release, read its generated Service names with
+`helm get manifest RELEASE -n NAMESPACE` before adapting the port-forward command
+below. Short DNS-label names stay unchanged; other names include the original
+release hash to fit the 63-character Service limit.
+
 Services use `ClusterIP`. Prometheus reads Pod metadata, not Secrets. Grafana
 bundles plugins; startup downloads are disabled. Its disposable database is
 memory-backed so first-start migrations finish in seconds.
