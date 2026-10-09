@@ -111,6 +111,22 @@ export class ChatGPTClient {
       resource.scopes[0] !== CODEX_LOCAL_ACCESS_SCOPE ||
       !Number.isSafeInteger(resource.expires_at)
     ) {
+      // The create applied: a reply naming a credential under the requested account in this
+      // workspace names the one it issued, which stays live until revoked, so remove exactly
+      // that one. Without that, nothing proves which credential is this request's.
+      if (
+        nonempty(resource.id) &&
+        resource.workspace_id === this.workspaceId &&
+        resource.service_account_id === input.accountId
+      ) {
+        try {
+          await this.deleteCredential({ accountId: input.accountId, credentialId: resource.id });
+        } catch {
+          throw new DependencyUnavailableError(
+            "ChatGPT returned an invalid service-account credential that could not be removed.",
+          );
+        }
+      }
       throw new DependencyUnavailableError(
         "ChatGPT returned an invalid service-account credential.",
       );

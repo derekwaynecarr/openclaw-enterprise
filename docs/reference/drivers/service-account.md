@@ -89,6 +89,9 @@ Secret. Issuance and deletion recheck Backend, Driver, and workspace ownership.
 A missing binding makes provider deletion a no-op; conflicting ownership fails.
 Backend and Secret creation register compensation with OCC; a create whose
 reply is lost is not compensated, since nothing proves which account it made.
+A credential reply that fails validation revokes the credential it names under
+the requested account in this workspace. A Secret create that fails removes the
+Secret it may have stored, only when that Secret holds this request's token.
 Deletion revokes the credential, removes its Secret, and deletes the upstream
 account; each step treats an already-absent resource as done, so a retry
 completes a deletion that applied but failed. See
