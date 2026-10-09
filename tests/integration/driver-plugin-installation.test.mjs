@@ -568,7 +568,11 @@ test("compiled Driver export arrays activate through production startup and Conf
       configuration.drivers.configuration = selectedConfiguration();
       await assert.rejects(
         load(owner, configuration),
-        /package.*(?:available|compiled|JavaScript|encoding)/,
+        description === "selected CJS"
+          ? new RegExp(
+              `^Error: drivers\\.configuration\\.package must export precompiled JavaScript ESM: entry ${configurationPackage}/compiled/index\\.cjs is not a \\.mjs or \\.js file\\.$`,
+            )
+          : /package.*(?:available|compiled|JavaScript|encoding)/,
       );
     });
   }
@@ -615,6 +619,11 @@ test("Driver entry format follows the nearest package.json scope Node's import u
       assert.equal(drivers.configurationDriver.implementation, `${configurationPackage}@1.0.0`);
     });
   }
+  // The refusal names the package.json whose scope decided the entry's format.
+  const refusedFormat = (manifest) =>
+    new RegExp(
+      `^drivers\\.configuration\\.package must export precompiled JavaScript ESM: entry ${configurationPackage}/compiled/driver\\.js takes its format from ${configurationPackage}/${manifest.replace(".", "\\.")}, which does not set "type": "module"\\.$`,
+    );
   for (const [description, layout, message] of [
     [
       "nested scope without type under a module root",
@@ -626,7 +635,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
           "compiled/driver.js": commonJSDriver,
         },
       },
-      /^drivers\.configuration\.package must export precompiled JavaScript ESM\.$/,
+      refusedFormat("compiled/package.json"),
     ],
     [
       "nested CommonJS scope under a module root",
@@ -638,7 +647,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
           "compiled/driver.js": commonJSDriver,
         },
       },
-      /^drivers\.configuration\.package must export precompiled JavaScript ESM\.$/,
+      refusedFormat("compiled/package.json"),
     ],
     [
       "escaped type key in the root manifest",
@@ -647,7 +656,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
         entry: "./compiled/driver.js",
         files: { "compiled/driver.js": commonJSDriver },
       },
-      /^drivers\.configuration\.package must export precompiled JavaScript ESM\.$/,
+      refusedFormat("package.json"),
     ],
     [
       "non-string type in the nearest manifest",

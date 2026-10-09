@@ -129,6 +129,9 @@ an existing file exactly (no extension, directory, or `main` lookup). A selected
 missing file, directory, or failed import stops startup. The entry must be
 `.mjs`, or `.js` whose nearest `package.json` within the package declares
 `"type": "module"`; Node's import uses that file, not always the package root.
+The refusal names that `package.json`. Node can also load a `.js` file outside a
+module scope when it detects ESM syntax; the controller refuses it. See the
+[breaking-change notices](../../guides/deploy/breaking-changes.md).
 
 The entry point exports the existing Driver contract, not a separate plugin
 manifest or public plugin SDK. The controller validates its closed JSON Schema
