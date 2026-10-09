@@ -618,10 +618,12 @@ function* interruptedOutput({ lines, omitted }) {
   let end = lines.length;
   while (end > 0) {
     let start = end - 1;
-    let chars = lines[start].length;
-    while (start > 0 && chars + lines[start - 1].length <= interruptedOutputBatchChars) {
+    // Measured as JSON, since escaping can grow a line several times.
+    const size = (line) => JSON.stringify(line).length;
+    let chars = size(lines[start]);
+    while (start > 0 && chars + size(lines[start - 1]) <= interruptedOutputBatchChars) {
       start -= 1;
-      chars += lines[start].length;
+      chars += size(lines[start]);
     }
     yield `${JSON.stringify({
       type: "test:output",
@@ -696,16 +698,24 @@ export default async function* jsonLinesReporter(source) {
   const output = outputTail();
   let failed = false;
   let outputSent = false;
-  // Tests dequeued and not yet complete: the ones a timeout interrupted.
+  // Tests dequeued and not yet complete: the ones a timeout interrupted. Tests
+  // declared in a loop can share a key, so each key counts its runs.
   const running = new Map();
   const runningKey = (data) => `${data.nesting}:${data.line}:${data.column}:${data.name}`;
   for await (const event of source) {
     if (event.type === "test:dequeue" && typeof event.data?.name === "string") {
-      running.set(runningKey(event.data), event.data);
+      const key = runningKey(event.data);
+      running.set(key, { data: event.data, count: (running.get(key)?.count ?? 0) + 1 });
       continue;
     }
     if (event.type === "test:complete" && typeof event.data?.name === "string") {
-      running.delete(runningKey(event.data));
+      const key = runningKey(event.data);
+      const entry = running.get(key);
+      if (entry?.count > 1) {
+        entry.count -= 1;
+      } else {
+        running.delete(key);
+      }
       continue;
     }
     if (event.type === "test:interrupted") {
@@ -714,7 +724,7 @@ export default async function* jsonLinesReporter(source) {
       yield `${JSON.stringify({
         type: "test:interrupted",
         data: {
-          running: [...running.values()].slice(-interruptedTestLimit).map((data) => ({
+          running: [...running.values()].slice(-interruptedTestLimit).map(({ data }) => ({
             name: data.name,
             line: data.line,
             nesting: data.nesting,

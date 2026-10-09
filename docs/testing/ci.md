@@ -118,7 +118,7 @@ so tests must not print secrets. Each record has a `reason`. A file stopped at t
 runner timeout gets `timeout` with its elapsed time, the tests still running and the
 output tail so far; Node exits soon after, so a long tail can lose its oldest lines
 (`omittedLines` counts them). One that fails preparation gets `prepare` with the redacted
-error message and stack, never the command's output.
+error message and stack; a failed command's message can quote the head of its stderr.
 
 The `k3d-model`, `gateway-routing`, `slack`, `openshell`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable Node 24 `NODE_BASE_IMAGE`; gateway-routing, Slack and OpenShell CI use the repository variable `CONTAINER_NODE_BASE_IMAGE`. Preparation supplies the imported controller digest and private routing CA paths; Slack still requires approved runtime images and credentials.
 

@@ -500,8 +500,10 @@ function sanitizePreparationError(error) {
 
 // The diagnostics report's copy of a preparation error: its message and stack
 // frames with the failure-detail redaction (the results keep only the closed
-// contract above). Command output attached to the error is never included.
-function preparationFailureText(error, lane, root) {
+// contract above). A failed command's message quotes the head of its stderr; the
+// output attached to the error is not read. The lane state's env (image
+// references, database URLs) joins the job env as values to redact.
+async function preparationFailureText(error, lane, statePath, root) {
   if (!(error instanceof Error)) {
     return {};
   }
@@ -514,10 +516,16 @@ function preparationFailureText(error, lane, root) {
     .filter((line) => /^\s+at\s/u.test(line))
     .map((line) => line.trim())
     .join("\n");
+  let stateEnv;
+  try {
+    stateEnv = JSON.parse(await readFile(statePath, "utf8"))?.env;
+  } catch {
+    // No lane state, or not JSON.
+  }
   return (
     redactFailureDetail(
       { message: message.slice(0, failureInputLimit), stack: frames.slice(0, failureInputLimit) },
-      failureSecrets([process.env, lane.env]),
+      failureSecrets([process.env, lane.env, isObject(stateEnv) ? stateEnv : {}]),
       root,
     ) ?? {}
   );
@@ -823,7 +831,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       );
       await recordFailure(setup, statePath, lane.name, relativePath, {
         reason: "prepare",
-        error: { ...sanitized, ...preparationFailureText(error, lane, root) },
+        error: { ...sanitized, ...(await preparationFailureText(error, lane, statePath, root)) },
       });
       return emptyFileResult(relativePath, issues);
     }
