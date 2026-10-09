@@ -256,11 +256,15 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "10443" }),
     /distinct from private Envoy HTTPS/,
   );
+  // Dedicated Agent hostnames are agent-<32 hex>.<domain>, so the domain stops at 253 - 39.
   const longestLabel = "a".repeat(63);
-  const longestDomain = [longestLabel, longestLabel, longestLabel, "a".repeat(61)].join(".");
-  const overlongDomain = [longestLabel, longestLabel, longestLabel, "a".repeat(62)].join(".");
-  assert.equal(longestDomain.length, 253);
-  assert.equal(overlongDomain.length, 254);
+  const longestDomain = [longestLabel, longestLabel, "a".repeat(22), longestLabel].join(".");
+  const overlongDomain = [longestLabel, longestLabel, "a".repeat(23), longestLabel].join(".");
+  const hostnameLimitDomain = [longestLabel, longestLabel, longestLabel, "a".repeat(61)].join(".");
+  assert.equal(longestDomain.length, 214);
+  assert.equal(overlongDomain.length, 215);
+  assert.equal(hostnameLimitDomain.length, 253);
+  assert.equal(`agent-${"0".repeat(32)}.${longestDomain}`.length, 253);
   const longest = await resources(
     (await render({ ...sandboxValues, "gatewayRouting.sandbox.domain": longestDomain })).stdout,
   );
@@ -270,16 +274,16 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
       .spec.listeners.find((item) => item.name === "sandbox").hostname,
     `*.${longestDomain}`,
   );
-  for (const domain of [
-    "a..b.com",
-    "example.com-",
-    "example.-com",
-    `${"a".repeat(64)}.test`,
-    overlongDomain,
-  ]) {
+  for (const domain of ["a..b.com", "example.com-", "example.-com", `${"a".repeat(64)}.test`]) {
     await assert.rejects(
       render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
       /must be a DNS hostname/,
+    );
+  }
+  for (const domain of [overlongDomain, hostnameLimitDomain]) {
+    await assert.rejects(
+      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
+      /must not exceed 214 characters, leaving room for the agent-<32 hex>\. prefix/,
     );
   }
   await assert.rejects(

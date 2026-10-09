@@ -10,6 +10,13 @@ you run now, then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-09: sandbox domains longer than 214 characters are refused
+
+Helm and the controller now refuse a `gatewayRouting.sandbox.domain` over 214
+characters, so each dedicated Agent hostname (`agent-<32 hex>.<domain>`) fits
+the 253-character limit. Such Installations could not route dedicated Agent
+previews anyway; pick a shorter domain and wildcard certificate, then upgrade.
+
 ## 2026-10-07: migration 0049 refuses managed ChatGPT service-account Agents
 
 **What breaks.** Since #1648 (`94957cedc`), migration
