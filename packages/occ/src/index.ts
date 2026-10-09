@@ -269,6 +269,7 @@ export {
 export type { RemovedAccessBinding } from "./iam-policy-cleanup.ts";
 export {
   ActivationFailedError,
+  ComputePreparationFailedError,
   ActivationPendingError,
   agentEntryMessage,
   AgentCredentialSourceBindingError,

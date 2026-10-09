@@ -1,15 +1,14 @@
 ---
 created: 2026-08-24
-updated: 2026-10-07
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-09
+last_updated_session: authoring-run/991ba230-4db6-45cb-8456-7561ee7bd446
 ---
 
 # Harness Authentication Binding Flow
 
 ## Overview
 
-An operator stores an OpenAI or Anthropic API key, or a service account token, as an OCC Secret or separately issues a
-ChatGPT account credential, then selects that source through Agent `harnessAuth`.
+An operator selects an OCC Secret or separately issued ChatGPT account credential through Agent `harnessAuth`.
 Deployment freezes the authorized binding; the worker rechecks it and Kubernetes
 renders the credential only into the model-executing workload, which
 authenticates before guarded activation. With `{ "method": "runtime" }`,
@@ -35,8 +34,13 @@ see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-stor
 graph TD
   A["Store key or separately issue account credential"] --> B["Save Agent harnessAuth reference"]
   DA["Complete device login in OCE"] --> B
-  G -->|dedicated OAuth| OA["Claim source and copy bundle to private disk"]
-  OA --> OB["Consume source and remove seed before native start"]
+  G -->|dedicated OAuth| OA["<b>Claim source</b><br/>Create writer Job"]
+  OA --> OC{"<b>Job condition</b>"}
+  OC -->|pending| OP["<b>Observe existing Job</b>"]
+  OP --> OC
+  OC -->|Complete| OB["<b>Consume source</b><br/>Erase Job, Pods, seed"]
+  OC -->|Failed| OF["<b>Terminal failure</b><br/>Persist cleanup"]
+  OF --> OG["<b>Retire failed revision</b><br/>Resume after restart"]
   OB --> J
   R["Operator provisions protected host env"] --> B
   D -->|runtime| S["SSH starts embedded gateway using host env"]
@@ -58,6 +62,11 @@ graph TD
   H --> M{"Native primary model probe succeeds?"}
   M -->|no| N["Gateway stays unready; replacement may interrupt service"]
   M -->|yes| O["Gateway becomes ready; complete activation"]
+
+  classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
+  classDef blocked fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
+  class OA,OP,OB,OG operation
+  class OC,OF blocked
 ```
 
 ## Execution Trace
@@ -230,26 +239,34 @@ Secret values.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareOAuthCredentials`,
 `removeOAuthBootstrap`
 
-After dedicated predecessors stop, Compute claims the source Secret with an atomic
-resource-version update, binding its immutable UID to the Agent and PVC UID.
-Single-cluster source and seed share the tenant namespace; two-cluster sources
-use the control client. Seed Secret,
-bootstrap Deployment, and private PVC use the resolved execution-plane namespace
-and client.
-A bootstrap-only Deployment runs
+After predecessors stop, Compute atomically claims the source Secret's immutable
+UID for the Agent and PVC. Single-cluster source and seed share the tenant
+namespace; two-cluster sources use control, while seed, Job, and PVC use execution.
+A create-once Job runs
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT`
-and writes native auth and a generation receipt to disk. Repeating
-that generation preserves the bundle. A new selected source
-can replace it after predecessor termination: the script empties `codex-home`,
-writes through exclusive temporaries, and re-reads both files before readiness.
+and writes native auth and a generation receipt. Repeating that generation
+preserves the bundle; a new source empties `codex-home`, writes exclusive
+temporaries, and re-reads both files before successful exit. Kernel-owned
+`flock` serializes duplicate writers. The
+[bootstrap policy](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job)
+defines retries and deadline; pending observations reuse the same Job.
 A later non-OAuth revision's private-state init container removes `codex-home`.
 
-Compute observes bootstrap readiness, replaces the original Secret value with a
-consumed marker, removes the seed Secret, and waits for bootstrap Pods to
-terminate; only then can Codex start. Its OAuth startup branch opens existing
+Compute observes `Complete`, replaces the original Secret value with a consumed
+marker, foreground-deletes the Job, waits for its exact Pods to disappear, and
+removes the seed Secret; only then can Codex start. Recovery from a consumed
+marker repeats cleanup, never reseeding. Its OAuth startup branch opens existing
 auth, validates the receipt, and runs the ordinary model probe. Native refresh
 writes the same persistent file. Later revisions retain the source and reopen disk;
 a missing file or changed PVC fails with reconnect required.
+
+For `Failed`, Compute throws the terminal preparation error. In
+`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision`, OCC commits
+failure and exact runtime-retirement work together through
+`packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.enqueueRepositoryCleanup`.
+`ControllerWorker.processRepositoryCleanup` resumes `stopRevision` after restart
+and defers incomplete cleanup, including without repository credentials.
+The failed deployment cannot create another Job without a new Deploy.
 
 Token brokerage remains separate work in progress. OCE never refreshes
 a consumed bundle or restores its seed, and the source seal prevents ordinary
@@ -257,6 +274,11 @@ Secret updates from resetting custody.
 
 ## Debugging and Verification
 
+- `node --test tests/integration/kubernetes-oauth-bootstrap-real.test.mjs` with
+  the [fixture prerequisites](../testing/kubernetes.md#kubernetes-http-fixture)
+  proves Job handoff and retry exhaustion through the real API/worker and cluster
+  with synthetic provider credentials. PostgreSQL worker integration separately
+  checks that failed cleanup resumes after restart without preparing again.
 - `node --test tests/conformance/plugin-compute.test.mjs` checks the filtered
   Codex child environments, startup-derived listener hash, and retained wrapper
   token. The runtime-image startup test checks the native Codex shell without a
@@ -294,6 +316,8 @@ Secret updates from resetting custody.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 16:40: Replace the OAuth writer Deployment with a bounded Job and persist terminal failure with resumable cleanup in the accompanying change. (authoring-run/991ba230-4db6-45cb-8456-7561ee7bd446 - f92cf60b2ae4740a93bdd41e94e8f1c7fc92218f)
 
 - 2026-10-07 13:44: Reject imported and managed PAT bindings outside dedicated Codex during admission. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - 09be9c241)
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
