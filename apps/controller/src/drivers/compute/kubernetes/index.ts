@@ -8,6 +8,7 @@ import {
 import { createHash, randomBytes, X509Certificate } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { isAbsolute } from "node:path";
+import { isKubernetesResourceName } from "./resource-name.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -1522,10 +1523,7 @@ function validateSandboxDomain(value: string): void {
 }
 
 function validateKubernetesResourceName(value: string, description: string): void {
-  if (
-    value.length > 253 ||
-    !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/.test(value)
-  ) {
+  if (!isKubernetesResourceName(value)) {
     throw new ConfigurationFailure(`${description} must be a DNS-safe Kubernetes resource name.`);
   }
 }

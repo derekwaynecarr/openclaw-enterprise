@@ -7,7 +7,11 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { loadStartupConfigurationSnapshot } from "../../apps/controller/src/composition/installation-config.ts";
-import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  createKubernetesComputeDriver,
+  KubernetesComputeDriver,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 const digestA = "a".repeat(64);
@@ -1251,4 +1255,67 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
   );
   assert.match(accepted.values, /channelDirectoryProxyUrl: http:\/\/192\.0\.2\.10:8080/);
   assert.match(accepted.installation, /proxyUrl: http:\/\/192\.0\.2\.10:8080/);
+});
+
+test("profiles refuse gateway namespaces the compute driver refuses", () => {
+  const configured = conformanceKubernetesOptions({
+    gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
+  });
+  const { gatewayClients: _gatewayClients, ...network } = configured.network;
+  const routing = {
+    hostname: "agents.example.internal",
+    gatewayName: "oce-agent-gateways",
+    gatewayNamespace: "openclaw-system",
+    envoyNamespace: "envoy-gateway-system",
+  };
+  const admit = (gatewayRouting) =>
+    createKubernetesComputeDriver({ ...configured, network, gatewayRouting });
+  const namespaceMessage =
+    /controlPlane\.namespace must be a DNS-safe Kubernetes resource name of at most 253 characters/;
+  const envoyMessage =
+    /controlPlane\.envoyNamespace must be a DNS-safe Kubernetes resource name of at most 253 characters/;
+  const controlPlane = baseInput().controlPlane;
+  for (const namespace of [
+    "openclaw/system",
+    "OpenClaw",
+    "foo_bar",
+    "-system",
+    "system-",
+    `${"a".repeat(254)}`,
+    "openclaw-system ",
+  ]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ controlPlane: { ...controlPlane, namespace } }),
+      namespaceMessage,
+    );
+    assert.throws(
+      () => admit({ ...routing, gatewayNamespace: namespace }),
+      /Gateway routing Gateway namespace must be a DNS-safe Kubernetes resource name/,
+    );
+  }
+  for (const envoyNamespace of ["envoy/system", "Envoy", `${"a".repeat(254)}`]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ controlPlane: { ...controlPlane, envoyNamespace } }),
+      envoyMessage,
+    );
+    assert.throws(
+      () => admit({ ...routing, envoyNamespace }),
+      /Gateway routing Envoy namespace must be a DNS-safe Kubernetes resource name/,
+    );
+  }
+  const namespace = "a".repeat(253);
+  const output = render(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...controlPlane, namespace, envoyNamespace: "gateway.example" },
+    }),
+  );
+  assert.equal(output.summary.ok, true);
+  assert.match(output.installation, new RegExp(`gatewayNamespace: ${namespace}`));
+  assert.match(output.installation, /envoyNamespace: gateway\.example/);
+  assert.doesNotThrow(() =>
+    admit({ ...routing, gatewayNamespace: namespace, envoyNamespace: "gateway.example" }),
+  );
 });

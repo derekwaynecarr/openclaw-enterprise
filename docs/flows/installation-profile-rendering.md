@@ -1,6 +1,6 @@
 ---
 created: 2026-09-28
-updated: 2026-10-07
+updated: 2026-10-09
 last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
 ---
 
@@ -88,7 +88,12 @@ provisioning for `codex_pat` is optional and renders only when `codex.managedSer
 supplied.
 
 Preflight checks `controlPlane.releaseName` against Helm's lowercase release-name
-syntax and 53-character maximum. The shared `digestImage` check in `buildRendered`
+syntax and 53-character maximum. It also requires `controlPlane.namespace` and,
+when set, `controlPlane.envoyNamespace` to be DNS-safe Kubernetes resource names
+of at most 253 characters, the same rule the Compute driver applies to
+`gatewayNamespace` and `envoyNamespace`. The chart applies that rule to
+`gatewayRouting.envoyNamespace`. A slash, an uppercase letter, or a longer name
+fails before any deployable file is written. The shared `digestImage` check in `buildRendered`
 requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters for
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`.
 Noncanonical digest casing adds a field-specific diagnostic; the final error
@@ -206,6 +211,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09: Refuse gateway and Envoy namespaces the Compute driver refuses.
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 

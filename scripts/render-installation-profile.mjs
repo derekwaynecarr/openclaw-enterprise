@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isKubernetesResourceName } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -924,7 +925,10 @@ function buildRendered(profile, parsed, diagnostics) {
     validate: (value) => value.length <= 53 && helmReleaseName.test(value),
     description: "a valid Helm release name of at most 53 characters",
   });
-  const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics);
+  const namespace = asString(controlPlane, ["controlPlane", "namespace"], diagnostics, {
+    validate: isKubernetesResourceName,
+    description: "a DNS-safe Kubernetes resource name of at most 253 characters",
+  });
   const clusterName = asString(controlPlane, ["controlPlane", "clusterName"], diagnostics);
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
     pattern: digestImage,
@@ -991,8 +995,10 @@ function buildRendered(profile, parsed, diagnostics) {
     };
   }
   const envoyNamespace =
-    optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics) ??
-    "envoy-gateway-system";
+    optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics, {
+      validate: isKubernetesResourceName,
+      description: "a DNS-safe Kubernetes resource name of at most 253 characters",
+    }) ?? "envoy-gateway-system";
   const repositoryEnabled = asBoolean(repository, ["repository", "enabled"], diagnostics, false);
   const managedSlackProxyEnabled = asBoolean(
     channels,
