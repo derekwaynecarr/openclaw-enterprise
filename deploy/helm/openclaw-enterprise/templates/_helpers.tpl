@@ -190,7 +190,12 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- /* The bootstrap Job, in production, refuses plain HTTP unless the host is 127.0.0.1 or localhost. Other spellings of 127.0.0.1 (127.1, 0177.0.0.1, a trailing dot) are refused here. */ -}}
 {{- if and (ne $baseUrl.scheme "https") (not (has (lower $baseUrl.hostname) (list "127.0.0.1" "localhost"))) -}}{{- fail "auth.baseUrl must use HTTPS unless its host is 127.0.0.1 or localhost; the bootstrap Job refuses plain HTTP elsewhere" -}}{{- end -}}
-{{- if not .Values.bootstrap.adminEmail -}}{{- fail "bootstrap.adminEmail must identify the first administrator account" -}}{{- end -}}
+{{- /* The bootstrap Job trims with JavaScript trim, lowercases, then requires local@domain.tld. The rendered env keeps the value as written. */ -}}
+{{- $adminEmailTrim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
+{{- $adminEmail := lower (regexReplaceAll $adminEmailTrim (toString .Values.bootstrap.adminEmail) "") -}}
+{{- if not (regexMatch "^[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+@[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+\\.[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" $adminEmail) -}}
+{{- fail "bootstrap.adminEmail must contain a valid administrator email" -}}
+{{- end -}}
 {{- /* The bootstrap Job checks installation.name with isName before it creates anything. */ -}}
 {{- $installationName := toString .Values.installation.name -}}
 {{- if or (ne $installationName (trim $installationName)) (hasPrefix "\uFEFF" $installationName) (hasSuffix "\uFEFF" $installationName) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $installationName)) -}}
