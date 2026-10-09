@@ -2886,9 +2886,9 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
   };
 }
 
-// main's runtime image stays tagged under this name on the warm job's runner (see
-// warmImageCache). It is outside cleanup's owned names and is never pushed.
-const warmRuntimeImageTag = "localhost/openclaw-ci-main/runtime:warm";
+// Repository of main's runtime images left tagged in the runners' shared image
+// cache (see warmImageCache). It is outside cleanup's owned names and is never pushed.
+const warmRuntimeImageRepository = "localhost/openclaw-ci-main/runtime";
 
 // Builds the Images and Packaging controller and runtime images only to write
 // main's hosted BuildKit cache (ci-image-cache.yml). It uses that lane's state,
@@ -2927,16 +2927,24 @@ async function warmImageCache({ statePath }) {
   );
   // The hosted runners' Docker data comes from a shared image cache, which keeps
   // the images a job leaves tagged. Cleanup removes this run's owned tag, so also
-  // tag main's runtime image under a fixed local name that no cleanup owns: image
-  // lanes then find the ID their restored cache resolves to (reuseEngineImage)
-  // instead of downloading and loading it. The tag is never pushed; the next warm
-  // run moves it to that run's image.
-  const image = runtime.env.OCC_TEST_RUNTIME_IMAGE;
-  await boundedImageCommand(["tag", image, warmRuntimeImageTag]);
+  // tag main's runtime image under a local name that no cleanup owns: image lanes
+  // then find the ID their restored cache resolves to (reuseEngineImage) instead
+  // of downloading and loading it. The tag names the image ID, so each new image
+  // gets its own tag instead of moving one; the shared cache evicts images unused
+  // for 8 days. Nothing is pushed.
+  const owned = runtime.env.OCC_TEST_RUNTIME_IMAGE;
   const id = (
-    await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", warmRuntimeImageTag])
+    await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", owned])
   ).stdout.trim();
-  progress("image-cache-warm", JSON.stringify({ stage: "runtime-image-kept", image: id }));
+  if (!/^sha256:[a-f0-9]{64}$/u.test(id)) {
+    throw new Error("The warm runtime image has no image ID to keep.");
+  }
+  const kept = `${warmRuntimeImageRepository}:${id.slice("sha256:".length, "sha256:".length + 12)}`;
+  await boundedImageCommand(["tag", owned, kept]);
+  progress(
+    "image-cache-warm",
+    JSON.stringify({ stage: "runtime-image-kept", image: id, tag: kept }),
+  );
 }
 
 async function main() {
