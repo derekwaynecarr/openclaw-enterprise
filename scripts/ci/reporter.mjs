@@ -609,21 +609,22 @@ function outputTail() {
 }
 
 const interruptedTestLimit = 20;
+// About this much JSON per batch (the line strings, without the envelope).
 const interruptedOutputBatchChars = 32 * 1024;
 
 // Node exits soon after an interruption and can cut what is still queued, so the
 // tail goes out in small batches, newest first: a cut loses the oldest lines and
 // at most one partial JSON line, which run-tests skips.
 function* interruptedOutput({ lines, omitted }) {
+  // Measured as JSON, since escaping can grow a line several times.
+  const sizes = lines.map((line) => JSON.stringify(line).length);
   let end = lines.length;
   while (end > 0) {
     let start = end - 1;
-    // Measured as JSON, since escaping can grow a line several times.
-    const size = (line) => JSON.stringify(line).length;
-    let chars = size(lines[start]);
-    while (start > 0 && chars + size(lines[start - 1]) <= interruptedOutputBatchChars) {
+    let chars = sizes[start];
+    while (start > 0 && chars + sizes[start - 1] <= interruptedOutputBatchChars) {
       start -= 1;
-      chars += size(lines[start]);
+      chars += sizes[start];
     }
     yield `${JSON.stringify({
       type: "test:output",

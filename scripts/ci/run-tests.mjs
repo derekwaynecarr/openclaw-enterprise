@@ -500,7 +500,7 @@ function sanitizePreparationError(error) {
 
 // The diagnostics report's copy of a preparation error: its message and stack
 // frames with the failure-detail redaction (the results keep only the closed
-// contract above). A failed command's message quotes the head of its stderr; the
+// contract above). A failed command's message quotes its stderr (or stdout); the
 // output attached to the error is not read. The lane state's env (image
 // references, database URLs) joins the job env as values to redact.
 async function preparationFailureText(error, lane, statePath, root) {
