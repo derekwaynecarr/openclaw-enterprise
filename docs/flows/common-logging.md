@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-09
-last_updated_session: authoring-run/8adc169e-fc08-40ad-823f-a80486252608
+updated: 2026-10-10
+last_updated_session: authoring-run/e72ad138-e0b2-498e-885b-f8fa56caaeb0
 ---
 
 # Common Operational Logging Flow
@@ -153,7 +153,9 @@ pass through. Kubernetes performs complete validation after rendering. See the
 for the supported scope.
 
 The chart validates one exporter destination: an IPv4 `/32` or paired namespace/Pod
-selectors, with a bounded TCP port. It renders exporter egress alongside DNS/API
+selectors, with a decimal TCP port from 1 to 65535. Leading zeros fail rendering:
+Kubernetes YAML would read them as octal and grant a different port. It renders
+exporter egress alongside DNS/API
 access. Empty Collector metrics selectors grant no ingress; paired selectors admit
 port 8888. Policies are additive. The demo can export privately to Loki using
 the bundled Collector or an external Collector with its own filtering policy.
@@ -278,6 +280,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 00:44: Refuse noncanonical Collector exporter ports before Kubernetes YAML can change their meaning. (authoring-run/e72ad138-e0b2-498e-885b-f8fa56caaeb0 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
 
 - 2026-10-09 23:11: Document renamed Loki exporter addresses and Collector refresh after demo upgrades. (authoring-run/8adc169e-fc08-40ad-823f-a80486252608 - 6668e2fc8477ca780b15e25a7320589a7612284f)
 

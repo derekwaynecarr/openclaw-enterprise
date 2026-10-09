@@ -4148,6 +4148,36 @@ test("Helm renders a values-file worker timeout of 1800000 as digits", tooling, 
   assert.doesNotMatch(rendered.stdout, /OCC_WORKER_CONVERGENCE_TIMEOUT_MS\n\s+value: "1\.8e\+06"/);
 });
 
+test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", tooling, async () => {
+  const field = "logging.collector.exporter.port";
+  for (const value of ["03100", "0443", "010", "00080", "0", "65536", "18446744073709551617"]) {
+    await assert.rejects(
+      render(productionCollectorValues, { strings: { [field]: value } }),
+      /logging\.collector\.exporter\.port must be an integer TCP port from 1 to 65535/,
+      `Must refuse noncanonical or out-of-range exporter port: ${value}`,
+    );
+  }
+  for (const value of ["1", "3100", "65535"]) {
+    const objects = await resources(
+      (await render(productionCollectorValues, { strings: { [field]: value } })).stdout,
+    );
+    const policy = objects.find(
+      ({ kind, metadata }) =>
+        kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-collector-egress",
+    );
+    assert.deepEqual(policy.spec.egress.at(-1).ports, [{ protocol: "TCP", port: Number(value) }]);
+  }
+  const numeric = await resources(
+    (await render({ ...productionCollectorValues, [field]: 3100 })).stdout,
+  );
+  assert.deepEqual(
+    numeric
+      .find(({ metadata }) => metadata.name === "openclaw-enterprise-collector-egress")
+      .spec.egress.at(-1).ports,
+    [{ protocol: "TCP", port: 3100 }],
+  );
+});
+
 test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
   const collector = {
     "logging.collector.enabled": "true",
