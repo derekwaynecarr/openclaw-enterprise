@@ -567,8 +567,11 @@ class FlakyConfigurationCoreV1Api extends FakeConfigurationCoreV1Api {
     }
     if (this.stalls.has(method)) {
       const signal = currentComputeAbortSignal();
+      if (signal === undefined) {
+        throw new Error(`${method} would stall with no deadline`);
+      }
       await new Promise((_, reject) =>
-        signal?.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
       );
     }
   }
