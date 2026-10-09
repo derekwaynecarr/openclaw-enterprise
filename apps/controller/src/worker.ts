@@ -60,6 +60,7 @@ import {
   provisioningEffectReceipt as provisioningEffectReceiptForRecord,
   provisioningPendingEffect,
   type ClaimedWork,
+  type ControllerWork,
   type NativeWorkerSupport,
   type ProvisioningEffectReceipt,
   type PlatformReadView,
@@ -1021,7 +1022,8 @@ export class ControllerWorker {
       // Every pass starts here, including back-to-back claims that skip the idle delay.
       this.progress();
       try {
-        await this.queue.recoverStale();
+        const recovery = await this.queue.recoverStale();
+        await this.scheduleRecoveredCredentialWithdrawals(recovery.failed);
         const claim = await this.queue.claim();
         if (claim !== undefined) {
           const started = process.hrtime.bigint();
@@ -2624,7 +2626,8 @@ export class ControllerWorker {
   /**
    * Withdrawal work that ran out of attempts on a retryable failure (an unreachable gateway, or
    * one that has not confirmed revocation yet) queues one later series of attempts for its
-   * revision, in the transaction that fails it. Compute without a maintenance interval (the
+   * revision, in the transaction that fails it, or right after stale-claim recovery fails it
+   * (scheduleRecoveredCredentialWithdrawals). Compute without a maintenance interval (the
    * Kubernetes Driver) has no pass that would re-queue it, so without this a dependency outage
    * longer than the attempt budget would leave a token usable after the dependency recovers.
    * The queued series keeps `withdrawalInProgress` true while it waits. Each series waits twice
@@ -2638,7 +2641,7 @@ export class ControllerWorker {
   private async scheduleCredentialWithdrawalRecovery(
     unit: PlatformUnitOfWork,
     queue: Pick<PostgresWorkQueue, "enqueue">,
-    claim: ClaimedWork,
+    claim: ControllerWork,
   ): Promise<void> {
     const recovery = nextCredentialWithdrawalRecovery(claim.idempotencyKey);
     if (
@@ -2672,6 +2675,27 @@ export class ControllerWorker {
       agentTarget: CREDENTIAL_WITHDRAWAL_TARGET,
       availableAt: new Date(Date.now() + credentialWithdrawalRecoveryDelayMs(recovery.number)),
     });
+  }
+
+  /**
+   * Stale-claim recovery fails withdrawal work whose lease ran out on its last attempt (its
+   * worker died, or a gateway call outlasted the lease) without the worker's final pass. Each
+   * such item gets its next series here, as if that pass had failed it, in its own transaction
+   * that takes the Namespace and Agent first. A replay or another series queued in between wins
+   * (the outstanding-work check), so this never starts a second chain.
+   */
+  private async scheduleRecoveredCredentialWithdrawals(
+    failed: readonly ControllerWork[],
+  ): Promise<void> {
+    for (const work of failed) {
+      if (!isCredentialWithdrawalWork(work) || work.agentId === undefined) {
+        continue;
+      }
+      await this.state.transactWithQueue(async (unit, queue) => {
+        await this.lockClaimScope(unit, work);
+        await this.scheduleCredentialWithdrawalRecovery(unit, queue, work);
+      }, this.queueOptions);
+    }
   }
 
   private async appendCredentialWithdrawalAudit(
@@ -4354,14 +4378,17 @@ export class ControllerWorker {
   // Agent, such as deploy, stop, delete or credential withdrawal.
   private async lockClaimAgent(
     unit: PlatformUnitOfWork,
-    claim: ClaimedWork,
+    claim: Pick<ControllerWork, "namespaceId" | "agentId">,
   ): Promise<Readonly<Agent> | undefined> {
     await unit.namespaces.lockNamespace(claim.namespaceId, { includeDeleted: true });
     return unit.agents.lockAgent(claim.namespaceId, claim.agentId!);
   }
 
   // lockClaimAgent for work that may carry no Agent (a malformed withdrawal target).
-  private async lockClaimScope(unit: PlatformUnitOfWork, claim: ClaimedWork): Promise<void> {
+  private async lockClaimScope(
+    unit: PlatformUnitOfWork,
+    claim: Pick<ControllerWork, "namespaceId" | "agentId">,
+  ): Promise<void> {
     if (claim.agentId === undefined) {
       await unit.namespaces.lockNamespace(claim.namespaceId, { includeDeleted: true });
     } else {

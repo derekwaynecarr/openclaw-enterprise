@@ -822,6 +822,83 @@ test(
 );
 
 test(
+  "a withdrawal whose last attempt outlives its lease is retried later and revoked without a replay",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const { owner, candidate: active } = await fixture.admitInitialRevision("withdraw-lost-lease", {
+      agent: { auth: "credential_source" },
+    });
+    let gatewayDown = true;
+    let calls = 0;
+    const lastAttempt = Promise.withResolvers();
+    const lastAttemptReleased = Promise.withResolvers();
+    context.after(() => lastAttemptReleased.resolve());
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async withdrawCredentialSource(_revision, source) {
+          // The series' last gateway call hangs past the claim's lease.
+          if (++calls === 2) {
+            lastAttempt.resolve();
+            await lastAttemptReleased.promise;
+          }
+          if (gatewayDown) {
+            throw new DependencyUnavailableError("The OpenShell gateway is unreachable.");
+          }
+          return { sourceId: source.id, state: "revoked" };
+        },
+      },
+      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
+    );
+    await fixture.work(active, "succeeded");
+    const request = withdrawalRequest(fixture, owner, owner.harnessAuth.sourceId);
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
+    const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
+    const [first] = await withdrawalAttempts(fixture, active);
+
+    // The lease runs out during the last attempt, so stale-claim recovery fails the work, not
+    // the worker's final pass. It still queues the next series.
+    await lastAttempt.promise;
+    const claimed = await fixture.work(first, "claimed");
+    assert.equal(claimed.attempt_count, 2);
+    assert.equal((await fixture.expireClaim(first, claimed.claim_token)).rowCount, 1);
+    lastAttemptReleased.resolve();
+    await fixture.work(first, "failed_permanent");
+    assert.equal((await fixture.workResult(first)).rows[0].reason_code, "LEASE_EXPIRED");
+    const retry = await waitFor("the next series after a lost lease", async () => {
+      const { rowCount } = await fixture.observerPool.query(
+        `SELECT 1 FROM occ.controller_work
+         WHERE revision_id = $1 AND agent_target = 'credentials_withdrawn' AND state = 'queued'`,
+        [active.id],
+      );
+      return rowCount === 1 ? queuedWithdrawal(fixture, active) : undefined;
+    });
+    assert.equal(retry.idempotencyKey, `${first.idempotencyKey}:recovery:1`);
+    assertRetryDelay(retry, 30_000);
+    const waiting = await read();
+    assert.equal(waiting.state, "pending");
+    assert.equal(waiting.withdrawalInProgress, true);
+
+    // The gateway is back. Nobody replays: the scheduled retry revokes the source.
+    gatewayDown = false;
+    await runScheduledRetryNow(fixture, retry);
+    await fixture.work(retry, "succeeded");
+    const revoked = await read();
+    assert.equal(revoked.state, "revoked");
+    assert.equal(revoked.withdrawalInProgress, false);
+    assert.equal(calls, 3);
+    assert.deepEqual(
+      (await withdrawalAudit(fixture)).map(({ outcome, reason_code }) => ({
+        outcome,
+        reason_code,
+      })),
+      [{ outcome: "success", reason_code: "CREDENTIALS_WITHDRAWN" }],
+    );
+  },
+);
+
+test(
   "a terminally failing credential withdrawal takes the Namespace and Agent before its withdrawal rows",
   requiresPostgres,
   async (context) => {
