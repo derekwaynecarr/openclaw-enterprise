@@ -218,8 +218,8 @@ keys with the chart defaults (`client-id` and `client-secret`) when a key is omi
 Each provider needs its own Secret, as the chart requires: its `secretName`
 (default `occ-github-login`, `occ-google-login` or `occ-oidc-login`) must not
 name another provider's Secret, `gatewayApiKeySecretName`, the ChatGPT admin
-Secret, a repository Secret, or the chart's `occ-installation-startup`,
-`occ-database` and `occ-auth` Secrets.
+Secret when `codex.managedServiceAccounts` is set, a repository Secret, or the
+chart's `occ-installation-startup`, `occ-database` and `occ-auth` Secrets.
 
 `github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
 and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`

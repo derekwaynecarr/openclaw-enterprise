@@ -864,7 +864,28 @@ function section(source, key, diagnostics, required = true) {
   return record(value, key, diagnostics);
 }
 
+// YAML has no escape for a lone UTF-16 surrogate, so Helm cannot parse a values.yaml that
+// carries one and no consumer accepts it.
+function wellFormedText(value, path, diagnostics) {
+  if (typeof value === "string") {
+    if (!value.isWellFormed()) {
+      diagnostics.errors.push(`${path} must be well-formed Unicode text.`);
+    }
+  } else if (Array.isArray(value)) {
+    value.forEach((entry, index) => wellFormedText(entry, `${path}[${index}]`, diagnostics));
+  } else if (typeof value === "object" && value !== null) {
+    for (const [key, entry] of Object.entries(value)) {
+      const keyPath = path === "" ? key : `${path}.${key}`;
+      if (!key.isWellFormed()) {
+        diagnostics.errors.push(`${path || "input"} keys must be well-formed Unicode text.`);
+      }
+      wellFormedText(entry, keyPath, diagnostics);
+    }
+  }
+}
+
 function buildInput(rawInput, diagnostics) {
+  wellFormedText(rawInput, "", diagnostics);
   const input = record(rawInput, "input", diagnostics);
   closed(
     input,

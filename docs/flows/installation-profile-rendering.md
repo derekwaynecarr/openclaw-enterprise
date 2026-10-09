@@ -125,8 +125,8 @@ and client-secret Secret keys for GitHub, Google and OIDC. It considers the char
 collisions also fail before deployment files are written.
 `signInSecretsDedicated` applies the chart's dedicated-Secret rule: each enabled
 provider's Secret, default or explicit, must differ from the installation,
-database and auth Secrets, the ChatGPT and gateway API key Secrets, the
-repository broker Secrets, and every provider checked before it.
+database and auth Secrets, the gateway API key Secret, the ChatGPT Secret and
+repository broker Secrets when enabled, and every provider checked before it.
 
 `scripts/render-installation-profile.mjs:nodeSelector` checks
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and
@@ -219,7 +219,9 @@ and `preflight.json`. Helm reads values with YAML 1.1 rules, so the writer
 quotes any string key or value that could resolve to a boolean, null, number, or
 timestamp (for example a `no`, `on`, `1e3`, or `0x1f` label value) or that starts
 with a YAML indicator such as `@`. Quoted strings escape DEL, C1 controls (Helm folds
-U+0085 into a space and refuses the others), U+2028, U+2029 and U+FEFF. On validation failure, it writes only `preflight.json`
+U+0085 into a space and refuses the others), U+2028, U+2029, U+FEFF, U+FFFE and
+U+FFFF; preflight refuses lone UTF-16 surrogates, which YAML cannot spell.
+On validation failure, it writes only `preflight.json`
 with `ok:false`, lists only that report in `outputs`, and exits nonzero.
 Input-loading failures exit without a preflight report.
 

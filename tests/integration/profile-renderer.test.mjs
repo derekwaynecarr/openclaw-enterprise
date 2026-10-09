@@ -616,6 +616,24 @@ test(
   },
 );
 
+test("preflight refuses lone surrogates, which Helm cannot parse in values.yaml", () => {
+  const cases = [
+    [{ adminEmail: "a\ud800@b.c" }, /controlPlane\.adminEmail must be well-formed Unicode text/],
+    [{ gatewayClassName: "e\udc00g" }, /controlPlane\.gatewayClassName must be well-formed/],
+    [
+      { dns: { namespace: "kube-system", podLabels: { "k8s\ud800": "kube-dns" } } },
+      /controlPlane\.dns\.podLabels keys must be well-formed Unicode text/,
+    ],
+  ];
+  for (const [override, expected] of cases) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ controlPlane: { ...baseInput().controlPlane, ...override } }),
+      expected,
+    );
+  }
+});
+
 test("label values that YAML 1.1 would retype stay strings", () => {
   const labels = {
     spot: "no",

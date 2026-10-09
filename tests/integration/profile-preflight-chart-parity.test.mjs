@@ -109,7 +109,7 @@ function helmTemplate(valueFiles) {
 }
 
 // An override values file. Helm's YAML parser would drop or fold a raw U+FEFF, U+0085 or
-// C1 control, so escape them as the renderer's values.yaml does.
+// C1 control, so escape those (the cases below use no U+FFFE or U+FFFF).
 function writeOverride(directory, values) {
   const path = join(directory, "override.json");
   writeFileSync(
@@ -640,7 +640,8 @@ test(
   },
 );
 
-// Helm's `quote` writes Go string syntax; decode it to compare with the input.
+// Helm's `quote` writes Go string syntax; decode it to compare with the input. The cases
+// below contain no backslash, so no escaped backslash precedes an escape it rewrites.
 function jobEnv(manifests, name) {
   const match = new RegExp(`- name: ${name}\\n\\s+value: (".*")\\n`).exec(manifests);
   assert.ok(match, `expected ${name} in the bootstrap Job`);
