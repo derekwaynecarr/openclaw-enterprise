@@ -87,8 +87,11 @@ It stores the private Namespace binding in PostgreSQL and asks selected Compute
 credential storage to write the token and workspace identity to an account-owned
 Secret. Issuance and deletion recheck Backend, Driver, and workspace ownership.
 A missing binding makes provider deletion a no-op; conflicting ownership fails.
-Backend and Secret creation register compensation with OCC. Deletion revokes
-the credential, removes its Secret, and deletes the upstream account. See
+Backend and Secret creation register compensation with OCC; a create whose
+reply is lost is not compensated, since nothing proves which account it made.
+Deletion revokes the credential, removes its Secret, and deletes the upstream
+account; each step treats an already-absent resource as done, so a retry
+completes a deletion that applied but failed. See
 [Backend configuration](../backends.md) and [service accounts](../service-accounts.md).
 
 ## Related

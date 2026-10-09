@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-09
-last_updated_session: authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52
+last_updated_session: 01a12099-b8bf-7523-b52e-c7a160e191ec
 ---
 
 # Installation Profile Rendering Flow
@@ -97,12 +97,13 @@ branch writes only `preflight.json`, leaving no deployable artifacts.
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), Google hosted domains (at most 253 characters,
-last label starting with a letter), and paired metrics scraper selectors. Invalid
-values therefore fail before `values.yaml` or `installation.yaml` is written.
+last label starting with a letter), repository Service names, and paired metrics
+scraper selectors. Invalid values therefore fail before `values.yaml` or
+`installation.yaml` is written.
 
 `scripts/render-installation-profile.mjs:controlPlaneNodeSelector` checks
 `controlPlane.nodeSelector` against the chart and bootstrap-volume helper's
-Kubernetes label-key and nonempty label-value rules. Invalid placement labels
+Kubernetes label-key and label-value rules (values may be empty). Invalid placement labels
 fail preflight without deployment files; legal YAML lookalike values remain strings.
 
 ### 4. Build Helm values
@@ -132,8 +133,10 @@ egress, excluding private and reserved ranges, and the proxy authorizes Slack
 hostnames. Repository values render only when the input explicitly sets
 `repository.enabled: true`. Repository provider CIDRs pass through unchanged,
 so operators can keep their existing GitHub ranges without DNS snapshots. The
-renderer copies `repository.serviceName` only when the input sets it, so the
-chart's upgrade guard still requires an explicit current broker Service name.
+renderer copies `repository.serviceName` only when the input sets it, and only
+when that name is a DNS-1035 Service label of at most 63 characters. The
+chart's upgrade guard still requires an explicit current broker Service name,
+and the same DNS-1035 check cannot fail after a successful preflight.
 
 ### 5. Build Installation startup YAML
 
@@ -217,11 +220,17 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
+- 2026-10-09 20:43: Preserve Google hosted-domain and repository Service-name checks after the main merge. (01a12099-b8bf-7523-b52e-c7a160e191ec - 31a682eba8a8e4e0e0b80fe48cb71ab86db7e985)
+
+- 2026-10-09: Accept empty control-plane placement label values, as Kubernetes does.
+
 - 2026-10-09 19:42: Validate control-plane placement labels before writing profile output. (authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52 - 3a1e29fb461d2ad61a9276ae4af432bcf2d04c88)
 
 - 2026-10-09 08:40: Integrate database CA-key validation with current renderer guards and regressions. (authoring-run/4108453c-660a-45ca-87c8-ff328a767f38 - 1f8c782e69d5d097b622ba13b964d87f1088a2ff)
 
 - 2026-10-09: Refuse Google hosted domains the chart and API refuse.
+
+- 2026-10-09: Refuse a repository broker Service name the chart's DNS-1035 check refuses.
 
 - 2026-10-08: Refuse database CA keys the chart refuses.
 

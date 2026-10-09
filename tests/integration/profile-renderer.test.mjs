@@ -542,6 +542,7 @@ test("label values that YAML 1.1 would retype stay strings", () => {
     hex: "0x1f",
     octal: "0o17",
     yes: "keep",
+    "node-role.kubernetes.io/infra": "",
   };
   const input = baseInput();
   input.controlPlane.nodeSelector = labels;
@@ -569,7 +570,7 @@ test("Helm renders YAML 1.1 lookalike label values as strings", { skip: helmSkip
   assertPreflightFailure(
     "openclaw",
     rejected,
-    /controlPlane\.nodeSelector values must be nonempty Kubernetes label values/,
+    /controlPlane\.nodeSelector values must be Kubernetes label values/,
   );
 });
 
@@ -598,27 +599,15 @@ test("repository opt-in is explicit and keeps the two-stage placeholders separat
   );
 });
 
-test("preflight rejects a Google hosted domain the chart and API refuse", () => {
-  const label63 = `a${"b".repeat(61)}c`;
-  const domain254 = [label63, label63, label63, `d${"e".repeat(60)}f`].join(".");
-  const domain253 = [label63, label63, label63, `d${"e".repeat(59)}f`].join(".");
-  assert.equal(domain254.length, 254);
-  assert.equal(domain253.length, 253);
-  const googleInput = (allowedDomains) =>
-    externalSignInInput({
-      github: undefined,
-      google: { allowedDomains },
-    });
-  for (const allowedDomains of [["example.123"], ["example.1"], [domain254]]) {
+test("preflight rejects a repository serviceName the chart refuses", () => {
+  const repositoryInput = repositoryConfiguration();
+  for (const serviceName of ["1git", "git.openclaw-system.svc", "a".repeat(64), "Git"]) {
     assertPreflightFailure(
-      "openclaw",
-      googleInput(allowedDomains),
-      /controlPlane\.google\.allowedDomains\[0\] must be a lowercase DNS domain name of at most 253 characters whose last label starts with a letter, such as example\.com/,
+      "codex",
+      codexInput({ repository: { ...repositoryInput, serviceName } }),
+      /repository\.serviceName must be a Kubernetes Service DNS-1035 label of at most 63 characters/,
     );
   }
-  const accepted = render("openclaw", googleInput([domain253]));
-  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
-  assert.match(accepted.values, new RegExp(domain253));
 });
 
 test("repository serviceName is left to the chart so its upgrade guard applies", () => {
@@ -1451,4 +1440,27 @@ test("profiles refuse ChatGPT credential lifetimes the API refuses", () => {
     }),
     /codex.managedServiceAccounts.credentialTtlSeconds must be an integer from 1 through 2592000/,
   );
+});
+
+test("preflight rejects a Google hosted domain the chart and API refuse", () => {
+  const label63 = `a${"b".repeat(61)}c`;
+  const domain254 = [label63, label63, label63, `d${"e".repeat(60)}f`].join(".");
+  const domain253 = [label63, label63, label63, `d${"e".repeat(59)}f`].join(".");
+  assert.equal(domain254.length, 254);
+  assert.equal(domain253.length, 253);
+  const googleInput = (allowedDomains) =>
+    externalSignInInput({
+      github: undefined,
+      google: { allowedDomains },
+    });
+  for (const allowedDomains of [["example.123"], ["example.1"], [domain254]]) {
+    assertPreflightFailure(
+      "openclaw",
+      googleInput(allowedDomains),
+      /controlPlane\.google\.allowedDomains\[0\] must be a lowercase DNS domain name of at most 253 characters whose last label starts with a letter, such as example\.com/,
+    );
+  }
+  const accepted = render("openclaw", googleInput([domain253]));
+  assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+  assert.match(accepted.values, new RegExp(domain253));
 });
