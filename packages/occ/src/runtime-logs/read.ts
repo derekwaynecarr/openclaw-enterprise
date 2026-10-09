@@ -25,6 +25,7 @@ export const RUNTIME_LOG_LIMIT_BYTES = 1024 * 1024;
 export const RUNTIME_LOG_DEFAULT_TAIL_LINES = 200;
 export const RUNTIME_LOG_MAX_TAIL_LINES = 1000;
 const RUNTIME_LOG_MAX_PAGE_BYTES = 512 * 1024;
+const RUNTIME_LOG_MAX_FRONTIER_HASHES = 16;
 const RESUME_OVERLAP_SECONDS = 2;
 
 export interface RuntimeLogQuery {
@@ -303,6 +304,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   }
   if (resume !== undefined && !replacedDuringRead) {
     const lastTime = resume.lastTime!;
+    const saturated = resume.lastHashes.length >= RUNTIME_LOG_MAX_FRONTIER_HASHES;
     const remaining = new Map<string, number>();
     for (const hash of resume.lastHashes) {
       remaining.set(hash, (remaining.get(hash) ?? 0) + 1);
@@ -330,7 +332,9 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       const hash = runtimeLogLineHash(line.raw);
       const count = remaining.get(hash) ?? 0;
       if (count === 0) {
-        return true;
+        // A full cursor may have forgotten earlier copies. Preserve matching-text
+        // suppression until time advances instead of replaying those copies forever.
+        return !saturated || !remaining.has(hash);
       }
       remaining.set(hash, count - 1);
       return false;
@@ -480,7 +484,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     restartCount: observedStream.restartCount!,
     previous: query.previous,
     lastTime,
-    lastHashes: lastHashes.slice(-16),
+    lastHashes: lastHashes.slice(-RUNTIME_LOG_MAX_FRONTIER_HASHES),
     ...(sanitized.pemOpen === undefined ? {} : { pemOpen: sanitized.pemOpen, pemAfterTime }),
     issuedAt: readStartedAt,
   };

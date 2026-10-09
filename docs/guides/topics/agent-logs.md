@@ -63,7 +63,9 @@ GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime/
 unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to
 read only newer lines of the same view. Container reads count remembered
 occurrences at the cursor timestamp, so an additional identical line at that time
-is still returned.
+is still returned while fewer than 16 occurrences are remembered. At that bound,
+matching text stays suppressed until a later timestamp because the count may be
+incomplete.
 `download=true` answers `text/plain` with `Content-Disposition: attachment`,
 always reads 1000 lines, and cannot be combined with `cursor` (`400`). See the
 [API reference](../../reference/api.md).

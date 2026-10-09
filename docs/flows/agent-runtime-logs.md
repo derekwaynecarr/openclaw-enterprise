@@ -117,7 +117,8 @@ it until this read are lost. A carried PEM block then keeps no delivered frontie
 so it stays masked for the rest of the view. OCC
 drops earlier lines and consumes one remembered hash per delivered occurrence at
 the cursor time. Identical lines with that time beyond the remembered count stay
-visible; replayed occurrences are dropped. It emits `stream_replaced`,
+visible while fewer than 16 hashes are remembered. At that bound the count may be
+incomplete, so matching text stays suppressed until the timestamp advances. It emits `stream_replaced`,
 `window_exceeded`, `cursor_expired` or `truncated` gaps, and passes the rest to
 `runtime-logs/sanitize.ts:sanitizeRuntimeLogChunk`, the only producer of
 `SanitizedRuntimeLogRecord`. It classifies the whole page first, so
@@ -227,6 +228,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 22:12: Preserve matching-text suppression when the 16-hash frontier may have forgotten earlier occurrences. (authoring-run/ce414344-4cec-4d51-accd-f66b2ece9e0f - 66845c95cde0c7ef6adf358eb7daa1474c5fd443)
 
 - 2026-10-09 21:59: Count delivered occurrences when de-duplicating container lines at the cursor time. (authoring-run/ce414344-4cec-4d51-accd-f66b2ece9e0f - dc95c2261d4b46cff8aca703e13e43cdd71d153e)
 

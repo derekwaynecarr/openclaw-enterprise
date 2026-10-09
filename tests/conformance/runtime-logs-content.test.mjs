@@ -1510,6 +1510,17 @@ test("runtime log route polling preserves identical same-time line occurrences",
   assert.deepEqual(await poll(burst), ["retrying in 5s", "worker connected"]);
   assert.deepEqual(await poll(burst), [], "replaying the whole overlap must show no duplicate");
   assert.deepEqual(await poll([...burst, timedLog("retrying in 5s", 1)]), ["retrying in 5s"]);
+
+  // A new view can deliver more occurrences than its bounded cursor remembers.
+  // An incomplete count cannot establish a new copy on unchanged follow polls.
+  cursor = undefined;
+  const saturated = Array.from({ length: 17 }, () => timedLog("retrying in 5s", 0));
+  assert.equal((await poll(saturated)).length, 17);
+  assert.deepEqual(await poll(saturated), [], "a saturated frontier must not replay old copies");
+  assert.deepEqual(await poll(saturated), [], "repeated unchanged polls must remain empty");
+  assert.deepEqual(await poll([...saturated, timedLog("worker connected", 1)]), [
+    "worker connected",
+  ]);
 });
 
 test("runtime log route polling carries PEM masking through the serialized cursor", async () => {
