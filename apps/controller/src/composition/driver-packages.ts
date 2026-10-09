@@ -1,7 +1,7 @@
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { findPackageJSON } from "node:module";
-import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   ComputeDriver,
@@ -125,6 +125,77 @@ function rootExportTarget(exports: unknown, manifestUrl: URL, path: string): Exp
   return exportTarget(exports, manifestUrl, path);
 }
 
+/**
+ * The "type" Node's package.json reader gives a package scope. It matches top-level keys by
+ * their raw (still escaped) text and keeps the last "type" string that is "module" or
+ * "commonjs". A "type" that is not a string makes Node refuse the manifest (undefined here).
+ */
+function nodePackageType(text: string): string | undefined {
+  let type = "none";
+  let depth = 0;
+  let key: string | undefined;
+  let previous = "";
+  // JSON.parse has accepted the text, so strings and single characters tokenize it.
+  for (const token of text.match(/"(?:[^"\\]|\\.)*"|\S/g) ?? []) {
+    if (depth === 1 && previous === ":" && key === "type") {
+      if (!token.startsWith('"')) {
+        return undefined;
+      }
+      const value: unknown = JSON.parse(token);
+      if (value === "module" || value === "commonjs") {
+        type = value;
+      }
+    }
+    if (depth === 1 && (previous === "{" || previous === ",")) {
+      key = token.slice(1, -1);
+    }
+    if (token === "{" || token === "[") {
+      depth += 1;
+    } else if (token === "}" || token === "]") {
+      depth -= 1;
+    }
+    previous = token;
+  }
+  return type;
+}
+
+/**
+ * Node's package scope for a `.js` entry: the nearest package.json from the entry's directory,
+ * never at or past a node_modules directory. The walk stops at the package root.
+ */
+async function entryPackageType(
+  entryPath: string,
+  packageDirectory: string,
+  path: string,
+): Promise<string | undefined> {
+  for (
+    let directory = dirname(entryPath);
+    basename(directory) !== "node_modules";
+    directory = dirname(directory)
+  ) {
+    // Node treats a package.json it cannot read as absent and keeps walking.
+    const read = await readFile(join(directory, "package.json"), "utf8").catch(() => undefined);
+    if (read !== undefined) {
+      // Node's reader skips a byte order mark.
+      const text = read.replace(/^\uFEFF/, "");
+      let type: string | undefined;
+      try {
+        type = asRecord(JSON.parse(text)) === undefined ? undefined : nodePackageType(text);
+      } catch {
+        type = undefined;
+      }
+      if (type === undefined) {
+        throw new Error(`${path}.package has invalid package scope metadata.`);
+      }
+      return type;
+    }
+    if (directory === packageDirectory || dirname(directory) === directory) {
+      break;
+    }
+  }
+  return undefined;
+}
+
 export async function loadDriverPackage(
   selection: ConfigurationRecord,
   capability: "configuration" | "iam" | "compute" | "sandbox",
@@ -231,13 +302,21 @@ export async function loadDriverPackage(
   } catch {
     throw new Error(`${path}.package selects an unavailable compiled ESM entry.`);
   }
-  const extension = extname(entryPath);
-  if (extension !== ".mjs" && !(extension === ".js" && installedManifest.type === "module")) {
-    throw new Error(`${path}.package must export precompiled JavaScript ESM.`);
-  }
-  const contained = relative(dirname(installedManifestPath), entryPath);
+  const packageDirectory = dirname(installedManifestPath);
+  const contained = relative(packageDirectory, entryPath);
   if (contained === "" || contained.startsWith("..") || isAbsolute(contained)) {
     throw new Error(`${path}.package entry escapes its installed package root.`);
+  }
+  // Node loads `.mjs` as ESM and `.js` by the nearest package.json scope, not the root's.
+  const extension = extname(entryPath);
+  if (
+    extension !== ".mjs" &&
+    !(
+      extension === ".js" &&
+      (await entryPackageType(entryPath, packageDirectory, path)) === "module"
+    )
+  ) {
+    throw new Error(`${path}.package must export precompiled JavaScript ESM.`);
   }
 
   let imported: unknown;

@@ -126,7 +126,9 @@ arrays and the `node`, `import`, `module-sync`, `node-addons`, and `default`
 conditions in key order, with `"."` only at the top level. Invalid targets and
 unmatched conditions permit another array entry. The selected target must name
 an existing file exactly (no extension, directory, or `main` lookup). A selected
-missing file, directory, or failed import stops startup.
+missing file, directory, or failed import stops startup. The entry must be
+`.mjs`, or `.js` whose nearest `package.json` within the package declares
+`"type": "module"`; Node's import uses that file, not always the package root.
 
 The entry point exports the existing Driver contract, not a separate plugin
 manifest or public plugin SDK. The controller validates its closed JSON Schema
