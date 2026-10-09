@@ -2638,7 +2638,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // with enabled plugins), so the reservation does not depend on options.runtime.
     if (options.network.gatewayPort === PLUGIN_RUNTIME_STATUS_PORT) {
       throw new ConfigurationFailure(
-        "Gateway port cannot use the reserved runtime status port 18791.",
+        `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
       );
     }
     trustedProxyCidrSet(options.network.gatewayTrustedProxyCidrs, "Trusted proxy CIDR");
@@ -2848,7 +2848,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         if (options.network.gatewayPort + 1 === PLUGIN_RUNTIME_STATUS_PORT) {
           throw new ConfigurationFailure(
-            "Gateway sandbox port cannot use the reserved runtime status port 18791.",
+            `Gateway sandbox port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
           );
         }
       }

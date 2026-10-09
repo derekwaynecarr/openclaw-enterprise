@@ -213,7 +213,9 @@ Helm's `gatewayRouting` settings configure shared infrastructure:
 
 Routing ports must be decimal integers from `1` to `65535`, without leading
 zeros. With the sandbox enabled, `tenantGatewayPort` stops at `65534`, because
-the sandbox backend takes the next port. The sandbox listener must also be at least `1024` and differ from
+the sandbox backend takes the next port. It is never `18791`, the private
+runtime status port, nor `18790` with the sandbox. The sandbox listener must
+also be at least `1024` and differ from
 `envoyHttpsTargetPort`. Helm refuses fractional YAML numbers before rendering
 Gateway and NetworkPolicy resources.
 
@@ -292,9 +294,8 @@ HTTPS origin for dedicated execution under the operator's preview domain.
 Embedded OpenClaw retains its native preview configuration. Compute owns the native
 `sandboxOrigin` and `sandboxPort` values and rejects conflicting Agent settings.
 The sandbox backend port is `network.gatewayPort + 1`, so the main port must be
-below 65535. TCP/18791 is reserved for runtime status: the main port, the
-derived sandbox port, and an Agent's `mcp.apps.sandboxPort` cannot use it.
-The selected runtime must support the dedicated sandbox listener.
+below 65535. Neither port may be TCP/18791. The selected runtime must support
+the dedicated sandbox listener.
 
 The Agent's `-sandbox` HTTPRoute attaches only to the shared Gateway's separate
 `sandbox` listener. It accepts GET and HEAD and forwards to the sandbox port,
