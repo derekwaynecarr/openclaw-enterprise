@@ -210,6 +210,10 @@ Configurations, workspace files, transcripts and Secret values.
    node scripts/split-layout-tenants.mjs export --out /secure/occ/tenants.json
    ```
 
+   If a successful API response is malformed or lacks its data envelope, export
+   exits nonzero without writing a bundle. Restore the API response path and
+   rerun export, then check its Namespace inventory before continuing.
+
    It reads `AGENTS.md`, `SOUL.md`, `IDENTITY.md` and `USER.md` only where
    [workspace routing](workspace-routing.md) is configured and the Agent runs.
    Step 2 copies the whole workspace instead.
