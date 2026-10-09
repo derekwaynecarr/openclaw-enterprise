@@ -341,13 +341,14 @@ export async function loadDriverPackage(
     }
     const scope = await entryPackageScope(entryPath, packageDirectory, path);
     if (scope?.type !== "module") {
-      // The walk ends at the package root, whose manifest exists, so a scope is always found.
-      const decidedBy =
+      // No scope when the entry's real path sits under a node_modules directory inside the
+      // package: the walk stops there, as Node's does.
+      const reason =
         scope === undefined
-          ? "no package.json"
-          : `${packagePath(scope.manifest)}, which does not set "type": "module"`;
+          ? `has no package.json scope inside ${packageName}`
+          : `takes its format from ${packagePath(scope.manifest)}, which does not set "type": "module"`;
       throw new Error(
-        `${path}.package must export precompiled JavaScript ESM: entry ${packagePath(entryPath)} takes its format from ${decidedBy}.`,
+        `${path}.package must export precompiled JavaScript ESM: entry ${packagePath(entryPath)} ${reason}.`,
       );
     }
   }

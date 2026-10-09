@@ -174,7 +174,7 @@ their existing Harness-owned runtime topology.
 
 ## Changelog
 
-- 2026-10-09 17:39: Name the deciding `package.json` in the compiled ESM refusal and link the breaking-change notice. (fix-962-964)
+- 2026-10-09 17:39: Name the deciding `package.json` in the compiled ESM refusal. (fix-962-964)
 
 - 2026-10-09 16:21: Decide a `.js` Driver entry is ESM from its nearest `package.json` scope, as Node's import does, instead of the package root manifest. (fix-956)
 

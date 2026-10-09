@@ -22,11 +22,16 @@ message, on shapes the older loader accepted:
   without `type`. Node 24 and later can still import that file by detecting ESM
   syntax; the controller does not. Its refusal now names the `package.json`
   that decided the format.
+- A nested `package.json` that is not valid JSON or not an object
+  (`has invalid package scope metadata`); the older loader ignored it.
 - An export target that is extensionless (`./dist/index`), a directory, or has
   an encoded `/` or `\`; a file name with a literal `%`, which is now
   percent-decoded; and mixed subpath and condition keys, or numeric condition
-  keys. A `"."` nested inside an array entry or condition no longer selects a
-  file, so a later entry may load instead.
+  keys.
+
+Some shapes load a different file instead of refusing: a `"."` nested inside an
+array entry or condition no longer selects a file, so a later entry may load, and
+the `module-sync` and `node-addons` conditions now match as in Node.
 
 **Who is affected.** Installations that select a Driver package
 (`drivers.<capability>.package`) built with one of these shapes. Built-in
@@ -34,7 +39,9 @@ Drivers and the [documented manifest](../../reference/drivers/selection.md) are
 not affected.
 
 **How to tell.** The controller exits at startup with a
-`drivers.<capability>.package` message naming the problem.
+`drivers.<capability>.package` message naming the problem. For a package that
+uses nested `"."` keys or those conditions, check which compiled file its root
+export now selects.
 
 **Steps.** Fix the package and publish a new version: add `"type": "module"` to
 the `package.json` the message names, or rename the entry to `.mjs`, and point

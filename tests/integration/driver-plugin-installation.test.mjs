@@ -566,14 +566,17 @@ test("compiled Driver export arrays activate through production startup and Conf
       }
       const configuration = installation();
       configuration.drivers.configuration = selectedConfiguration();
-      await assert.rejects(
-        load(owner, configuration),
-        description === "selected CJS"
-          ? new RegExp(
-              `^Error: drivers\\.configuration\\.package must export precompiled JavaScript ESM: entry ${configurationPackage}/compiled/index\\.cjs is not a \\.mjs or \\.js file\\.$`,
-            )
-          : /package.*(?:available|compiled|JavaScript|encoding)/,
-      );
+      await assert.rejects(load(owner, configuration), (error) => {
+        assert.match(
+          error.message,
+          description === "selected CJS"
+            ? new RegExp(
+                `^drivers\\.configuration\\.package must export precompiled JavaScript ESM: entry ${escapeRegExp(`${configurationPackage}/compiled/index.cjs`)} is not a \\.mjs or \\.js file\\.$`,
+              )
+            : /package.*(?:available|compiled|JavaScript|encoding)/,
+        );
+        return true;
+      });
     });
   }
 });
@@ -622,7 +625,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
   // The refusal names the package.json whose scope decided the entry's format.
   const refusedFormat = (manifest) =>
     new RegExp(
-      `^drivers\\.configuration\\.package must export precompiled JavaScript ESM: entry ${configurationPackage}/compiled/driver\\.js takes its format from ${configurationPackage}/${manifest.replace(".", "\\.")}, which does not set "type": "module"\\.$`,
+      `^drivers\\.configuration\\.package must export precompiled JavaScript ESM: entry ${escapeRegExp(`${configurationPackage}/compiled/driver.js`)} takes its format from ${escapeRegExp(`${configurationPackage}/${manifest}`)}, which does not set "type": "module"\\.$`,
     );
   for (const [description, layout, message] of [
     [
@@ -686,6 +689,10 @@ test("Driver entry format follows the nearest package.json scope Node's import u
     });
   }
 });
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 async function onDiskConfigurationPackage(t, exports) {
   const owner = await mkdtemp(join(tmpdir(), "occ-driver-export-array-"));
