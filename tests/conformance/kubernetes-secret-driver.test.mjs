@@ -171,7 +171,9 @@ class FakeCoreV1Api {
 }
 
 // Runs an operation with mocked timers, firing each retry pause as soon as it is
-// scheduled. Request deadlines use AbortSignal.timeout, which stays real.
+// scheduled. Request deadlines use AbortSignal.timeout, which stays real, and the
+// loop spins until the operation settles: keep operations that wait for a real
+// deadline out of it. Not reentrant.
 async function withRetryTimers(operation) {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
