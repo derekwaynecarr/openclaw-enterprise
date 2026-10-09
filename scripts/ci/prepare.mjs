@@ -920,6 +920,7 @@ async function reuseEngineImage(state, role, args, tag) {
   const started = performance.now();
   const directory = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), "oce-image-probe-"));
   let outcome = "unresolved";
+  let image;
   try {
     const metadata = join(directory, "metadata.json");
     await execFile(
@@ -942,6 +943,7 @@ async function reuseEngineImage(state, role, args, tag) {
     if (!/^sha256:[a-f0-9]{64}$/u.test(id ?? "")) {
       return false;
     }
+    image = id;
     // Under Docker's containerd image store the engine reports a manifest
     // digest here instead, so the comparison fails safe and the lane builds.
     const held = await execFile(docker, ["image", "inspect", "--format", "{{.Id}}", id]).then(
@@ -965,6 +967,7 @@ async function reuseEngineImage(state, role, args, tag) {
       JSON.stringify({
         stage: `${role}-image-reuse`,
         outcome,
+        ...(image ? { image } : {}),
         elapsedMs: Math.round(performance.now() - started),
       }),
     );

@@ -1483,8 +1483,19 @@ test("image lanes tag the engine's copy when the restored cache resolves to an i
     );
     assert.equal(tagged?.status, "ready", args[2]);
   }
-  assert.match(prepared.stderr, /"stage":"controller-image-reuse","outcome":"reused"/);
-  assert.match(prepared.stderr, /"stage":"runtime-image-reuse","outcome":"reused"/);
+  // The log names each resolved image ID.
+  assert.match(
+    prepared.stderr,
+    new RegExp(
+      `"stage":"controller-image-reuse","outcome":"reused","image":"sha256:${"d".repeat(64)}"`,
+    ),
+  );
+  assert.match(
+    prepared.stderr,
+    new RegExp(
+      `"stage":"runtime-image-reuse","outcome":"reused","image":"sha256:${"e".repeat(64)}"`,
+    ),
+  );
   assert.doesNotMatch(
     JSON.stringify(calls) + prepared.stdout + prepared.stderr,
     /synthetic-cache-credential/,
