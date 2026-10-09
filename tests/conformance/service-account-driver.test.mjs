@@ -576,8 +576,19 @@ async function withFakeChatGPT(work) {
 
 test("a ChatGPT account create whose reply is invalid removes exactly the account it made", async (t) => {
   for (const reply of [
-    { name: "disabled account", body: { enabled: false } },
-    { name: "another workspace", body: { workspace_id: "22222222-2222-4222-8222-222222222222" } },
+    {
+      name: "disabled account",
+      body: { enabled: false },
+      stored: ["foreign"],
+      requests: ["POST service-accounts", "DELETE acct-1"],
+    },
+    {
+      // The reply does not place the account in this workspace, so it proves nothing.
+      name: "another workspace",
+      body: { workspace_id: "22222222-2222-4222-8222-222222222222" },
+      stored: ["foreign", "acct-1"],
+      requests: ["POST service-accounts"],
+    },
   ]) {
     await t.test(reply.name, () =>
       withFakeChatGPT(async ({ client, server }) => {
@@ -589,10 +600,10 @@ test("a ChatGPT account create whose reply is invalid removes exactly the accoun
             error instanceof DependencyUnavailableError &&
             error.message === "ChatGPT returned an invalid service account.",
         );
-        assert.deepEqual([...server.accounts.keys()], ["foreign"]);
+        assert.deepEqual([...server.accounts.keys()], reply.stored);
         assert.deepEqual(
           server.requests.map(({ method, path }) => `${method} ${path.split("/").at(-1)}`),
-          ["POST service-accounts", "DELETE acct-1"],
+          reply.requests,
         );
       }),
     );

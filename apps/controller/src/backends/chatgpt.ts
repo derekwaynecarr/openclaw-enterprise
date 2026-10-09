@@ -61,10 +61,10 @@ export class ChatGPTClient {
       resource.workspace_id !== this.workspaceId ||
       resource.enabled !== true
     ) {
-      // The create applied: this reply names the account it made, so remove exactly that
-      // one. Without an ID nothing proves which account is this request's, so nothing is
-      // deleted (a create whose reply is lost or unreadable is not compensated either).
-      if (nonempty(resource.id)) {
+      // The create applied: a reply naming an account in this workspace names the one it
+      // made, so remove exactly that one. Without that, nothing proves which account is
+      // this request's, so nothing is deleted (nor for a lost or unreadable reply).
+      if (nonempty(resource.id) && resource.workspace_id === this.workspaceId) {
         try {
           await this.deleteServiceAccount(resource.id);
         } catch {
