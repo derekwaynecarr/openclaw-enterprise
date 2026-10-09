@@ -1570,7 +1570,10 @@ function channelProxy(
     );
   }
   const address = parsed.hostname.replace(/^\[|\]$/g, "");
-  const port = Number(parsed.port);
+  // URL.port drops explicit HTTP :80 and HTTPS :443; retain the raw authority's port.
+  const explicitPort = raw.match(/^https?:\/\/(?:\[[^\]]+\]|[^:/?#\\]+):([0-9]+)(?=[/?#]|$)/i)?.[1];
+  const port = Number(parsed.port || explicitPort);
+  validatePort(port, "Channel proxy port");
   if (managedProxy !== undefined) {
     validatePeer(managedProxy, "Managed channel proxy");
     required(managedProxy.hostname, "Managed channel proxy hostname");
@@ -1609,7 +1612,6 @@ function channelProxy(
   if (
     !["http:", "https:"].includes(parsed.protocol) ||
     isIP(address) === 0 ||
-    !parsed.port ||
     parsed.username ||
     parsed.password ||
     parsed.pathname !== "/" ||
