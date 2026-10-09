@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -533,7 +534,8 @@ func TestServiceKeyCreateRejectsNamesTheAPIRefusesBeforeAnyRequest(t *testing.T)
 	if err := os.WriteFile(adminKey, []byte(`{"data":{"key":"admin-key"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{strings.Repeat("a", 33), "   "} {
+	// The API counts code points, so 33 emoji are too long although 32 fit.
+	for _, name := range []string{strings.Repeat("a", 33), strings.Repeat("😀", 33), "   "} {
 		requests = 0
 		keyFile := filepath.Join(directory, "rejected-"+name+".json")
 		command := New(&bytes.Buffer{}, &bytes.Buffer{})
@@ -558,19 +560,21 @@ func TestServiceKeyCreateRejectsNamesTheAPIRefusesBeforeAnyRequest(t *testing.T)
 		}
 	}
 
-	requests = 0
-	keyFile := filepath.Join(directory, "accepted.json")
-	command := New(&bytes.Buffer{}, &bytes.Buffer{})
-	command.SetArgs([]string{
-		"--url", server.URL,
-		"--service-key-file", adminKey,
-		"--namespace", testNamespaceID,
-		"service-key", "create",
-		"--service-principal", "spn_1",
-		"--name", strings.Repeat("a", 32),
-		"--out", keyFile,
-	})
-	if err := command.Execute(); err != nil || requests != 1 {
-		t.Fatalf("32-character name: error = %v after %d requests", err, requests)
+	for index, name := range []string{strings.Repeat("a", 32), strings.Repeat("😀", 32)} {
+		requests = 0
+		keyFile := filepath.Join(directory, "accepted-"+strconv.Itoa(index)+".json")
+		command := New(&bytes.Buffer{}, &bytes.Buffer{})
+		command.SetArgs([]string{
+			"--url", server.URL,
+			"--service-key-file", adminKey,
+			"--namespace", testNamespaceID,
+			"service-key", "create",
+			"--service-principal", "spn_1",
+			"--name", name,
+			"--out", keyFile,
+		})
+		if err := command.Execute(); err != nil || requests != 1 {
+			t.Fatalf("32-character name %q: error = %v after %d requests", name, err, requests)
+		}
 	}
 }

@@ -197,6 +197,40 @@ test("every trusted proxy CIDR in the table gets the API's verdict, apart from z
 });
 
 test(
+  "control-plane node selectors get the same verdict from preflight and the chart",
+  { skip: helmSkip },
+  () => {
+    const selectors = [
+      [{ "oce-role": "control" }, true],
+      [{ "topology.kubernetes.io/zone": "east" }, true],
+      [{ spot: "no", scale: "1e3", hex: "0x1f" }, true],
+      [{ ["a".repeat(63)]: "b".repeat(63) }, true],
+      [{ "oce-role": "not valid" }, false],
+      [{ "oce-role": "control\n" }, false],
+      [{ "zone\n": "east" }, false],
+      [{ "example.com\n/zone": "east" }, false],
+      [{ "oce-role": "@platform" }, false],
+      [{ "oce-role": "a".repeat(64) }, false],
+      [{ "bad key": "control" }, false],
+      [{ ["a".repeat(64)]: "control" }, false],
+      [{ "Example.com/zone": "east" }, false],
+      [{ "example.com/": "east" }, false],
+      [{ "example.com/a/b": "east" }, false],
+      [{ [`${"a".repeat(64)}.example/zone`]: "east" }, false],
+    ];
+    for (const [nodeSelector, accepted] of selectors) {
+      assertParity({
+        label: JSON.stringify(nodeSelector),
+        controlPlane: { nodeSelector },
+        values: { controlPlane: { nodeSelector } },
+        accepted,
+        chartError: /controlPlane\.nodeSelector (keys|values) must be/,
+      });
+    }
+  },
+);
+
+test(
   "external sign-in credential keys get the same verdict from preflight and the chart",
   { skip: helmSkip },
   () => {

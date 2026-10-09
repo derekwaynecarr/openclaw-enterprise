@@ -44,6 +44,10 @@ class FakeCoreV1Api {
     replaceNamespacedSecret: [],
     deleteNamespacedSecret: [],
   };
+  // Failures thrown after a create took effect, as when its response is lost.
+  createAppliedFailureCodes = [];
+  // Rewrites a Secret the create stored, before a later failure is thrown.
+  createAppliedMutation = undefined;
   calls = {
     listNamespace: 0,
     createNamespacedSecret: 0,
@@ -132,6 +136,11 @@ class FakeCoreV1Api {
     };
     delete stored.stringData;
     this.secrets.set(key, stored);
+    const appliedFailure = this.createAppliedFailureCodes.shift();
+    if (appliedFailure !== undefined) {
+      this.createAppliedMutation?.(stored);
+      throw injectedFailure(appliedFailure, "createNamespacedSecret");
+    }
     return clone(stored);
   }
 
@@ -687,6 +696,74 @@ test("kubernetes-secret-driver sends a failed write once, even when a read would
       assert.deepEqual(pauses, [], `${method} ${failure}`);
     }
   }
+});
+
+test("kubernetes-secret-driver removes a Secret whose create applied but answered an error", async () => {
+  const create = (driver, nsId) =>
+    driver.create({ id: secretId(), namespaceId: nsId, name: "model-key" }, "value");
+  const createFailed = (error) =>
+    error instanceof SecretBackendUnavailableError &&
+    error.message === "The Kubernetes Secret create failed.";
+  const cleanupFailed = (error) =>
+    error instanceof SecretBackendUnavailableError &&
+    error.message ===
+      "The Kubernetes Secret create outcome is unknown, and its cleanup could not finish.";
+
+  // The create lands but its response is lost: OCC records no metadata for it, so the driver
+  // removes the exact object it stored under its own name (finding 916).
+  let client = new FakeCoreV1Api();
+  let nsId = namespaceId();
+  client.addNamespace(nsId);
+  let driver = driverWithClient(client);
+  client.createAppliedFailureCodes.push("dropped");
+  await assert.rejects(() => create(driver, nsId), createFailed);
+  assert.equal(client.secrets.size, 0);
+  assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }]);
+
+  // A create that never applied reads nothing back, deletes nothing, and keeps its own error.
+  client.failureCodes.createNamespacedSecret.push("dropped");
+  const reads = client.reads;
+  const deletes = client.calls.deleteNamespacedSecret;
+  await assert.rejects(() => create(driver, nsId), createFailed);
+  assert.equal(client.reads - reads, 1);
+  assert.equal(client.calls.deleteNamespacedSecret - deletes, 0);
+
+  // An object under that name without this identity's exact ownership is never deleted, and
+  // since it is not this create's, the create keeps its own error.
+  client = new FakeCoreV1Api();
+  nsId = namespaceId();
+  client.addNamespace(nsId);
+  driver = driverWithClient(client);
+  client.createAppliedMutation = (stored) => {
+    stored.metadata.annotations["openclaw.dev/secret-id"] = secretId();
+  };
+  client.createAppliedFailureCodes.push("dropped");
+  await assert.rejects(() => create(driver, nsId), createFailed);
+  assert.equal(client.secrets.size, 1);
+  assert.equal(client.calls.deleteNamespacedSecret, 0);
+
+  // When the stored object cannot be read, the driver cannot tell whether the create applied,
+  // so it says so instead of reporting a plain failure that may have left a Secret behind.
+  client = new FakeCoreV1Api();
+  nsId = namespaceId();
+  client.addNamespace(nsId);
+  driver = driverWithClient(client);
+  client.createAppliedFailureCodes.push("dropped");
+  client.readSecretFailureCodes.push(403);
+  await assert.rejects(() => create(driver, nsId), cleanupFailed);
+  assert.equal(client.secrets.size, 1);
+  assert.equal(client.calls.deleteNamespacedSecret, 0);
+
+  // A failed cleanup delete is reported the same way.
+  client = new FakeCoreV1Api();
+  nsId = namespaceId();
+  client.addNamespace(nsId);
+  driver = driverWithClient(client);
+  client.createAppliedFailureCodes.push("dropped");
+  client.failureCodes.deleteNamespacedSecret.push(503);
+  await assert.rejects(() => create(driver, nsId), cleanupFailed);
+  assert.equal(client.secrets.size, 1);
+  assert.equal(client.calls.deleteNamespacedSecret, 1);
 });
 
 test("kubernetes-secret-driver ends a retry pause at once when the owner cancels", async () => {

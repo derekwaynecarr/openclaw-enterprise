@@ -104,6 +104,11 @@ and client-secret Secret keys for GitHub, Google and OIDC. It considers the char
 `client-id` and `client-secret` defaults when only one key is overridden, so those
 collisions also fail before deployment files are written.
 
+`scripts/render-installation-profile.mjs:controlPlaneNodeSelector` checks
+`controlPlane.nodeSelector` against the chart and bootstrap-volume helper's
+Kubernetes label-key and nonempty label-value rules. Invalid placement labels
+fail preflight without deployment files; legal YAML lookalike values remain strings.
+
 ### 4. Build Helm values
 
 `scripts/render-installation-profile.mjs:buildRendered`
@@ -217,6 +222,8 @@ activation, and repository registry creation need separate evidence.
 ## Changelog
 
 - 2026-10-09 19:54: Reject external sign-in credential-key collisions during profile preflight. (authoring-run/d628d0ae-29d8-405c-b812-0534f00d5821 - 60a837dfd798e8fac90b53c47436c4bc7a36e8e4)
+
+- 2026-10-09 19:42: Validate control-plane placement labels before writing profile output. (authoring-run/2e2ce65b-ab3e-4466-8f24-602241488e52 - 3a1e29fb461d2ad61a9276ae4af432bcf2d04c88)
 
 - 2026-10-09 08:40: Integrate database CA-key validation with current renderer guards and regressions. (authoring-run/4108453c-660a-45ca-87c8-ff328a767f38 - 1f8c782e69d5d097b622ba13b964d87f1088a2ff)
 

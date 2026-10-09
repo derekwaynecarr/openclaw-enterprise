@@ -95,8 +95,9 @@ persists immutable Namespace, driver, and backend metadata while public metadata
 omits the backend locator and returns `{ kind: "secret", namespaceId, id }`.
 
 Known OCC transaction failure can compensate the exact created object. An
-unknown commit outcome must not trigger destructive compensation. There is no
-value journal or automatic replay; ambiguous creation can require operator
+unknown commit outcome must not trigger destructive compensation. A failed create
+deletes the exactly owned object it may have stored under its own name. There is no
+value journal or automatic replay; a create still in flight can require operator
 recovery.
 
 ### 3. Bind a source, then admit references
@@ -298,6 +299,7 @@ credential at its issuer.
 
 ## Changelog
 
+- 2026-10-09 13:00: A failed Secret create deletes the exact object it may have stored. (fix-916)
 - 2026-10-05 13:27: Keep first-Agent container-engine calls on the recorded Unix socket without inherited Docker TLS settings. (authoring-run/c743ee6e-95f7-43d3-813d-4496b4b2fb19 - 469d2fef447ecdf2565d3991db1e1ce5c95d880e)
 - 2026-10-05 17:02: Align first-Agent Gateway discovery with the canonical single-cluster tenant namespace. (authoring-run/583f86ae-e997-4586-8fb5-217bb20a1410 - 1d7bd797a941a45c36280b7531ee3051b5cad830)
 

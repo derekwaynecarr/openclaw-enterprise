@@ -541,10 +541,6 @@ test("label values that YAML 1.1 would retype stay strings", () => {
     scale: "1e3",
     hex: "0x1f",
     octal: "0o17",
-    sexagesimal: "1:20",
-    infinity: ".inf",
-    team: "@platform",
-    trailing: "zone:",
     yes: "keep",
   };
   const input = baseInput();
@@ -570,9 +566,9 @@ test("Helm renders YAML 1.1 lookalike label values as strings", { skip: helmSkip
   assert.doesNotMatch(manifests, /spot: false/);
   const rejected = baseInput();
   rejected.controlPlane.nodeSelector = { team: "@platform" };
-  const error = renderError(() => helmTemplate(render("openclaw", rejected)));
-  assert.match(
-    `${error.stdout ?? ""}${error.stderr ?? ""}`,
+  assertPreflightFailure(
+    "openclaw",
+    rejected,
     /controlPlane\.nodeSelector values must be nonempty Kubernetes label values/,
   );
 });
