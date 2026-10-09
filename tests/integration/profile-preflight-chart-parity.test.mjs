@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -112,6 +112,10 @@ function assertParity({ label, controlPlane, values, accepted, chartError }) {
   const { directory, renderer } = renderProfile(input(controlPlane));
   try {
     assert.equal(renderer.ok, accepted, `${label}: renderer\n${renderer.output}`);
+    if (!accepted) {
+      assert.equal(existsSync(join(directory, "values.yaml")), false);
+      assert.equal(existsSync(join(directory, "installation.yaml")), false);
+    }
     let chart;
     if (accepted) {
       chart = helmTemplate([join(directory, "values.yaml")]);
@@ -191,3 +195,43 @@ test("every trusted proxy CIDR in the table gets the API's verdict, apart from z
     }
   }
 });
+
+test(
+  "external sign-in credential keys get the same verdict from preflight and the chart",
+  { skip: helmSkip },
+  () => {
+    const keyCases = [
+      [{}, true],
+      [{ clientIdKey: "id" }, true],
+      [{ clientSecretKey: "secret" }, true],
+      [{ clientIdKey: "id", clientSecretKey: "secret" }, true],
+      [{ clientIdKey: "same-key", clientSecretKey: "same-key" }, false],
+      [{ clientIdKey: "client-secret" }, false],
+      [{ clientSecretKey: "client-id" }, false],
+    ];
+    for (const provider of ["github", "google", "oidc"]) {
+      const endpoints =
+        provider === "oidc"
+          ? {
+              issuer: "https://sso.example.com/realm",
+              authorizationUrl: "https://sso.example.com/authorize",
+              tokenUrl: "https://sso.example.com/token",
+              jwksUrl: "https://sso.example.com/keys",
+            }
+          : {};
+      for (const [keys, accepted] of keyCases) {
+        const settings = { ...endpoints, ...keys };
+        assertParity({
+          label: `${provider}: ${JSON.stringify(keys)}`,
+          controlPlane: { github: undefined, [provider]: settings },
+          values: {
+            auth: { github: { enabled: false }, [provider]: { enabled: true, ...settings } },
+          },
+          accepted,
+          chartError:
+            /auth\.(github|google|oidc) client ID and client secret must use different Secret keys/,
+        });
+      }
+    }
+  },
+);

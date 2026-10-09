@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-09
-last_updated_session: authoring-run/4108453c-660a-45ca-87c8-ff328a767f38
+last_updated_session: authoring-run/d628d0ae-29d8-405c-b812-0534f00d5821
 ---
 
 # Installation Profile Rendering Flow
@@ -98,6 +98,11 @@ Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), and paired metrics scraper selectors. Invalid
 values therefore fail before `values.yaml` or `installation.yaml` is written.
+
+`scripts/render-installation-profile.mjs:signInProvider` refuses equal client-ID
+and client-secret Secret keys for GitHub, Google and OIDC. It considers the chart's
+`client-id` and `client-secret` defaults when only one key is overridden, so those
+collisions also fail before deployment files are written.
 
 ### 4. Build Helm values
 
@@ -210,6 +215,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 19:54: Reject external sign-in credential-key collisions during profile preflight. (authoring-run/d628d0ae-29d8-405c-b812-0534f00d5821 - 60a837dfd798e8fac90b53c47436c4bc7a36e8e4)
 
 - 2026-10-09 08:40: Integrate database CA-key validation with current renderer guards and regressions. (authoring-run/4108453c-660a-45ca-87c8-ff328a767f38 - 1f8c782e69d5d097b622ba13b964d87f1088a2ff)
 
