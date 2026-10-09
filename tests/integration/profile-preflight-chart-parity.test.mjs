@@ -242,6 +242,34 @@ test(
   },
 );
 
+test(
+  "API client and DNS peer namespaces get the same verdict from the preflight and the chart",
+  { skip: helmSkip },
+  () => {
+    const podLabels = { app: "occ-operator" };
+    const dnsLabels = { "k8s-app": "kube-dns" };
+    for (const [namespace, accepted] of namespaceCases) {
+      const label = namespace.length > 40 ? `${namespace.length} characters` : namespace;
+      assertParity({
+        label: `apiClients ${label}`,
+        controlPlane: { apiClients: [{ namespace, podLabels }] },
+        values: { api: { clients: [{ namespace, podLabels }] } },
+        accepted,
+        chartError:
+          /api\.clients\[0\]\.namespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
+      });
+      assertParity({
+        label: `dns ${label}`,
+        controlPlane: { dns: { namespace, podLabels: dnsLabels } },
+        values: { dns: { namespace, podLabels: dnsLabels } },
+        accepted,
+        chartError:
+          /dns\.namespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
+      });
+    }
+  },
+);
+
 // The API is looser than the chart on input outside this table: it trims whitespace and
 // takes a bare address as a single host. Preflight and the chart refuse both.
 test("every trusted proxy CIDR in the table gets the API's verdict, apart from zone IDs", () => {

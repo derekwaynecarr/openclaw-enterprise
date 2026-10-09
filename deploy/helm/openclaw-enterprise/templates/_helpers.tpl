@@ -269,9 +269,16 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not $client.namespace) (not $client.podLabels) -}}
 {{- fail (printf "api.clients[%d] requires an exact namespace and nonempty Pod selector" $index) -}}
 {{- end -}}
+{{- /* NetworkPolicies select these peers by kubernetes.io/metadata.name, which holds a Namespace name: a DNS label of at most 63 characters. */ -}}
+{{- if or (gt (len (toString $client.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $client.namespace))) -}}
+{{- fail (printf "api.clients[%d].namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" $index) -}}
+{{- end -}}
 {{- end -}}
 {{- if or (not .Values.dns.namespace) (not .Values.dns.podLabels) -}}
 {{- fail "dns requires an exact namespace and nonempty Pod selector" -}}
+{{- end -}}
+{{- if or (gt (len (toString .Values.dns.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString .Values.dns.namespace))) -}}
+{{- fail "dns.namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" -}}
 {{- end -}}
 {{- if hasKey .Values.database "cidr" -}}{{- fail "database.cidr is retired; configure database.cidrs with explicit IPv4 /32 hosts" -}}{{- end -}}
 {{- if hasKey .Values.cluster "cidr" -}}{{- fail "cluster.cidr is retired; configure cluster.cidrs with explicit IPv4 /32 hosts" -}}{{- end -}}
