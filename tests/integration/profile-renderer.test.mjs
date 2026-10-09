@@ -1252,3 +1252,23 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
   assert.match(accepted.values, /channelDirectoryProxyUrl: http:\/\/192\.0\.2\.10:8080/);
   assert.match(accepted.installation, /proxyUrl: http:\/\/192\.0\.2\.10:8080/);
 });
+
+test("preflight rejects Codex seccomp paths the compute driver refuses", () => {
+  const message =
+    /runtime\.codexSeccompProfile must be a relative localhost profile path without traversal or unconfined mode/;
+  for (const codexSeccompProfile of [
+    "/profiles/codex.json",
+    "../codex.json",
+    "profiles/../codex.json",
+    "profiles//codex.json",
+    "unconfined",
+    "profiles/unconfined",
+    "profiles\\codex.json",
+  ]) {
+    assertPreflightFailure("codex", codexInput({ runtime: { codexSeccompProfile } }), message);
+  }
+  const accepted = render("codex", codexInput());
+  const installation = loadYaml(accepted.installation);
+  KubernetesComputeDriver.validateConfiguration(installation.drivers.compute.configuration);
+  assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
+});
