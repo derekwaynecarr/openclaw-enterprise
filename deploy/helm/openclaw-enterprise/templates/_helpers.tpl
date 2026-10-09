@@ -37,23 +37,25 @@
 {{- $passwordSignIn := toString (default "all" .Values.auth.passwordSignIn) -}}
 {{- if not (has $passwordSignIn (list "all" "recovery-only")) -}}{{- fail "auth.passwordSignIn must be all or recovery-only" -}}{{- end -}}
 {{- if and (eq $passwordSignIn "recovery-only") (not $external) -}}{{- fail "auth.passwordSignIn: recovery-only requires auth.github.enabled, auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
+{{- /* JavaScript's trim for the allowlists below and the OIDC URLs: ASCII whitespace, Unicode Zs, U+2028, U+2029 and U+FEFF. Go's TrimSpace also drops U+0085, which the API keeps and then rejects, and keeps U+FEFF, which the API trims. The rendered env keeps the value as written. */ -}}
+{{- $jsTrim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
 {{- /* Allowlists are checked whether or not their provider is enabled, as the API does, and
 an allowlist without its provider is refused: the API treats it as a startup error. */ -}}
 {{- $githubLists := default dict $github -}}
 {{- $googleLists := default dict $google -}}
 {{- if not (or (kindIs "invalid" $githubLists.allowedOrgs) (kindIs "slice" $githubLists.allowedOrgs)) -}}{{- fail "auth.github.allowedOrgs must be a list of GitHub organization logins" -}}{{- end -}}
 {{- range $org := $githubLists.allowedOrgs -}}
-{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}$" (lower (trim (toString $org)))) -}}{{- fail "auth.github.allowedOrgs requires GitHub organization logins such as acme" -}}{{- end -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}$" (lower (regexReplaceAll $jsTrim (toString $org) ""))) -}}{{- fail "auth.github.allowedOrgs requires GitHub organization logins such as acme" -}}{{- end -}}
 {{- end -}}
 {{- if not (or (kindIs "invalid" $githubLists.allowedTeams) (kindIs "slice" $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedTeams must be a list of org/team-slug entries" -}}{{- end -}}
 {{- range $team := $githubLists.allowedTeams -}}
-{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}/[a-z0-9][a-z0-9_-]{0,99}$" (lower (trim (toString $team)))) -}}{{- fail "auth.github.allowedTeams requires org/team-slug entries such as acme/platform" -}}{{- end -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}/[a-z0-9][a-z0-9_-]{0,99}$" (lower (regexReplaceAll $jsTrim (toString $team) ""))) -}}{{- fail "auth.github.allowedTeams requires org/team-slug entries such as acme/platform" -}}{{- end -}}
 {{- end -}}
 {{- if gt (add (len (default list $githubLists.allowedOrgs)) (len (default list $githubLists.allowedTeams))) 10 -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams list at most 10 entries together" -}}{{- end -}}
 {{- if and (not (and $github $github.enabled)) (or (default list $githubLists.allowedOrgs) (default list $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams require auth.github.enabled: true; they limit GitHub sign-in only" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $googleLists.allowedDomains) (kindIs "slice" $googleLists.allowedDomains)) -}}{{- fail "auth.google.allowedDomains must be a list of DNS domain names" -}}{{- end -}}
 {{- range $domain := $googleLists.allowedDomains -}}
-{{- $name := lower (trim (toString $domain)) -}}
+{{- $name := lower (regexReplaceAll $jsTrim (toString $domain) "") -}}
 {{- if or (gt (len $name) 253) (not (regexMatch "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$" $name)) -}}{{- fail "auth.google.allowedDomains requires DNS domain names such as example.com" -}}{{- end -}}
 {{- end -}}
 {{- if and (not (and $google $google.enabled)) (default list $googleLists.allowedDomains) -}}{{- fail "auth.google.allowedDomains requires auth.google.enabled: true; it limits Google sign-in only" -}}{{- end -}}
@@ -117,17 +119,15 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.oidc requires agentNativeAdmin.enabled: false; OIDC sign-in supports host-only cookies only" -}}{{- end -}}
 {{- /* The API's startup checks, mirrored: https on 443, a DNS host, no userinfo, query or fragment, and one host for all four. */ -}}
 {{- $endpoint := "^(?i)https://(([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?)(:443)?(/[^?#]*)?$" -}}
-{{- /* The API trims each value with JavaScript's trim before these checks: ASCII whitespace, Unicode Zs, U+2028, U+2029 and U+FEFF. The rendered env keeps the value as written. */ -}}
-{{- $trim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
-{{- $issuer := regexReplaceAll $trim (toString (default "" $oidc.issuer)) "" -}}
+{{- $issuer := regexReplaceAll $jsTrim (toString (default "" $oidc.issuer)) "" -}}
 {{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^(?i)https://[^/]*:" $issuer) (gt (len (regexReplaceAll $endpoint $issuer "${1}")) 253) -}}{{- fail "auth.oidc.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" -}}{{- end -}}
 {{- $host := lower (regexReplaceAll $endpoint $issuer "${1}") -}}
 {{- range $key := list "authorizationUrl" "tokenUrl" "jwksUrl" -}}
-{{- $url := regexReplaceAll $trim (toString (default "" (index $oidc $key))) "" -}}
+{{- $url := regexReplaceAll $jsTrim (toString (default "" (index $oidc $key))) "" -}}
 {{- if or (not (regexMatch $endpoint $url)) (ne (lower (regexReplaceAll $endpoint $url "${1}")) $host) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 on the issuer's host, with no query or fragment" $key) -}}{{- end -}}
 {{- end -}}
 {{- if not (has (toString (default "client_secret_post" $oidc.tokenAuth)) (list "client_secret_post" "client_secret_basic")) -}}{{- fail "auth.oidc.tokenAuth must be client_secret_post or client_secret_basic" -}}{{- end -}}
-{{- if and $oidc.displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" (trim (toString $oidc.displayName)))) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
+{{- if and $oidc.displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" (regexReplaceAll $jsTrim (toString $oidc.displayName) ""))) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $oidc.egressCidrs) (kindIs "slice" $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $oidc.egressCidrs -}}
 {{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.oidc.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}

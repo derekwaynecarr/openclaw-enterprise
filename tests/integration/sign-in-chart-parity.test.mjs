@@ -264,6 +264,35 @@ test("the API accepts exactly the GitHub allowlist the chart renders", tooling, 
   );
 });
 
+test("the API accepts sign-in values padded by U+FEFF, which Go trim keeps", tooling, async (t) => {
+  const directory = await startupDirectory(t);
+  // Go's TrimSpace keeps U+FEFF, so the chart used to refuse these. JavaScript's trim drops
+  // it, and the chart now uses that trim. The rendered env keeps the character.
+  const org = "\uFEFFacme";
+  const team = "\uFEFFacme/platform";
+  const domain = "\uFEFFexample.com";
+  const displayName = "\uFEFFContinue";
+  const objects = await renderChart({
+    ...githubUpgradeValues(recoveryUserId),
+    ...googleUpgradeValues(recoveryUserId),
+    ...oidcUpgradeValues(recoveryUserId, fixtureOidcIssuer, { displayName }),
+    "auth.github.allowedOrgs[0]": org,
+    "auth.github.allowedTeams[0]": team,
+    "auth.google.allowedDomains[0]": domain,
+  });
+  const rendered = signInSettings(deploymentEnv(objects, "api"));
+  assert.equal(rendered.OCC_AUTH_GITHUB_ALLOWED_ORGS, org);
+  assert.equal(rendered.OCC_AUTH_GITHUB_ALLOWED_TEAMS, team);
+  assert.equal(rendered.OCC_AUTH_GOOGLE_ALLOWED_DOMAINS, domain);
+  assert.equal(rendered.OCC_AUTH_OIDC_DISPLAY_NAME, displayName);
+  const parsed = humanLoginConfiguration(resolveSecrets(rendered));
+  assert.deepEqual(parsed.github.allowedOrgs, ["acme"]);
+  assert.deepEqual(parsed.github.allowedTeams, ["acme/platform"]);
+  assert.deepEqual(parsed.google.allowedDomains, ["example.com"]);
+  assert.equal(parsed.oidc.displayName, "Continue");
+  assert.equal(await startupCode(directory, resolveSecrets(rendered)), "PERSISTENCE_UNAVAILABLE");
+});
+
 test(
   "the API accepts exactly the Google sign-in settings the chart renders, alone and with GitHub",
   tooling,
@@ -750,6 +779,19 @@ const invalid = [
     parser: /OCC_AUTH_PASSWORD_SIGN_IN must be all or recovery-only/,
   },
   {
+    name: "GitHub with an organization login padded by U+0085",
+    values: {
+      ...githubOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.github.allowedOrgs[0]": "\u0085acme",
+    },
+    chart: /auth\.github\.allowedOrgs requires GitHub organization logins/,
+    github: true,
+    env: { OCC_AUTH_GITHUB_ALLOWED_ORGS: "\u0085acme" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_ORGS must be a comma-separated list of GitHub organization logins/,
+  },
+  {
     name: "GitHub with an allowed organization that is not a login",
     values: {
       ...githubOn,
@@ -761,6 +803,19 @@ const invalid = [
     env: { OCC_AUTH_GITHUB_ALLOWED_ORGS: "acme/platform" },
     parser:
       /OCC_AUTH_GITHUB_ALLOWED_ORGS must be a comma-separated list of GitHub organization logins/,
+  },
+  {
+    name: "GitHub with a team slug padded by U+0085",
+    values: {
+      ...githubOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.github.allowedTeams[0]": "\u0085acme/platform",
+    },
+    chart: /auth\.github\.allowedTeams requires org\/team-slug entries/,
+    github: true,
+    env: { OCC_AUTH_GITHUB_ALLOWED_TEAMS: "\u0085acme/platform" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_TEAMS must be a comma-separated list of org\/team-slug entries/,
   },
   {
     name: "GitHub with an allowed team without its organization",
@@ -855,6 +910,18 @@ const invalid = [
     },
   },
   {
+    name: "Google with a hosted domain padded by U+0085",
+    values: {
+      ...googleOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.google.allowedDomains[0]": "\u0085example.com",
+    },
+    chart: /auth\.google\.allowedDomains requires DNS domain names/,
+    google: true,
+    env: { OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: "\u0085example.com" },
+    parser: /OCC_AUTH_GOOGLE_ALLOWED_DOMAINS must be a comma-separated list of DNS domain names/,
+  },
+  {
     name: "Google with a hosted domain that is not a DNS name",
     values: {
       ...googleOn,
@@ -939,6 +1006,17 @@ const invalid = [
     oidc: true,
     env: { OCC_AUTH_OIDC_TOKEN_AUTH: "private_key_jwt" },
     parser: /OCC_AUTH_OIDC_TOKEN_AUTH must be client_secret_post or client_secret_basic/,
+  },
+  {
+    name: "OIDC with a display name padded by U+0085",
+    values: {
+      ...oidcUpgradeValues(recoveryUserId),
+      "auth.oidc.displayName": "\u0085Continue",
+    },
+    chart: /auth\.oidc\.displayName must be 1 to 40 printable characters/,
+    oidc: true,
+    env: { OCC_AUTH_OIDC_DISPLAY_NAME: "\u0085Continue" },
+    parser: /OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters/,
   },
   {
     name: "OIDC with an overlong label",
