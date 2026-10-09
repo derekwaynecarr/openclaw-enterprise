@@ -443,6 +443,110 @@ test("Agent roster refusals name the setting and the fix", () => {
   );
 });
 
+test("model policy refusals name the Configuration setting", () => {
+  const refusal = (values) => {
+    try {
+      resolveConfiguredHarnessId(values);
+    } catch (error) {
+      assert.ok(error instanceof ConfigurationHarnessError, String(error));
+      assert.ok(Array.from(error.message).length <= 256, error.message);
+      return error.message;
+    }
+    assert.fail(`${JSON.stringify(values)} was admitted`);
+  };
+  const catalog = { providers: { openai: { models: [{ id: "gpt-4.1" }] } } };
+  // Finding 888: a non-object agents read as an empty roster, so the provider catalog check
+  // refused it first with text about selectable provider models.
+  for (const agents of ["x", 1, [], null]) {
+    assert.equal(
+      refusal({ agents, models: catalog }),
+      "Configuration setting agents must be an object.",
+      JSON.stringify(agents),
+    );
+  }
+  for (const entries of ["x", [], null]) {
+    assert.equal(
+      refusal({ agents: { entries }, models: catalog }),
+      "Configuration setting agents.entries must be an object keyed by Agent ID.",
+      JSON.stringify(entries),
+    );
+  }
+  assert.equal(
+    refusal({ agents: { entries: { main: {} } } }),
+    "Configuration setting agents.entries.main.model is required when agents.defaults.model is unset: set either one.",
+  );
+  assert.equal(
+    refusal({
+      agents: {
+        defaults: { model: "openai/gpt-4.1" },
+        entries: { main: {}, "x.y": { model: "openai/gpt-4.1-mini" } },
+      },
+    }),
+    'Configuration setting agents.entries["x.y"].model must select the same primary model as agents.defaults.model and the other agents.entries.',
+  );
+  const selectableRule =
+    "must be an object keyed by model ref: a model other than the primary needs the primary's provider and the same agentRuntime, set on both.";
+  assert.equal(
+    refusal({
+      agents: {
+        defaults: { model: "openai/gpt-4.1" },
+        entries: { main: { models: { "openai/gpt-4.1-mini": {} } } },
+      },
+    }),
+    `Configuration setting agents.entries.main.models ${selectableRule}`,
+  );
+  assert.equal(
+    refusal({ agents: { defaults: { model: "openai/gpt-4.1", models: "x" } } }),
+    `Configuration setting agents.defaults.models ${selectableRule}`,
+  );
+  assert.equal(
+    refusal({ agents: { defaults: { models: {} } } }),
+    "Configuration setting agents.defaults.models needs a primary model: set agents.defaults.model or an agents.entries model.",
+  );
+  assert.equal(
+    refusal({ models: { providers: { openai: "x" } } }),
+    "Configuration setting models.providers.openai must be an object.",
+  );
+  assert.equal(
+    refusal({ models: { providers: { "my provider": { models: {} } } } }),
+    'Configuration setting models.providers["my provider"].models must be an array of model entries.',
+  );
+  assert.equal(
+    refusal({
+      agents: { defaults: { model: "openai/gpt-4.1" } },
+      models: { providers: { openai: { models: [{ id: "gpt-4.1" }, { id: "gpt-4.1-mini" }] } } },
+    }),
+    "Configuration setting models.providers.openai.models may list only the primary and fallback models set in agents.defaults.model or agents.entries.",
+  );
+  const long = "p.".repeat(200);
+  assert.ok(refusal({ models: { providers: { [long]: false } } }).endsWith("… must be an object."));
+});
+
+test("deployment names a non-object agents setting before model policy", async () => {
+  const { agent, controller, namespace } = await fixture();
+  const configuration = await controller.createConfiguration(administrator, {
+    namespaceId: namespace.id,
+    kind: "agent",
+    values: { agents: "x", models: { providers: { openai: { models: [{ id: "gpt-4.1" }] } } } },
+  });
+  await controller.updateAgent(administrator, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    configurationId: configuration.id,
+  });
+  await assert.rejects(
+    controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    ),
+    (error) =>
+      error instanceof ConfigurationHarnessError &&
+      error.message === "Configuration setting agents must be an object.",
+  );
+  assert.deepEqual(await controller.listRevisions(administrator, namespace.id, agent.id), []);
+});
+
 test("one installation admits embedded and dedicated revisions without rewriting historical placement", async () => {
   const { agent, bindHarnessAuth, configuration, controller, namespace } = await fixture();
   const embedded = await controller.deployAgent(
