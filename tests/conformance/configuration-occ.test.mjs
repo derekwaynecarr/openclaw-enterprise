@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import {
   DEVELOPMENT_HARNESS_DESCRIPTOR,
   resolveApprovedHarness as resolveApprovedDevelopmentHarness,
@@ -263,6 +264,184 @@ test("a Configuration update that applied but answered an error is rolled back w
   const updated = await controller.updateConfiguration(administrator, updateInput("applied"));
   assert.equal(updated.generation, 2);
   assert.deepEqual((await configurationDriver.read(reference)).values, { model: "applied" });
+});
+
+/**
+ * Gives the test Driver the exact inspection the Kubernetes Driver has: undefined when absent,
+ * the stored Configuration when it matches exactly, and a conflict otherwise.
+ */
+function inspectExactly(configurationDriver) {
+  configurationDriver.inspectExact = async (configuration) => {
+    const stored = configurationDriver.stored(configuration);
+    if (stored === undefined) {
+      return undefined;
+    }
+    if (!isDeepStrictEqual(stored, configuration)) {
+      throw new Error("synthetic Configuration identity conflict");
+    }
+    return stored;
+  };
+}
+
+test("a Configuration create that applied but answered an error leaves no ConfigMap behind", async () => {
+  const { configurationDriver, controller, namespace } = await fixture();
+  inspectExactly(configurationDriver);
+  const create = configurationDriver.create;
+  const input = (model) => ({ namespaceId: namespace.id, kind: "agent", values: { model } });
+  const created = [];
+
+  // The create lands but its response is lost (a timeout after the API server applied it). The
+  // metadata rolls back, so the stored document must go too (finding 916).
+  configurationDriver.create = async (configuration) => {
+    configurationDriver.create = create;
+    created.push(configuration);
+    await create(configuration);
+    throw new Error("synthetic Configuration create response loss");
+  };
+  await assert.rejects(
+    controller.createConfiguration(administrator, input("applied-but-lost")),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "The selected Configuration Driver is unavailable.",
+  );
+  assert.equal(configurationDriver.stored(created[0]), undefined);
+  await assert.rejects(
+    controller.getConfiguration(administrator, namespace.id, created[0].id),
+    ScopeViolationError,
+  );
+
+  // A create that never applied leaves nothing to delete and keeps its own error.
+  configurationDriver.create = async (configuration) => {
+    configurationDriver.create = create;
+    created.push(configuration);
+    throw new Error("synthetic Configuration outage");
+  };
+  const deleteConfiguration = configurationDriver.delete;
+  const deleted = [];
+  configurationDriver.delete = async (reference) => {
+    deleted.push(reference);
+    return deleteConfiguration(reference);
+  };
+  await assert.rejects(
+    controller.createConfiguration(administrator, input("never-applied")),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "The selected Configuration Driver is unavailable.",
+  );
+  assert.deepEqual(deleted, []);
+
+  // A document at the new identity that is not this exact Configuration is never deleted; OCC
+  // says it could not roll back instead.
+  configurationDriver.create = async (configuration) => {
+    configurationDriver.create = create;
+    created.push(configuration);
+    await create({ ...configuration, values: { model: "someone-else" } });
+    throw new Error("synthetic Configuration create response loss");
+  };
+  await assert.rejects(
+    controller.createConfiguration(administrator, input("foreign")),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "A Driver could not roll back a failed resource mutation.",
+  );
+  assert.deepEqual(configurationDriver.stored(created[2])?.values, { model: "someone-else" });
+  assert.deepEqual(deleted, []);
+
+  // When the backend cannot be read, OCC cannot tell whether the create applied, so it says the
+  // rollback failed instead of reporting a create that may have stored a ConfigMap.
+  const inspectExact = configurationDriver.inspectExact;
+  configurationDriver.create = async (configuration) => {
+    configurationDriver.create = create;
+    created.push(configuration);
+    configurationDriver.inspectExact = async () => {
+      configurationDriver.inspectExact = inspectExact;
+      throw new Error("synthetic Configuration outage");
+    };
+    await create(configuration);
+    throw new Error("synthetic Configuration create response loss");
+  };
+  await assert.rejects(
+    controller.createConfiguration(administrator, input("unknown")),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "A Driver could not roll back a failed resource mutation.",
+  );
+  assert.deepEqual(deleted, []);
+
+  const configuration = await controller.createConfiguration(administrator, input("applied"));
+  assert.deepEqual(configurationDriver.stored(configuration).values, { model: "applied" });
+});
+
+test("a Configuration delete that applied but answered an error restores the ConfigMap", async () => {
+  const { configurationDriver, controller, namespace } = await fixture();
+  inspectExactly(configurationDriver);
+  const configuration = await controller.createConfiguration(administrator, {
+    namespaceId: namespace.id,
+    kind: "agent",
+    values: { model: "kept" },
+  });
+  const deleteConfiguration = configurationDriver.delete;
+  const create = configurationDriver.create;
+  const recreated = [];
+  configurationDriver.create = async (next) => {
+    recreated.push(next);
+    return create(next);
+  };
+
+  // The delete lands but its response is lost. The metadata rolls back, so the stored document
+  // must come back instead of leaving metadata that names nothing (finding 916).
+  configurationDriver.delete = async (reference) => {
+    configurationDriver.delete = deleteConfiguration;
+    await deleteConfiguration(reference);
+    throw new Error("synthetic Configuration delete response loss");
+  };
+  await assert.rejects(
+    controller.deleteConfiguration(administrator, namespace.id, configuration.id),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "The selected Configuration Driver is unavailable.",
+  );
+  assert.deepEqual(configurationDriver.stored(configuration), configuration);
+  assert.deepEqual(
+    await controller.getConfiguration(administrator, namespace.id, configuration.id),
+    configuration,
+  );
+  assert.equal(recreated.length, 1);
+
+  // A delete that never applied leaves the stored document alone and keeps its own error.
+  configurationDriver.delete = async () => {
+    configurationDriver.delete = deleteConfiguration;
+    throw new Error("synthetic Configuration outage");
+  };
+  await assert.rejects(
+    controller.deleteConfiguration(administrator, namespace.id, configuration.id),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "The selected Configuration Driver is unavailable.",
+  );
+  assert.deepEqual(configurationDriver.stored(configuration), configuration);
+  assert.equal(recreated.length, 1);
+
+  // When the backend cannot be read, OCC cannot tell whether the delete applied, so it says the
+  // rollback failed instead of claiming the Configuration is intact.
+  const inspectExact = configurationDriver.inspectExact;
+  configurationDriver.delete = async (reference) => {
+    configurationDriver.delete = deleteConfiguration;
+    configurationDriver.inspectExact = async () => {
+      configurationDriver.inspectExact = inspectExact;
+      throw new Error("synthetic Configuration outage");
+    };
+    await deleteConfiguration(reference);
+    throw new Error("synthetic Configuration delete response loss");
+  };
+  await assert.rejects(
+    controller.deleteConfiguration(administrator, namespace.id, configuration.id),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "A Driver could not roll back a failed resource mutation.",
+  );
+  assert.equal(configurationDriver.stored(configuration), undefined);
+  assert.equal(recreated.length, 1);
 });
 
 test("native Configuration documents remain bound to their exact Namespace", async () => {

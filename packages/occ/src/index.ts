@@ -4328,10 +4328,24 @@ export class OpenClawController {
         ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
         createdAt: configuration.createdAt,
       });
+      // Registered before the write: a create that applied but answered with an error (a
+      // timeout, a lost response) would otherwise leave a ConfigMap without metadata (finding
+      // 916). The rollback deletes only this exact Configuration (identity, generation, creation
+      // time and values); an absent one means the create never applied, and a Driver that cannot
+      // inspect it is compensated only after a create it saw succeed.
+      let created = false;
+      this.registerRollback(async () => {
+        if (driver.inspectExact === undefined) {
+          if (!created) {
+            return;
+          }
+        } else if ((await driver.inspectExact(configuration)) === undefined) {
+          return;
+        }
+        await driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId });
+      });
       const result = await this.driverOperation(() => driver.create(configuration));
-      this.registerRollback(async () =>
-        driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
-      );
+      created = true;
       return this.exactConfiguration(result, metadata);
     });
   }
@@ -4649,12 +4663,26 @@ export class OpenClawController {
         ),
         configuration,
       );
+      // Registered before the write: a delete that applied but answered with an error would
+      // otherwise leave the metadata without its ConfigMap (finding 916). The rollback recreates
+      // the previous Configuration only when it is gone; one still stored exactly means the
+      // delete never applied. A Driver that cannot inspect it is compensated only after a delete
+      // it saw succeed.
+      let deleted = false;
+      this.registerRollback(async () => {
+        if (driver.inspectExact === undefined) {
+          if (!deleted) {
+            return;
+          }
+        } else if ((await driver.inspectExact(previous)) !== undefined) {
+          return;
+        }
+        await driver.create(previous);
+      });
       await this.driverOperation(() =>
         driver.delete({ id: configuration.id, namespaceId: namespace.id }),
       );
-      this.registerRollback(async () => {
-        await driver.create(previous);
-      });
+      deleted = true;
       const removed = await accessBindingsTargeting(
         state,
         namespace.id,

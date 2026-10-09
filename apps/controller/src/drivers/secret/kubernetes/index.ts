@@ -203,16 +203,66 @@ export class KubernetesSecretDriver implements SecretDriver {
     const namespace = await this.readyNamespace(client, identity.namespaceId);
 
     const name = kubernetesSecretName(identity);
-    const observed = await this.request(
-      () =>
-        client.createNamespacedSecret({
-          namespace,
-          body: this.manifest(identity, namespace, name, value),
-        }),
-      "create",
-      { mutating: true },
-    );
+    let observed: V1Secret;
+    try {
+      observed = await this.request(
+        () =>
+          client.createNamespacedSecret({
+            namespace,
+            body: this.manifest(identity, namespace, name, value),
+          }),
+        "create",
+        { mutating: true },
+      );
+    } catch (error) {
+      await this.discardFailedCreate(client, namespace, name, identity);
+      throw error;
+    }
     return this.checkedBackendRef(observed, identity, namespace);
+  }
+
+  /**
+   * A create that applied but answered with an error (the request deadline, a lost response)
+   * would leave a Secret no OCC metadata names, under a name only this call knows (finding
+   * 916). So a failed create reads its own name and deletes the object it finds, but only when
+   * it carries this exact identity's ownership; an absent object means the create never
+   * applied. When that cannot be checked, the outcome is reported as unknown and uncleaned.
+   * A create still in flight that lands after this read is not covered.
+   */
+  private async discardFailedCreate(
+    client: CoreV1Api,
+    namespace: string,
+    name: string,
+    identity: SecretIdentity,
+  ): Promise<void> {
+    try {
+      const existing = await this.request(
+        () => client.readNamespacedSecret({ namespace, name }),
+        "read",
+      );
+      const { uid } = this.checkedBackendRef(existing, identity, namespace);
+      const resourceVersion = existing.metadata?.resourceVersion;
+      if (!isNonEmptyString(resourceVersion)) {
+        throw new SecretOwnershipError("Secret resource version is required for delete.");
+      }
+      await this.request(
+        () =>
+          client.deleteNamespacedSecret({
+            namespace,
+            name,
+            body: { preconditions: { uid, resourceVersion } },
+          }),
+        "delete",
+        { mutating: true },
+      );
+    } catch (error) {
+      if (error instanceof SecretBackendMissingError) {
+        return;
+      }
+      throw new SecretBackendUnavailableError(
+        "The Kubernetes Secret create outcome is unknown, and its cleanup could not finish.",
+      );
+    }
   }
 
   async update(secret: Secret, value: string): Promise<void> {
