@@ -879,8 +879,8 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
       "--load",
       // An image ID covers each history entry's creation time. A fixed epoch lets
       // builders that write the same layers agree on the ID, so reuseEngineImage
-      // can match an image another job built. It sets config timestamps only: RUN
-      // steps do not see it, so cache keys stay the same.
+      // can match an image another job built. It sets the config and history
+      // timestamps and WORKDIR directory mtimes; RUN steps do not see it.
       "--build-arg",
       "SOURCE_DATE_EPOCH=0",
       "--cache-from",

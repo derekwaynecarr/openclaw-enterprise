@@ -34,6 +34,7 @@ RUN set -eu; \
     client=.build/runtime-client/opt/oce/repository-credentials; \
     cp .build/repository-credentials/client/package.json "$client/package.json"; \
     cp -R .build/repository-credentials/client/dist "$client/dist"; \
+    chmod 0755 .build/runtime-client/opt .build/runtime-client/opt/oce; \
     chmod -R a+rX "$client"; \
     chmod 0555 "$client/bin/gh"; \
     test -f "$client/dist/drivers/repo/github/credentials/client/router.js"; \
