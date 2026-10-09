@@ -16,6 +16,7 @@ import {
   OpenClawController,
   ResourceConflictError,
   ScopeViolationError,
+  ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
@@ -315,7 +316,47 @@ test("a configured ServiceAccount Driver that fails keeps the generic dependency
     controller.createServiceAccountCredential(administrator, namespace.id, account.id),
     (error) =>
       error instanceof DependencyUnavailableError &&
-      !(error instanceof ServiceAccountDriverNotConfiguredError),
+      !(error instanceof ServiceAccountDriverNotConfiguredError) &&
+      error.message === "The selected ServiceAccount Driver is unavailable.",
+  );
+});
+
+test("a leftover credential Secret reaches the issuing caller as a conflict that names it", async () => {
+  let calls = 0;
+  const leftover = new ServiceAccountCredentialSecretExistsError(
+    "oce-0123456789abcde",
+    "service-account-0123456789abcdef0123456789abcdef",
+  );
+  const { controller, externalCredentials, namespace } = await fixture({
+    createCredential: async () => {
+      calls += 1;
+      throw leftover;
+    },
+  });
+  const account = await controller.createServiceAccount(administrator, {
+    namespaceId: namespace.id,
+    name: "leftover-secret-account",
+  });
+  // A caller without the account's update grant never reaches the Driver or the Secret's name.
+  await assert.rejects(
+    controller.createServiceAccountCredential(reader, namespace.id, account.id),
+    (error) =>
+      error instanceof AuthorizationDeniedError &&
+      !(error instanceof DependencyUnavailableError) &&
+      !error.message.includes(leftover.secretName),
+  );
+  assert.equal(calls, 0);
+  // Before finding 935 the controller replaced it with "The selected ServiceAccount Driver is
+  // unavailable." (503), which hid the Secret that blocks every retry.
+  await assert.rejects(
+    controller.createServiceAccountCredential(administrator, namespace.id, account.id),
+    (error) => error === leftover && !(error instanceof DependencyUnavailableError),
+  );
+  assert.equal(calls, 1);
+  assert.equal(externalCredentials.size, 0);
+  assert.equal(
+    (await controller.getServiceAccount(administrator, namespace.id, account.id)).credential,
+    undefined,
   );
 });
 

@@ -852,6 +852,32 @@ export class ServiceAccountDriverNotConfiguredError extends ResourceConflictErro
   }
 }
 
+const SERVICE_ACCOUNT_REFERENCE_URL =
+  "https://docs-enterprise.openclaw.org/reference/service-accounts/";
+
+/**
+ * An account-owned credential Secret left by an earlier issuance whose outcome OCC could not
+ * settle (a lost create reply whose cleanup failed) blocks every retry until an operator deletes
+ * it (finding 935). Raised only after the caller's update grant, the account lookup and the
+ * "no credential yet" check, so it reaches only callers who may issue for this account. It
+ * names the Kubernetes namespace and Secret (never its contents) and the doc's removal step.
+ */
+export class ServiceAccountCredentialSecretExistsError extends ResourceStateConflictError {
+  readonly secretNamespace: string;
+  readonly secretName: string;
+
+  constructor(secretNamespace: string, secretName: string) {
+    const message = (secret: string) =>
+      `Kubernetes Secret ${secret} from an earlier issuance blocks this one. Delete it and retry; see ${SERVICE_ACCOUNT_REFERENCE_URL}`;
+    const full = message(`${secretNamespace}/${secretName}`);
+    // The HTTP error contract caps messages at 256 characters; only a long namespace exceeds it.
+    super(full.length <= 256 ? full : message(secretName));
+    this.name = "ServiceAccountCredentialSecretExistsError";
+    this.secretNamespace = secretNamespace;
+    this.secretName = secretName;
+  }
+}
+
 export class DriverSelectionError extends Error {
   constructor(message: string) {
     super(message);
