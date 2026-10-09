@@ -60,8 +60,10 @@ must retain the selected provider. Additional catalog models need an
 explicit matching Harness runtime; fallbacks must resolve through the same
 policy checks to the same Harness. A provider's `models` array is limited
 to the resolved primary and fallback models; each entry's `id` is the full
-reference or the ID after its first slash, and IDs may contain slashes. Nonempty
-`agents.list` is unsupported; Kubernetes refuses rosters OpenClaw rejects. Admission
+reference or the ID after its first slash, and IDs may contain slashes.
+Configuration save and deployment refuse `agents.list` and the rosters every
+OpenClaw Gateway rejects ([Configuration](configuration.md#create-read-update-and-delete));
+dedicated OpenClaw's `main` Agent rules apply only at deployment. Admission
 preserves fallback order in the immutable revision but does not implement fallback
 execution or allow changing topology.
 

@@ -902,26 +902,31 @@ test("model policy refusals name the Configuration setting", () => {
 });
 
 test("deployment names a non-object agents setting before model policy", async () => {
-  const { agent, controller, namespace } = await fixture();
-  const configuration = await controller.createConfiguration(administrator, {
-    namespaceId: namespace.id,
-    kind: "agent",
-    values: { agents: "x", models: { providers: { openai: { models: [{ id: "gpt-4.1" }] } } } },
-  });
-  await controller.updateAgent(administrator, {
-    namespaceId: namespace.id,
-    agentId: agent.id,
-    configurationId: configuration.id,
-  });
+  const { agent, configuration, configurationDriver, controller, namespace } = await fixture();
+  const values = {
+    agents: "x",
+    models: { providers: { openai: { models: [{ id: "gpt-4.1" }] } } },
+  };
+  const refusal = (error) =>
+    error instanceof ConfigurationHarnessError &&
+    error.message === "Configuration setting agents must be an object.";
+  // Save refuses it with the same text (finding 874), so store it as an older release would have.
+  await assert.rejects(
+    controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values,
+    }),
+    refusal,
+  );
+  await configurationDriver.update({ ...configurationDriver.stored(configuration), values });
   await assert.rejects(
     controller.deployAgent(
       administrator,
       { namespaceId: namespace.id, agentId: agent.id },
       resolveApprovedDevelopmentHarness,
     ),
-    (error) =>
-      error instanceof ConfigurationHarnessError &&
-      error.message === "Configuration setting agents must be an object.",
+    refusal,
   );
   assert.deepEqual(await controller.listRevisions(administrator, namespace.id, agent.id), []);
 });
@@ -1011,10 +1016,7 @@ for (const scope of ["primary", "default-fallback", "entry-fallback", "provider-
           },
         },
         entries: {
-          main: {
-            default: true,
-            ...(scope === "entry-fallback" ? { model: selection } : {}),
-          },
+          main: scope === "entry-fallback" ? { model: selection } : {},
         },
       },
       channels: { slack: { enabled: true, allowBots: false } },
@@ -1145,19 +1147,6 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
             model: { primary: "codex/gpt-4.1", fallbacks: ["openai/gpt-4.1"] },
             models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
           },
-        },
-      },
-    },
-    {
-      name: "agent lists cannot introduce a separate dedicated runtime",
-      executionMode: "embedded",
-      values: {
-        agents: {
-          defaults: {
-            model: "openai/gpt-4.1",
-            models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
-          },
-          list: [{ id: "alternate", model: "codex/gpt-4.1" }],
         },
       },
     },
