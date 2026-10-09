@@ -12,12 +12,10 @@ rejects all-source ranges, including IPv4-mapped equivalents. Without private
 routing, also configure the namespace and Pod selectors in
 `network.gatewayClients` for your authenticated proxy.
 
-Peer `podLabels` must use [Kubernetes label keys and values](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set).
-Compute refuses invalid selectors during configuration loading, before provisioning.
-Values may be empty; nonempty values and key names are at most 63 characters.
-Optional key prefixes retain the DNS-subdomain limit of 253 characters. This applies
-to DNS, gateway clients, repository credentials, Provider Harness, and managed
-channel proxy peers.
+`podLabels` use [Kubernetes label syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set), checked before provisioning.
+Values may be empty; key names and values allow 63 characters, DNS prefixes 253. This covers
+DNS, gateway clients, repository credentials, Provider Harness, and managed channel
+proxy peers.
 
 Each tenant starts with default-deny ingress and egress. Explicit policies allow
 DNS (UDP/TCP ports `53` and `5353` through `allow-dns`), approved gateway clients,
