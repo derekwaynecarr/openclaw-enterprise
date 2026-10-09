@@ -1346,3 +1346,32 @@ test("channel proxy validation preserves explicit ports and exact managed peers"
     assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), /channel proxy/i);
   }
 });
+
+test("channel proxy validation preserves omitted-port endpoint diagnostics", (t) => {
+  const output = render("openclaw", baseInput());
+  t.after(() => rmSync(output.directory, { recursive: true, force: true }));
+  const compute = loadYaml(output.installation).drivers.compute.configuration;
+  const managed = structuredClone(compute.runtime.channels);
+
+  for (const proxyUrl of [
+    "http://192.0.2.10",
+    "https://[2001:db8::10]",
+    "http://proxy.example.invalid:8080",
+    "http://192.0.2.10:8080/path",
+  ]) {
+    compute.runtime.channels = { proxyUrl };
+    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), {
+      message: "Channel proxy URL must identify one credential-free HTTP(S) IP endpoint.",
+    });
+  }
+  for (const proxyUrl of [
+    `http://${managed.managedProxy.hostname}`,
+    `http://${managed.managedProxy.hostname}:8080`,
+    "http://other.openclaw-system.svc:3128",
+  ]) {
+    compute.runtime.channels = { ...managed, proxyUrl };
+    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), {
+      message: "Managed channel proxy URL must match the exact configured Service host and port.",
+    });
+  }
+});
