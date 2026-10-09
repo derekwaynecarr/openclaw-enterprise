@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
 updated: 2026-10-09
-last_updated_session: authoring-run/ce414344-4cec-4d51-accd-f66b2ece9e0f
+last_updated_session: fix-949-950
 ---
 
 # Agent runtime logs flow
@@ -115,16 +115,24 @@ continues from this read, as a view that has delivered nothing yet does. The pag
 emits `window_exceeded` dated at that line: it and the lines logged after
 it until this read are lost. A carried PEM block then keeps no delivered frontier,
 so it stays masked for the rest of the view. OCC
-drops earlier lines and consumes one remembered hash per delivered occurrence at
-the cursor time. Identical lines beyond the remembered count stay visible only
-when the signed cursor's `frontierComplete` is true and fewer than 16 hashes are
-remembered. A new frontier is complete when its consumed prefix is ordered and
-starts after the earliest fetched timestamp, or the Driver page is shorter than
-the requested tail and not byte-cut. The bit persists while the frontier timestamp
-stays the same. A missing or false bit, or a full hash history, keeps matching-text
-suppression until the timestamp advances: expanding a previously cut tail must not
-make an older occurrence appear new. A page byte cut retains counts for delivered
-lines, allowing undelivered copies at a complete frontier to resume. It emits `stream_replaced`,
+drops earlier lines. For the cursor time, the signed cursor carries
+`frontierComplete`, `frontierCount` (lines delivered at that time) and the last
+16 of their hashes. When `frontierComplete` is true and the read holds that
+time's first line (it starts earlier, or the Driver page is shorter than the tail
+and not byte-cut) with its timed lines in order through that time, OCC skips the
+first `frontierCount` lines at that time, if the hashes match the end of that run,
+and delivers the rest: a group larger than 16 lines neither replays nor hides
+later lines. Otherwise it consumes one remembered hash per delivered occurrence,
+and lines it then delivers at that time drop the count. Text with no remembered hash is new
+only while the hashes cover the whole count; identical text beyond its count also
+needs `frontierComplete`. A new frontier is complete when its consumed prefix is
+ordered and starts after the earliest fetched timestamp, or the Driver page is
+shorter than the requested tail and not byte-cut. The bit persists while the
+frontier timestamp stays the same. Otherwise matching-time text stays suppressed
+until the timestamp advances: expanding a previously cut tail must not make an
+older occurrence appear new. A legacy cursor without `frontierCount` has a count
+only when it holds fewer than 16 hashes. A page byte cut keeps the count, so
+undelivered lines at a complete frontier resume. It emits `stream_replaced`,
 `window_exceeded`, `cursor_expired` or `truncated` gaps, and passes the rest to
 `runtime-logs/sanitize.ts:sanitizeRuntimeLogChunk`, the only producer of
 `SanitizedRuntimeLogRecord`. It classifies the whole page first, so
@@ -234,6 +242,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 15:42: Count container lines delivered at the cursor time, so a timestamp group larger than the 16-hash history neither replays nor hides later lines; a full history without that evidence stays suppressed. (fix-949-950)
 
 - 2026-10-09 22:24: Authenticate frontier completeness and retain conservative suppression for cut or legacy timestamp groups. (authoring-run/ce414344-4cec-4d51-accd-f66b2ece9e0f - f060fefd260b552e44d5549f549436d6147a474c)
 
