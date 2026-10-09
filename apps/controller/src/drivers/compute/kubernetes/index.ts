@@ -2040,9 +2040,9 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
 
 // Every topology here (embedded OpenClaw, dedicated OpenClaw or Codex) runs the pinned OpenClaw
 // Gateway on the admitted document. Its config validation rejects these roster shapes and the
-// Gateway then exits at startup (EX_CONFIG) instead of serving, so refuse them here. It drops
-// only an empty agents.list beside an implicit empty roster. A refusal, not a rewrite: OCC
-// skips this on status reads.
+// Gateway then exits at startup (EX_CONFIG) instead of serving, so refuse them here. The
+// Gateway drops only an empty agents.list beside an implicit empty roster, so that one passes.
+// A refusal, not a rewrite: OCC skips this on status reads.
 function requireOpenClawRoster(configuration: OpenClawConfigurationDocument): void {
   // Each refusal names the setting and the rule it breaks. Keys come from the caller's own
   // Configuration; agentEntryMessage quotes and bounds them.
