@@ -190,9 +190,9 @@ provider, not IAM, Compute, OCC, or the Harness.
 
 Every `503 DEPENDENCY_UNAVAILABLE` above answers the generic "A required platform
 dependency is unavailable." The specific cause, such as "could not be removed" or
-"outcome is unknown", is in the API log only: a WARN `http.dependency_unavailable`
+"outcome is unknown", is only in the API's own log: a WARN `http.dependency_unavailable`
 record with the response's `meta.requestId`, the route, the error class and message,
-and its causes' class and code.
+and its causes' class and code. The logging Collector exports only the event and request ID.
 
 ## Evidence and related references
 
