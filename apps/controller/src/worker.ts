@@ -411,8 +411,8 @@ function firstPendingCredentialWithdrawal(
 
 /**
  * A pending withdrawal that needs an attempt queued: it does not await a replay, and no attempt
- * for its revision is queued or running. Every path that queues withdrawal work on its own
- * (maintenance, a later series) checks this, so each revision keeps one chain.
+ * for its revision is queued or running. Every path that queues withdrawal work without an
+ * operator request (maintenance, a later series) checks this, so each revision keeps one chain.
  */
 async function credentialWithdrawalNeedsAttempt(
   unit: PlatformUnitOfWork,

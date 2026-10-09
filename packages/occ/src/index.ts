@@ -6278,8 +6278,8 @@ export class OpenClawController {
 
   /**
    * A `pending` withdrawal has no outstanding work once its attempts ran out with no later
-   * series queued (the chain ended, or it awaits a replay), so `withdrawalInProgress` is read
-   * from the queue.
+   * series queued (the chain ended, it awaits a replay, or maintenance has not re-queued it
+   * yet), so `withdrawalInProgress` is read from the queue.
    *
    * The source is withdrawn from the Agent only once every revision that may still run with it
    * confirmed its own withdrawal, so the read reports the active revision's withdrawal unless
