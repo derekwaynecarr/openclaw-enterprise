@@ -180,9 +180,9 @@ provider, not IAM, Compute, OCC, or the Harness.
 - Unknown Secret outcome: a failed token Secret create deletes the account-owned
   Secret holding this request's token, so issuance can be retried. If it cannot
   read or delete that Secret, it answers `503`. The leftover Secret then blocks
-  each retry with `409 RESOURCE_CONFLICT` naming it as `<namespace>/<name>`:
-  `service-account-` plus the first 32 hex digits of the account ID's SHA-256, in
-  the Namespace's control namespace. An operator deletes it, for example
+  each retry with a `409 RESOURCE_CONFLICT` that names it: `service-account-` plus
+  the first 32 hex digits of the account ID's SHA-256, in the Namespace's control
+  namespace (omitted when that name is long). An operator deletes it, for example
   `kubectl delete secret -n <namespace> <name>`, then retries. The failed issuance
   still revokes its token.
 - Expired token: Execution fails closed; automated refresh and rotation are

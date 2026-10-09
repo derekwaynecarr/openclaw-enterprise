@@ -868,7 +868,7 @@ export class ServiceAccountCredentialSecretExistsError extends ResourceStateConf
 
   constructor(secretNamespace: string, secretName: string) {
     const message = (secret: string) =>
-      `Kubernetes Secret ${secret} from an earlier issuance blocks this one. Delete it and retry; see ${SERVICE_ACCOUNT_REFERENCE_URL}`;
+      `Kubernetes Secret ${secret} from an earlier issuance blocks this one. An operator must delete it, then retry; see ${SERVICE_ACCOUNT_REFERENCE_URL}`;
     const full = message(`${secretNamespace}/${secretName}`);
     // The HTTP error contract caps messages at 256 characters; only a long namespace exceeds it.
     super(full.length <= 256 ? full : message(secretName));

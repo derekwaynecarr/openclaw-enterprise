@@ -218,7 +218,7 @@ const cases = [
       status: 409,
       code: "RESOURCE_CONFLICT",
       message:
-        "Kubernetes Secret oce-0123456789abcde/service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. Delete it and retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+        "Kubernetes Secret oce-0123456789abcde/service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
     },
   ],
   [
@@ -231,7 +231,7 @@ const cases = [
       status: 409,
       code: "RESOURCE_CONFLICT",
       message:
-        "Kubernetes Secret service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. Delete it and retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+        "Kubernetes Secret service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
     },
   ],
   [

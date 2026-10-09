@@ -4731,7 +4731,7 @@ test("a ServiceAccount credential Secret create that applied but answered an err
         assert.equal(error.secretName, secretName);
         assert.equal(
           error.message,
-          `Kubernetes Secret ${namespace}/${secretName} from an earlier issuance blocks this one. Delete it and retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/`,
+          `Kubernetes Secret ${namespace}/${secretName} from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/`,
         );
         assert.doesNotMatch(error.message, /at-request-fixture|at-retry-fixture/);
         return true;
