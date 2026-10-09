@@ -63,9 +63,9 @@ GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime/
 unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to
 read only newer lines of the same view. Container cursors count the lines delivered at their newest timestamp, so a
 later line at that timestamp is returned once, even with identical text. When a
-tail or Driver byte cut hid the start of that timestamp's lines, or an older
-cursor lacks the count, such a line can stay hidden until a later timestamp:
-OCC cannot tell it from an older line the tail omitted.
+tail or Driver byte cut leaves unknown whether a read began at that timestamp's
+first line, or an older cursor lacks the count, such a line can stay hidden until
+a later timestamp: OCC cannot tell it from an older line the tail omitted.
 `download=true` answers `text/plain` with `Content-Disposition: attachment`,
 always reads 1000 lines, and cannot be combined with `cursor` (`400`). See the
 [API reference](../../reference/api.md).
