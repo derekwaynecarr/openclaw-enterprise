@@ -3069,7 +3069,7 @@ test("sandbox routing keeps generated HTML off the administrative origin and bac
   );
 });
 
-test("sandbox routing caps the domain so dedicated Agent hostnames fit 253 characters", () => {
+test("sandbox routing caps the domain length and requires two labels", () => {
   const label = "a".repeat(63);
   const sandboxDriver = (domain) =>
     createKubernetesComputeDriver(
