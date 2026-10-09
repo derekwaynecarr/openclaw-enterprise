@@ -1439,6 +1439,38 @@ test("the reporter forwards a failed file's output tail and whole stack only", a
     redactFailureDetail({ message: "header Token abcdefgh%ijklmnop" }, secrets, "/repo").message,
     "header [redacted]",
   );
+  // A credential marker drops its whole line, though the token shape consumes the marker.
+  const sameLine = redactFailureDetail(
+    {
+      message: "before\nBearer abcdefgh unrelated-runtime-value-12345\nafter",
+      stack: "at test (Bearer abcdefgh unrelated-runtime-value-12345)\nat next (b.mjs:1:1)",
+    },
+    secrets,
+    "/repo",
+  );
+  assert.equal(sameLine.message, "before\n[redacted credential-bearing line]\nafter");
+  assert.equal(sameLine.stack, "[redacted credential-bearing line]\nat next (b.mjs:1:1)");
+  assert.equal(
+    redactFailureDetail({ message: "Bear\u001b[0mer abcdefgh other-value-9" }, secrets, "/repo")
+      .message,
+    "[redacted credential-bearing line]",
+  );
+  assert.equal(
+    redactOutputLine("stdout: Bear\u001b[0mer abcdefgh other-value-9", secrets, "/repo", 1_000),
+    "[redacted credential-bearing line]",
+  );
+  // A private key is replaced whole, its body lines included.
+  assert.equal(
+    redactFailureDetail(
+      {
+        message:
+          "key\n-----BEGIN RSA PRIVATE KEY-----\nMIIEbody\n-----END RSA PRIVATE KEY-----\nend",
+      },
+      secrets,
+      "/repo",
+    ).message,
+    "key\n[redacted]\nend",
+  );
   // Each line of a multi-line env value (a PEM body) is redacted on its own.
   const pem = failureSecrets([{ TLS_KEY: "line one opaque value\nline two opaque value\n" }]);
   assert.equal(
