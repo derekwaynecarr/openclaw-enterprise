@@ -537,14 +537,74 @@ function failureText(cause) {
   // The stack starts with the message, which can quote another process's stack.
   const messageEnd =
     message && stack.includes(message) ? stack.indexOf(message) + message.length : 0;
-  const frame = stack
+  const frames = stack
     .slice(messageEnd)
     .split("\n")
-    .find((line) => /^\s+at\s/u.test(line))
-    ?.trim();
+    .filter((line) => /^\s+at\s/u.test(line))
+    .map((line) => line.trim());
   return {
     message: message ? message.slice(0, failureInputLimit) : undefined,
-    frame: frame ? frame.slice(0, failureInputLimit) : undefined,
+    frame: frames[0]?.slice(0, failureInputLimit),
+    // The whole stack goes only to the failure details in the diagnostics report.
+    stack: frames.length > 0 ? frames.join("\n").slice(0, failureInputLimit) : undefined,
+  };
+}
+
+// A failed file's last output lines (test stdout, stderr and diagnostics), raw
+// like failure text: run-tests redacts them into the diagnostics report.
+const outputTailLines = 400;
+
+function outputTail() {
+  const lines = [];
+  const partial = { stdout: "", stderr: "" };
+  const dropping = { stdout: false, stderr: false };
+  let omitted = 0;
+  // Trim in batches so a chatty passing file costs amortized constant time per line.
+  const trim = (limit) => {
+    if (lines.length > limit) {
+      omitted += lines.length - outputTailLines;
+      lines.splice(0, lines.length - outputTailLines);
+    }
+  };
+  const push = (line) => {
+    lines.push(line.slice(0, failureInputLimit));
+    trim(2 * outputTailLines);
+  };
+  return {
+    add(stream, text) {
+      let rest = text;
+      if (dropping[stream]) {
+        // The rest of a line cut at the limit could start inside a secret.
+        const end = rest.indexOf("\n");
+        if (end === -1) {
+          return;
+        }
+        dropping[stream] = false;
+        rest = rest.slice(end + 1);
+      }
+      const parts = (partial[stream] + rest).split("\n");
+      partial[stream] = parts.pop();
+      if (partial[stream].length >= failureInputLimit) {
+        parts.push(partial[stream]);
+        partial[stream] = "";
+        dropping[stream] = true;
+      }
+      for (const line of parts) {
+        push(`${stream}: ${line}`);
+      }
+    },
+    diagnostic(text) {
+      push(`diagnostic: ${text}`);
+    },
+    finish() {
+      for (const stream of ["stdout", "stderr"]) {
+        if (partial[stream] !== "") {
+          push(`${stream}: ${partial[stream]}`);
+        }
+      }
+      trim(outputTailLines);
+      return { lines, omitted };
+    },
   };
 }
 
@@ -609,8 +669,23 @@ function location(data = {}) {
 // Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
+  const output = outputTail();
+  let failed = false;
   for await (const event of source) {
+    if (event.type === "test:stdout" || event.type === "test:stderr") {
+      if (typeof event.data?.message === "string") {
+        output.add(event.type.slice(5), event.data.message);
+      }
+      continue;
+    }
+    if (event.type === "test:fail") {
+      failed = true;
+    }
     if (event.type === "test:diagnostic") {
+      // Per-test diagnostics name their file; the run summary counts do not.
+      if (typeof event.data?.message === "string" && typeof event.data.file === "string") {
+        output.diagnostic(event.data.message);
+      }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.
       if (
         typeof event.data?.message === "string" &&
@@ -639,5 +714,9 @@ export default async function* jsonLinesReporter(source) {
       type: event.type,
       data: location(event.data),
     })}\n`;
+  }
+  // Passing files send nothing extra.
+  if (failed) {
+    yield `${JSON.stringify({ type: "test:output", data: output.finish() })}\n`;
   }
 }

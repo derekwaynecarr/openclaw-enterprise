@@ -6,7 +6,13 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
-import { failureSecrets, redactFailure } from "./failure-redaction.mjs";
+import {
+  failureSecrets,
+  redactFailure,
+  redactFailureDetail,
+  redactLogLine,
+  redactOutputLine,
+} from "./failure-redaction.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -600,6 +606,56 @@ function testStatus(event) {
   return "passed";
 }
 
+// The job log and results keep 600 characters of a failure; the lane's
+// diagnostics report (uploaded as diagnostics-<prefix>-<lane>) keeps the whole
+// redacted message, stack and the file's last output lines for the first failed
+// files.
+const maxFailureDetailFiles = 8;
+const maxFailureDetailTests = 20;
+const failureOutputLineChars = 1_000;
+const failureDetailFiles = new Set();
+
+function failureDetails(events, absolutePath, secrets, root) {
+  const failed = events.filter((event) => event.type === "test:fail" && event.data?.error);
+  const output = events.find((event) => event.type === "test:output")?.data;
+  const lines = Array.isArray(output?.lines)
+    ? output.lines.filter((line) => typeof line === "string")
+    : [];
+  if (failed.length === 0 && lines.length === 0) {
+    return undefined;
+  }
+  return {
+    tests: failed.slice(0, maxFailureDetailTests).map(({ data }) => ({
+      name: data.name === absolutePath ? "(file)" : redactLogLine(String(data.name), secrets, 200),
+      line: data.error.location?.line ?? data.line,
+      ...redactFailureDetail(data.error, secrets, root),
+    })),
+    omittedTests: Math.max(0, failed.length - maxFailureDetailTests),
+    output: {
+      lines: lines.map((line) => redactOutputLine(line, secrets, root, failureOutputLineChars)),
+      omittedLines: Number.isSafeInteger(output?.omitted) ? output.omitted : 0,
+    },
+  };
+}
+
+async function recordFailureDetails(statePath, lane, file, details) {
+  const diagnosticsPath = `${statePath}.diagnostics.json`;
+  let report = { lane };
+  try {
+    report = JSON.parse(await readFile(diagnosticsPath, "utf8"));
+  } catch {
+    // The first failed file (or passing k3d file) starts the report.
+  }
+  const failures = report.failures ?? [];
+  if (failures.length >= maxFailureDetailFiles) {
+    report.omittedFailureFiles = (report.omittedFailureFiles ?? 0) + 1;
+  } else {
+    report.failures = [...failures, { file, capturedAt: new Date().toISOString(), ...details }];
+  }
+  await writeFile(diagnosticsPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+  failureDetailFiles.add(diagnosticsPath);
+}
+
 function emptyFileResult(path, issues) {
   return {
     path,
@@ -697,6 +753,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   let nodeResult = null;
   let tests = [];
   let fileFailure;
+  let details;
   let agentActivity;
   let measurements = [];
   try {
@@ -711,6 +768,8 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         );
         return undefined;
       });
+      // The capture names a private directory for the file's container log records.
+      Object.assign(env, agentActivity?.env);
       nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
         cwd: root,
         env,
@@ -722,6 +781,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       // holds prepared values (database URLs) the job never had. Redact both.
       const secrets = failureSecrets([process.env, env]);
       const failureError = (error) => redactFailure(error, secrets, root);
+      details = failureDetails(events, absolutePath, secrets, root);
       const rootFailure = events.find(
         (event) =>
           event.type === "test:fail" &&
@@ -766,7 +826,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   } finally {
     // Capture before cleanup so passing k3d runs keep their Agent Pod timeline.
     // The capture updates the lane's diagnostics file; keep it out of other setup.
-    await setup(async () => agentActivity?.finish());
+    await setup(async () => agentActivity?.finish({ env }));
     if (prepared.cleanup) {
       try {
         await setup(prepared.cleanup);
@@ -836,10 +896,19 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     counts[testCase.status] += 1;
   }
   const nodeExitCode = nodeResult ? (nodeResult.status ?? (nodeResult.signal ? 1 : 0)) : null;
+  const status = nodeExitCode === 0 && issues.length === 0 ? "passed" : "failed";
+  if (status === "failed" && details !== undefined) {
+    // Shares the diagnostics file with the k3d capture; keep it out of other setup.
+    await setup(() => recordFailureDetails(statePath, lane.name, relativePath, details)).catch(
+      () => {
+        console.error(`[run:${lane.name}] failure details unavailable for ${relativePath}`);
+      },
+    );
+  }
 
   return {
     path: relativePath,
-    status: nodeExitCode === 0 && issues.length === 0 ? "passed" : "failed",
+    status,
     nodeExitCode,
     signal: nodeResult?.signal ?? null,
     ...(fileFailure ? { fileFailure } : {}),
@@ -955,6 +1024,11 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
   await writeSummary(resultsPath, summary);
   logFailures(files);
   logIssues(allIssues);
+  for (const path of failureDetailFiles) {
+    process.stderr.write(
+      `run-tests: whole failure messages, stacks and output tails are in ${path} (artifact diagnostics-<prefix>-${laneName})\n`,
+    );
+  }
   return summary.exitCode;
 }
 

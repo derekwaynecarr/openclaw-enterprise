@@ -1094,8 +1094,10 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   );
 
   assert.equal(result.status, 1);
-  const cliAndArtifact = `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}`;
+  const details = await readFile(join(root, "state/redacted.jsonl.diagnostics.json"), "utf8");
+  const cliAndArtifact = `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}\n${details}`;
   assert.doesNotMatch(cliAndArtifact, /secretauthvalue|strippedjobvalue42/);
+  assert.ok(JSON.parse(details).failures[0].tests.length > 0);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].tests[0].name, "redacted failure locator");
   assert.equal(summary.files[0].tests[0].line, 3);
@@ -1281,7 +1283,11 @@ test("failure text is bounded and redacts env values and credential shapes", asy
     ])) {
       text += chunk;
     }
-    return redactFailure(JSON.parse(text).data.error, secrets, "/repo");
+    const raw = JSON.parse(text.split("\n")[0]).data.error;
+    const error = redactFailure(raw, secrets, "/repo");
+    // The whole stack goes only to the diagnostics report's copy.
+    assert.equal(error.stack, undefined);
+    return error;
   };
   const credentials = [
     "Authorization: Bearer abcdefghijklmnop0123",
@@ -1338,6 +1344,255 @@ test("failure text is bounded and redacts env values and credential shapes", asy
   assert.doesNotMatch(straddle.message, /jobonly/);
   assert.equal((await render("thrown string")).message, "thrown string");
   assert.equal((await render(undefined)).message, undefined);
+});
+
+test("the reporter forwards a failed file's output tail and whole stack only", async () => {
+  const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
+  const { failureSecrets, redactFailureDetail, redactOutputLine } =
+    await import("../../scripts/ci/failure-redaction.mjs");
+  const render = async (events) => {
+    const lines = [];
+    let text = "";
+    for await (const chunk of reporter(events)) {
+      text += chunk;
+    }
+    for (const line of text.split("\n").filter(Boolean)) {
+      lines.push(JSON.parse(line));
+    }
+    return lines;
+  };
+  const chatter = [
+    { type: "test:stdout", data: { file: "a.mjs", message: "first line\nsplit " } },
+    { type: "test:stderr", data: { file: "a.mjs", message: "err\n" } },
+    { type: "test:stdout", data: { file: "a.mjs", message: "line\n" } },
+    { type: "test:diagnostic", data: { file: "/repo/a.mjs", message: "phase timings" } },
+    { type: "test:diagnostic", data: { message: "tests 1" } },
+    ...Array.from({ length: 1_000 }, (_, index) => ({
+      type: "test:stdout",
+      data: { file: "a.mjs", message: `bulk ${index}\n` },
+    })),
+    { type: "test:stdout", data: { file: "a.mjs", message: "no newline" } },
+  ];
+  // A passing file sends only its case events.
+  const passing = await render([...chatter, { type: "test:pass", data: { name: "case" } }]);
+  assert.deepEqual(
+    passing.map(({ type }) => type),
+    ["test:pass"],
+  );
+  const failing = await render([
+    { type: "test:stdout", data: { file: "a.mjs", message: "first line\nsplit " } },
+    { type: "test:stderr", data: { file: "a.mjs", message: "err\n" } },
+    { type: "test:stdout", data: { file: "a.mjs", message: "line\n" } },
+    { type: "test:diagnostic", data: { file: "/repo/a.mjs", message: "phase timings" } },
+    { type: "test:diagnostic", data: { message: "tests 1" } },
+    { type: "test:fail", data: { name: "case", details: { error: new Error("boom") } } },
+    { type: "test:stdout", data: { file: "a.mjs", message: "no newline" } },
+  ]);
+  assert.deepEqual(failing.at(-1), {
+    type: "test:output",
+    data: {
+      lines: [
+        "stdout: first line",
+        "stderr: err",
+        "stdout: split line",
+        "diagnostic: phase timings",
+        "stdout: no newline",
+      ],
+      omitted: 0,
+    },
+  });
+  assert.match(failing[0].data.error.stack, /^at /);
+  // The tail keeps the last 400 lines and counts the rest.
+  const chatty = await render([...chatter, { type: "test:fail", data: { name: "case" } }]);
+  const tail = chatty.at(-1).data;
+  assert.equal(tail.lines.length, 400);
+  assert.equal(tail.lines.at(-1), "stdout: no newline");
+  assert.equal(tail.lines[0], "stdout: bulk 601");
+  assert.equal(tail.omitted, 605);
+
+  const secrets = failureSecrets([{ JOB_ONLY_KEY: "jobonlyopaque123" }]);
+  const decisive = `${"x".repeat(700)}\nAuthorization: Basic c2hvcnQ=\nprobe code MODEL_PROBE_CPU_STARVED key jobonlyopaque123`;
+  const detail = redactFailureDetail(
+    { message: decisive, stack: "at helper (/repo/tests/a.mjs:2:3)\nat next (/repo/b.mjs:4:5)" },
+    secrets,
+    "/repo",
+  );
+  // The whole message survives where the job log keeps 600 characters.
+  assert.match(detail.message, /probe code MODEL_PROBE_CPU_STARVED key \[env:JOB_ONLY_KEY\]$/);
+  assert.match(detail.message, /\n\[redacted credential-bearing line\]\n/);
+  assert.equal(detail.stack, "at helper (tests/a.mjs:2:3)\nat next (b.mjs:4:5)");
+  assert.equal(redactFailureDetail(undefined, secrets, "/repo"), undefined);
+  assert.equal(
+    redactOutputLine("stdout: proxy https://user:pw@example.test", secrets, "/repo", 1_000),
+    "[redacted credential-bearing line]",
+  );
+  assert.equal(
+    redactOutputLine(`stdout: ${"y".repeat(2_000)}`, secrets, "/repo", 1_000),
+    `stdout: ${"y".repeat(992)}... [truncated]`,
+  );
+  // A token the shape cannot match whole still drops its line.
+  assert.equal(
+    redactOutputLine("stdout: Bearer abcdefghij%rest-of-the-value", secrets, "/repo", 1_000),
+    "[redacted credential-bearing line]",
+  );
+  assert.equal(
+    redactFailureDetail({ message: "header Token abcdefgh%ijklmnop" }, secrets, "/repo").message,
+    "[redacted credential-bearing line]",
+  );
+  assert.equal(
+    redactFailureDetail({ message: "SyntaxError: Unexpected token '}'" }, secrets, "/repo").message,
+    "SyntaxError: Unexpected token '}'",
+  );
+  // A message the reporter cut at 16 KiB still loses its possibly split tail after
+  // the raw pass has shortened it.
+  const cutMessage = `Bearer abcdefgh leak-value\n${"x".repeat(16_384 - 27 - 11)}jobonlyopaq`;
+  assert.equal(cutMessage.length, 16_384);
+  const cutDetail = redactFailureDetail({ message: cutMessage }, secrets, "/repo").message;
+  assert.match(cutDetail, /^\[redacted credential-bearing line\]\nx+$/);
+  assert.doesNotMatch(cutDetail, /jobonly|leak-value/);
+  // A control character inside a private key header cannot keep its body.
+  assert.doesNotMatch(
+    redactFailureDetail(
+      {
+        message:
+          "-----BEGIN RSA PRIV\u0000ATE KEY-----\nMIIEbodyline\n-----END RSA PRIVATE KEY-----",
+      },
+      secrets,
+      "/repo",
+    ).message,
+    /MIIEbodyline/,
+  );
+  // A credential marker drops its whole line, though the token shape consumes the marker.
+  const sameLine = redactFailureDetail(
+    {
+      message: "before\nBearer abcdefgh unrelated-runtime-value-12345\nafter",
+      stack: "at test (Bearer abcdefgh unrelated-runtime-value-12345)\nat next (b.mjs:1:1)",
+    },
+    secrets,
+    "/repo",
+  );
+  assert.equal(sameLine.message, "before\n[redacted credential-bearing line]\nafter");
+  assert.equal(sameLine.stack, "[redacted credential-bearing line]\nat next (b.mjs:1:1)");
+  assert.equal(
+    redactFailureDetail({ message: "Bear\u001b[0mer abcdefgh other-value-9" }, secrets, "/repo")
+      .message,
+    "[redacted credential-bearing line]",
+  );
+  assert.equal(
+    redactOutputLine("stdout: Bear\u001b[0mer abcdefgh other-value-9", secrets, "/repo", 1_000),
+    "[redacted credential-bearing line]",
+  );
+  // A private key is replaced whole, its body lines included.
+  assert.equal(
+    redactFailureDetail(
+      {
+        message:
+          "key\n-----BEGIN RSA PRIVATE KEY-----\nMIIEbody\n-----END RSA PRIVATE KEY-----\nend",
+      },
+      secrets,
+      "/repo",
+    ).message,
+    "key\n[redacted]\nend",
+  );
+  // Each line of a multi-line env value (a PEM body) is redacted on its own.
+  const pem = failureSecrets([{ TLS_KEY: "line one opaque value\nline two opaque value\n" }]);
+  assert.equal(
+    redactOutputLine("stdout: line two opaque value", pem, "/repo", 1_000),
+    "stdout: [env:TLS_KEY]",
+  );
+  // The rest of a line cut at the input limit is dropped, not started as a new line.
+  const cut = await render([
+    { type: "test:stdout", data: { file: "a.mjs", message: "z".repeat(16_400) } },
+    { type: "test:stdout", data: { file: "a.mjs", message: "1234567890 tail\nnext line\n" } },
+    { type: "test:fail", data: { name: "case" } },
+  ]);
+  const cutLines = cut.at(-1).data.lines;
+  assert.equal(cutLines.length, 2);
+  assert.equal(cutLines[0].length, 16_384);
+  assert.equal(cutLines[1], "stdout: next line");
+});
+
+test("run keeps a failed file's whole messages, stacks and output in the diagnostics report", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/details.json");
+  const statePath = join(root, "state/details.json");
+  await writeFile(
+    join(root, "tests/integration/details.test.mjs"),
+    [
+      'import assert from "node:assert/strict";',
+      'import test from "node:test";',
+      'test("passes", () => {});',
+      'test("long failure", (t) => {',
+      '  console.log("progress before the failure");',
+      "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
+      '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
+      '  t.diagnostic("phase timings 1234 ms");',
+      '  assert.fail(`${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
+      "});",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "tests/integration/quiet.test.mjs"),
+    'import test from "node:test";\ntest("quiet", () => { console.log("passing output"); });\n',
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      details: {
+        files: [
+          { path: "tests/integration/details.test.mjs" },
+          { path: "tests/integration/quiet.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["details"] },
+  });
+
+  const result = run(root, [
+    "run",
+    "details",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    statePath,
+    "--results",
+    resultsPath,
+  ]);
+
+  assert.equal(result.status, 1);
+  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  const failed = summary.files[0].tests.find(({ name }) => name === "long failure");
+  // Results and the job log keep the short message only.
+  assert.match(failed.error.message, /\.\.\. \[truncated\]$/);
+  assert.doesNotMatch(failed.error.message, /decisive line/);
+  assert.equal(failed.error.stack, undefined);
+  assert.match(
+    result.stderr,
+    /run-tests: whole failure messages, stacks and output tails are in .*state\/details\.json\.diagnostics\.json \(artifact diagnostics-<prefix>-details\)/,
+  );
+  const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|passing output/);
+  const report = JSON.parse(text);
+  assert.equal(report.lane, "details");
+  assert.equal(report.failures.length, 1);
+  const [record] = report.failures;
+  assert.equal(record.file, "tests/integration/details.test.mjs");
+  assert.equal(record.omittedTests, 0);
+  const detail = record.tests.find(({ name }) => name === "long failure");
+  assert.equal(detail.line, 9);
+  assert.match(detail.message, /decisive line \[env:CI_RUNNER_FIXTURE_CREDENTIAL\]$/);
+  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:9:\d+/);
+  // stdout and stderr arrive on separate pipes, so only the set of lines is fixed.
+  assert.deepEqual([...record.output.lines].sort(), [
+    "[redacted credential-bearing line]",
+    "diagnostic: phase timings 1234 ms",
+    "stderr: credential [env:CI_RUNNER_FIXTURE_CREDENTIAL]",
+    "stdout: progress before the failure",
+  ]);
+  assert.equal(record.output.omittedLines, 0);
 });
 
 test("run keeps bounded Agent namespace activity from passing k3d files, alone and side by side", async (t) => {
@@ -2329,3 +2584,206 @@ for (const scenario of [
     assert.doesNotMatch(artifact + result.stdout + result.stderr, /secret-canary/);
   });
 }
+
+test("run publishes a failed wait's followed container log, redacted, beside Agent activity", async (t) => {
+  const root = await fixture(t);
+  const clusterDirectory = join(root, "cluster");
+  await mkdir(clusterDirectory);
+  const statePath = join(root, "state/k3d.json");
+  const resultsPath = join(root, "results/k3d.json");
+  await writeJson(statePath, {
+    lane: "k3d-lane",
+    resources: [
+      {
+        kind: "k3d-cluster",
+        status: "ready",
+        name: "owned-cluster",
+        directory: clusterDirectory,
+        kubeconfig: join(clusterDirectory, "kubeconfig"),
+        context: "k3d-owned-cluster",
+      },
+    ],
+  });
+  const pod = {
+    metadata: {
+      namespace: "occ-agent-a",
+      name: "gateway-0",
+      uid: "uid-1",
+      creationTimestamp: "2026-10-08T07:43:40Z",
+      deletionTimestamp: "2026-10-08T07:43:53Z",
+      deletionGracePeriodSeconds: 330,
+    },
+    spec: {
+      containers: [{ name: "gateway", env: [{ name: "TOKEN", value: "do-not-publish-env" }] }],
+    },
+    status: {
+      phase: "Running",
+      containerStatuses: [
+        { name: "gateway", ready: false, restartCount: 0, state: { running: { startedAt: "t" } } },
+      ],
+    },
+  };
+  const event = {
+    metadata: { namespace: "occ-agent-a", name: "gateway-0.kill", uid: "e1" },
+    involvedObject: { kind: "Pod", name: "gateway-0", namespace: "occ-agent-a" },
+    type: "Normal",
+    reason: "Killing",
+    message: "Stopping container gateway",
+    count: 1,
+    lastTimestamp: "2026-10-08T07:43:53Z",
+  };
+  const logLines = [
+    "2026-10-08T07:43:49.1Z [gateway] startup phase: config.auth starting",
+    "2026-10-08T07:43:53.2Z [gateway] received SIGTERM; shutting down",
+    "2026-10-08T07:43:53.3Z request Authorization: Bearer do-not-publish-header",
+    "2026-10-08T07:43:53.4Z provider token=do-not-publish-assignment refreshed",
+    "2026-10-08T07:43:53.5Z parent value secretauthvalue-parent seen",
+  ];
+  // Only the lane gives the child this value; the runner's own env never has it.
+  const childSecret = "childonlysecret-1754";
+  // One stand-in serves the runner's raw watches (which wait until stopped) and
+  // the test helper's log follow and snapshots; the log ends after a slow exit.
+  const bin = join(root, "bin");
+  await mkdir(bin);
+  const kubectl = join(bin, "kubectl");
+  await writeFile(
+    kubectl,
+    [
+      `#!${process.execPath}`,
+      "const args = process.argv.slice(2);",
+      'if (args.includes("logs")) {',
+      `  process.stdout.write(${JSON.stringify(`${logLines.join("\n")}\n`)});`,
+      "  process.stdout.write(`2026-10-08T07:43:53.6Z child value ${process.env.OCC_TEST_CHILD_ONLY}\\n`);",
+      "  process.stderr.write('follow note\\nGET https://api Authorization: Bearer do-not-publish-verbose');",
+      "  setTimeout(() => process.stdout.write('2026-10-08T07:44:22.0Z [gateway] exit 0'), 300);",
+      '} else if (args.includes("get") && args.includes("pods")) {',
+      `  process.stdout.write(JSON.stringify({ items: [${JSON.stringify(pod)}] }));`,
+      '} else if (args.includes("get") && args.includes("events")) {',
+      `  process.stdout.write(JSON.stringify({ items: [${JSON.stringify(event)}] }));`,
+      "} else {",
+      "  setTimeout(() => {}, 60_000);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await chmod(kubectl, 0o755);
+  const helper = join(repositoryRoot, "tests/helpers/container-log-capture.mjs");
+  await writeFile(
+    join(root, "tests/integration/stop.test.mjs"),
+    [
+      'import test from "node:test";',
+      `import { followContainerLog } from ${JSON.stringify(helper)};`,
+      "let snapshots = 0;",
+      'test("gateway stop is confirmed", async (t) => {',
+      "  const log = followContainerLog({",
+      '    args: ["logs", "--follow", "--timestamps"],',
+      "    env: process.env,",
+      '    target: { namespace: "occ-agent-a", pod: "gateway-0", container: "gateway" },',
+      "    snapshot: async () => {",
+      '      if (process.env.SNAPSHOT_FAILS_AFTER === String(++snapshots)) throw new Error("read failed");',
+      '      const read = async (kind) => JSON.parse((await import("node:child_process"))',
+      '        .execFileSync("kubectl", ["get", kind, "-o", "json"], { encoding: "utf8" })).items;',
+      '      return { pods: await read("pods"), events: await read("events") };',
+      "    },",
+      "  });",
+      "  try {",
+      '    process.env.SNAPSHOT_FAILS_AFTER = "2";',
+      '    await log.attachOnFailure(t, "passing wait", async () => "settled");',
+      '    log.mark("stop requested");',
+      '    await log.attachOnFailure(t, "terminal response wait", async () => {',
+      '      throw new Error("timed out");',
+      "    });",
+      "  } finally {",
+      "    await log.stop();",
+      "  }",
+      "});",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "tests/integration/pass.test.mjs"),
+    'import test from "node:test";\ntest("passes", () => {});\n',
+  );
+  await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
+    env: { OCC_TEST_CHILD_ONLY: childSecret },
+    files: [
+      { path: "tests/integration/stop.test.mjs", expectedTests: ["gateway stop is confirmed"] },
+      { path: "tests/integration/pass.test.mjs", expectedTests: ["passes"] },
+    ],
+  });
+  await writeJson(join(root, "scripts/ci/suites.json"), {
+    version: 1,
+    lanes: { "k3d-lane": "./k3d-lane.json" },
+    groups: {},
+  });
+
+  const result = run(
+    root,
+    [
+      "run",
+      "k3d-lane",
+      "--manifest",
+      join(root, "scripts/ci/suites.json"),
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      resultsPath,
+    ],
+    { OCC_KUBECTL_BIN: kubectl, PATH: `${bin}:${process.env.PATH}` },
+  );
+
+  assert.equal(result.status, 1, result.stderr);
+  const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
+  const { containerLogs } = JSON.parse(text);
+  // Only the failed wait writes a record: not the wait that settled, not the passing file.
+  assert.equal(containerLogs.length, 1);
+  const [log] = containerLogs;
+  assert.equal(log.file, "tests/integration/stop.test.mjs");
+  assert.equal(log.test, "gateway stop is confirmed");
+  assert.equal(log.reason, "terminal response wait");
+  assert.deepEqual(
+    [log.namespace, log.pod, log.container],
+    ["occ-agent-a", "gateway-0", "gateway"],
+  );
+  assert.deepEqual(
+    log.markers.map(({ label }) => label),
+    ["stop requested", "failed: terminal response wait"],
+  );
+  // The follow ran to the container's exit, unterminated last line included.
+  assert.equal(log.stream.ended, true);
+  assert.equal(log.stream.exitCode, 0);
+  assert.equal(log.stream.error, "follow note\n[redacted credential-bearing line]");
+  assert.deepEqual(log.lines, [
+    logLines[0],
+    logLines[1],
+    "[redacted credential-bearing line]",
+    "2026-10-08T07:43:53.4Z provider token=[redacted] refreshed",
+    "2026-10-08T07:43:53.5Z parent value [env:CI_RUNNER_PARENT_SECRET] seen",
+    "2026-10-08T07:43:53.6Z child value [env:OCC_TEST_CHILD_ONLY]",
+    "2026-10-08T07:44:22.0Z [gateway] exit 0",
+  ]);
+  // A failed read is marked, so it cannot pass for a Pod that is already gone.
+  assert.deepEqual(
+    log.snapshots.map(({ label, unavailable }) => [label, unavailable]),
+    [
+      ["at-failure", undefined],
+      ["after-log", true],
+    ],
+  );
+  const [snapshot] = log.snapshots;
+  assert.equal(snapshot.pods[0].deletedAt, "2026-10-08T07:43:53Z");
+  assert.equal(snapshot.pods[0].deletionGracePeriodSeconds, 330);
+  assert.equal(snapshot.pods[0].containers[0].startedAt, "t");
+  assert.deepEqual(
+    snapshot.events.map(({ reason, message }) => [reason, message]),
+    [["Killing", "Stopping container gateway"]],
+  );
+  assert.doesNotMatch(text, /do-not-publish|secretauthvalue|childonlysecret/);
+  // The record directory lived in the cluster's private directory and is gone.
+  assert.deepEqual(
+    (await readdir(clusterDirectory)).filter((name) => name.startsWith("container-logs-")),
+    [],
+  );
+});
