@@ -43,7 +43,8 @@
     {
       "path": "tests/integration/docker-compute-token-retry.test.mjs",
       "expectedTests": [
-        "Docker driver keeps dedicated transport coherent and rejects foreign owners across retries"
+        "Docker driver keeps dedicated transport coherent and rejects foreign owners across retries",
+        "Docker Namespace deletion cleans up owned containers after its network is removed"
       ]
     },
     {
