@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { mock } from "node:test";
 import {
   KubernetesSecretDriver,
   SecretBackendUnavailableError,
@@ -103,6 +103,10 @@ class FakeCoreV1Api {
   async readNamespacedSecret({ namespace, name }) {
     this.reads += 1;
     const failureCode = this.readSecretFailureCodes.shift();
+    if (failureCode === "dropped") {
+      // What the client throws when the API server closes the connection unanswered.
+      throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+    }
     if (failureCode !== undefined) {
       throw Object.assign(new Error(`read failed with ${failureCode}`), { code: failureCode });
     }
@@ -163,6 +167,29 @@ class FakeCoreV1Api {
     }
     this.secrets.delete(key);
     return {};
+  }
+}
+
+// Runs an operation with mocked timers, firing each retry pause as soon as it is
+// scheduled. Request deadlines use AbortSignal.timeout, which stays real, and the
+// loop spins until the operation settles: keep operations that wait for a real
+// deadline out of it. Not reentrant.
+async function withRetryTimers(operation) {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let settled = false;
+    const result = operation();
+    result.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    while (!settled) {
+      await new Promise((resolve) => setImmediate(resolve));
+      mock.timers.runAll();
+    }
+    return await result;
+  } finally {
+    mock.timers.reset();
   }
 }
 
@@ -454,10 +481,16 @@ test("kubernetes-secret-driver delete reports inaccessible backends instead of i
     if (failure === "timeout") {
       client.readSecretTimesOut = true;
     } else {
-      client.readSecretFailureCodes.push(failure, failure, failure);
+      client.readSecretFailureCodes.push(...Array(6).fill(failure));
     }
 
-    await assert.rejects(() => driver.delete(secret), SecretBackendUnavailableError);
+    await assert.rejects(
+      () =>
+        failure === "timeout"
+          ? driver.delete(secret)
+          : withRetryTimers(() => driver.delete(secret)),
+      SecretBackendUnavailableError,
+    );
     assert.equal(client.secrets.has(`${namespace}/${backendRef.name}`), true);
     assert.deepEqual(client.deletes, []);
     assert.ok(client.reads > readCountBeforeDelete);
@@ -490,4 +523,46 @@ test("canonical storage discovery rejects ambiguous, foreign and insecure adopte
     );
     assert.equal(client.secrets.size, 0);
   }
+});
+
+test("kubernetes-secret-driver retries a read the API server dropped for a few seconds", async () => {
+  const client = new FakeCoreV1Api();
+  const nsId = namespaceId();
+  client.addNamespace(nsId);
+  const driver = driverWithClient(client);
+  const identity = { id: secretId(), namespaceId: nsId, name: "model-key" };
+  const backendRef = await driver.create(identity, "stored-value");
+  const secret = {
+    ...identity,
+    driverId: driver.id,
+    backendRef,
+    createdAt: new Date().toISOString(),
+  };
+
+  // Five dropped reads in a row, then an answer: the read succeeds.
+  client.readSecretFailureCodes.push(...Array(5).fill("dropped"));
+  let reads = client.reads;
+  assert.equal(
+    await withRetryTimers(() => driver.withValue(secret, async (value) => value)),
+    "stored-value",
+  );
+  assert.equal(client.reads - reads, 6);
+
+  // A sixth drop ends the read as an unavailable backend.
+  client.readSecretFailureCodes.push(...Array(6).fill("dropped"));
+  reads = client.reads;
+  await assert.rejects(
+    () => withRetryTimers(() => driver.resolve(secret)),
+    (error) =>
+      error instanceof SecretBackendUnavailableError &&
+      error.message === "The Kubernetes Secret read failed.",
+  );
+  assert.equal(client.reads - reads, 6);
+  client.readSecretFailureCodes.length = 0;
+
+  // A refused read is final at once.
+  client.readSecretFailureCodes.push(403);
+  reads = client.reads;
+  await assert.rejects(() => driver.resolve(secret), SecretBackendUnavailableError);
+  assert.equal(client.reads - reads, 1);
 });

@@ -640,7 +640,7 @@ const UNREACHABLE_SOCKET_CODES = new Set([
   "UND_ERR_SOCKET",
 ]);
 
-function unreachableSocketFailure(error: unknown): boolean {
+export function unreachableSocketFailure(error: unknown): boolean {
   return unreachableSocketCause(error) !== undefined;
 }
 
