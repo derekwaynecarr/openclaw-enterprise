@@ -108,7 +108,9 @@ jobs:
       # the seccomp profile.
       # Runners: the k3d fixture and observability lanes need ubuntu-22.04,
       # whose kernel has bridge netfilter for the NetworkPolicy proofs. The
-      # blacksmith 8vcpu label exposes 2 CPUs to the job and 16vcpu exposes 4.
+      # blacksmith 8vcpu label exposes 2 CPUs to the job and 16vcpu exposes 4;
+      # lanes whose tests keep more than 2 CPUs busy use 16vcpu. A label no
+      # runner serves leaves the job queued, so use only labels in use here.
       - id: matrix
         name: Build lane matrix
         env:
