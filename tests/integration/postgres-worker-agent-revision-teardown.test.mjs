@@ -16,12 +16,13 @@ import {
   repositoryBoundary,
 } from "../helpers/postgres-worker-revision-support.mjs";
 
-// Repository sessions through admission, maintenance and cleanup, and Agent stop,
-// Agent deletion and Namespace teardown. See postgres-worker-agent-revision.test.mjs
-// for withdrawal and deployment cases.
+// Repository sessions through admission, maintenance and cleanup, Agent stop, Agent
+// deletion and Namespace teardown. Withdrawal, deployment and dispatch cases, and the
+// persisted deploy, stop and delete lifecycle, are in postgres-worker-agent-revision.test.mjs.
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
+
 async function coldSshComputeDriver(fixture, operations) {
   const { SshComputeDriver } =
     await import("../../apps/controller/src/drivers/compute/ssh/index.ts");

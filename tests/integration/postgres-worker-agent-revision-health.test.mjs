@@ -8,13 +8,14 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { repositoryAttempts } from "../helpers/postgres-worker-revision-support.mjs";
 
-// Worker health, readiness, leases and outages, and exclusive replacement. The
-// withdrawal and deployment cases are in postgres-worker-agent-revision.test.mjs, and
-// repository sessions with Agent stop and deletion in
-// postgres-worker-agent-revision-teardown.test.mjs: one lane runs the three files at once.
+// Worker health, readiness, leases and outages, and exclusive replacement. Withdrawal,
+// deployment and dispatch cases are in postgres-worker-agent-revision.test.mjs; repository
+// sessions, Agent stop and deletion, and Namespace teardown are in
+// postgres-worker-agent-revision-teardown.test.mjs. The lane runs the three files at once.
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
+
 test(
   "worker fixture disposal preserves another database's live claim and activation",
   requiresPostgres,
