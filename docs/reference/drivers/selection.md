@@ -121,10 +121,12 @@ A standard npm package manifest provides identity and an ESM entry point:
 }
 ```
 
-The root export also accepts ordered target arrays under `import`, `node`, or
-`default`. Invalid targets and unmatched conditions permit another array entry.
-A selected missing file or failed import stops startup. Conditional keys retain
-their priority order.
+The root export is resolved as Node's `import()` resolves it: ordered target
+arrays and the `node`, `import`, `module-sync`, `node-addons`, and `default`
+conditions in key order, with `"."` only at the top level. Invalid targets and
+unmatched conditions permit another array entry. The selected target must name
+an existing file exactly (no extension, directory, or `main` lookup). A selected
+missing file, directory, or failed import stops startup.
 
 The entry point exports the existing Driver contract, not a separate plugin
 manifest or public plugin SDK. The controller validates its closed JSON Schema
