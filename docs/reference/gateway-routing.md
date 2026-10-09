@@ -195,21 +195,21 @@ Listener renewal under the existing CA does not require changing OCC trust.
 
 Helm's `gatewayRouting` settings configure shared infrastructure:
 
-| Setting                        | Default or requirement                                                         |
-| ------------------------------ | ------------------------------------------------------------------------------ |
-| `enabled`                      | `false`; enable to render routing resources and API mounts.                    |
-| `gatewayClassName`             | Required existing Envoy GatewayClass.                                          |
-| `gatewayName`                  | `<release>-agent-gateways`.                                                    |
-| `envoyNamespace`               | `envoy-gateway-system`.                                                        |
-| `hostname`                     | Empty derives the Service DNS hostname.                                        |
-| `apiKeySecretName`             | Required operator-created Secret with entry `occ`.                             |
-| `issuerRef.name`               | Empty creates the private CA and issuers.                                      |
-| `issuerRef.kind` / `group`     | `ClusterIssuer` / `cert-manager.io` for an explicit issuer.                    |
-| `caSecretName` / `caSecretKey` | Empty; optional public trust bundle with an explicit issuer.                   |
-| `tlsSecretName`                | `<gatewayName>-tls`, truncated to 63 characters with trailing hyphens removed. |
-| `tenantGatewayPort`            | `8080`; must equal Compute's `network.gatewayPort`.                            |
-| `envoyHttpsTargetPort`         | `10443`; NetworkPolicy port for the Envoy listener Pod.                        |
-| `envoyGatewayPodLabels`        | Chart defaults select the Envoy Gateway controller for control-plane egress.   |
+| Setting                        | Default or requirement                                                                                                           |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                      | `false`; enable to render routing resources and API mounts.                                                                      |
+| `gatewayClassName`             | Required existing Envoy GatewayClass.                                                                                            |
+| `gatewayName`                  | `<release>-agent-gateways`. An explicit name must be a DNS-safe Kubernetes resource name, the same rule Compute uses at startup. |
+| `envoyNamespace`               | `envoy-gateway-system`.                                                                                                          |
+| `hostname`                     | Empty derives the Service DNS hostname.                                                                                          |
+| `apiKeySecretName`             | Required operator-created Secret with entry `occ`.                                                                               |
+| `issuerRef.name`               | Empty creates the private CA and issuers.                                                                                        |
+| `issuerRef.kind` / `group`     | `ClusterIssuer` / `cert-manager.io` for an explicit issuer.                                                                      |
+| `caSecretName` / `caSecretKey` | Empty; optional public trust bundle with an explicit issuer.                                                                     |
+| `tlsSecretName`                | `<gatewayName>-tls`, truncated to 63 characters with trailing hyphens removed.                                                   |
+| `tenantGatewayPort`            | `8080`; must equal Compute's `network.gatewayPort`.                                                                              |
+| `envoyHttpsTargetPort`         | `10443`; NetworkPolicy port for the Envoy listener Pod.                                                                          |
+| `envoyGatewayPodLabels`        | Chart defaults select the Envoy Gateway controller for control-plane egress.                                                     |
 
 The Installation's `drivers.compute.configuration.gatewayRouting` separately
 requires `gatewayName`, `gatewayNamespace`, and `envoyNamespace`; `hostname` is
