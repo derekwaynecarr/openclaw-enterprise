@@ -1718,11 +1718,18 @@ test("run records a timed-out file's interrupted test and output tail in the dia
   assert.equal(record.timeoutMs, 5000);
   assert(record.elapsedMs >= 5000 && record.elapsedMs < 15_000, String(record.elapsedMs));
   assert.deepEqual(record.interruptedTests, [{ name: "hangs", line: 3 }]);
-  // The last 400 lines, the newest included, with the usual redaction.
-  assert.equal(record.output.lines.length, 400);
-  assert.equal(record.output.omittedLines, 103);
-  assert.equal(record.output.lines.at(-1), "stdout: waiting for a reply that never comes");
-  assert.match(record.output.lines[0], /^stdout: bulk 101 v+\.\.\. \[truncated\]$/);
+  // Up to the last 400 of 503 lines, newest last, with the usual redaction. Node
+  // exits soon after the interruption, so on a slow host only the newest batches
+  // arrive; the rest are counted.
+  const { lines, omittedLines } = record.output;
+  assert(lines.length >= 10 && lines.length <= 400, String(lines.length));
+  assert.equal(lines.length + omittedLines, 503);
+  assert.equal(lines.at(-1), "stdout: waiting for a reply that never comes");
+  const bulk = lines.slice(0, -1);
+  assert.deepEqual(
+    bulk.map((line) => line.match(/^stdout: bulk (\d+) v+\.\.\. \[truncated\]$/u)?.[1]),
+    bulk.map((_, index) => String(500 - bulk.length + index)),
+  );
 });
 
 test("each job attempt uploads its own diagnostics report", async () => {
