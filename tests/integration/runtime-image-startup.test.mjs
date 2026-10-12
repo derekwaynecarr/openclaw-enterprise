@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rename,
@@ -80,6 +81,18 @@ test("Codex OAuth bootstrap preserves rotated credentials and requires a new sou
         OCE_CODEX_OAUTH_SEED_PATH: seedPath,
       },
     });
+  // Publish fixture credentials through an exclusive temporary inode. Atomic
+  // replacement must not reopen a checked destination or follow a planted link.
+  const writeNativeAuth = async (value) => {
+    const temporaryPath = `${authPath}.native`;
+    const file = await open(temporaryPath, "wx", 0o600);
+    try {
+      await file.writeFile(JSON.stringify(value));
+    } finally {
+      await file.close();
+    }
+    await rename(temporaryPath, authPath);
+  };
   await run();
   assert.deepEqual(JSON.parse(await readFile(authPath, "utf8")), auth);
   assert.equal((await stat(authPath)).mode & 0o777, 0o600);
@@ -89,8 +102,7 @@ test("Codex OAuth bootstrap preserves rotated credentials and requires a new sou
     ...auth,
     tokens: { ...auth.tokens, access_token: "rotated-access", refresh_token: "rotated-refresh" },
   };
-  await writeFile(`${authPath}.native`, JSON.stringify(refreshed), { mode: 0o600 });
-  await rename(`${authPath}.native`, authPath);
+  await writeNativeAuth(refreshed);
   await run();
   assert.deepEqual(JSON.parse(await readFile(authPath, "utf8")), refreshed);
   await assert.rejects(
@@ -104,7 +116,7 @@ test("Codex OAuth bootstrap preserves rotated credentials and requires a new sou
   // A killed writer may leave auth.json without a receipt. A retry must finish
   // that generation rather than treating the partial output as completion.
   await rm(join(codexHome, ".oce-oauth.json"));
-  await writeFile(authPath, JSON.stringify(auth), { mode: 0o600 });
+  await writeNativeAuth(auth);
   await Promise.all(Array.from({ length: 8 }, () => run()));
   assert.deepEqual(JSON.parse(await readFile(authPath, "utf8")), auth);
   assert.deepEqual(JSON.parse(await readFile(join(codexHome, ".oce-oauth.json"), "utf8")), {
@@ -138,7 +150,7 @@ test("Codex OAuth bootstrap preserves rotated credentials and requires a new sou
   // Restarting with the same source keeps the native generation and its history.
   await mkdir(join(codexHome, "sessions"));
   await writeFile(join(codexHome, "sessions", "current.jsonl"), "current login history");
-  await writeFile(authPath, JSON.stringify(refreshed), { mode: 0o600 });
+  await writeNativeAuth(refreshed);
   await run("source-2");
   assert.deepEqual(JSON.parse(await readFile(authPath, "utf8")), refreshed);
   assert.deepEqual(await readdir(join(codexHome, "sessions")), ["current.jsonl"]);
