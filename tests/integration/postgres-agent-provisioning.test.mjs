@@ -799,11 +799,16 @@ test(
 
     await fixture.startWorker();
     const status = await waitFor(
-      "Agent provisioning to retain its initial deployment",
+      "Agent provisioning to queue its initial deployment wait",
       async () => {
         const observed = await fixture.request("GET", admitted.data.provisioning.url);
         assert.equal(observed.status, 200, JSON.stringify(observed.body));
-        return observed.data.revisionId !== undefined ? observed.data : undefined;
+        assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+        // Admission publishes revisionId before the worker queues its activation
+        // wait. Inspect the handoff only after that deferral has committed.
+        return observed.data.revisionId !== undefined && observed.data.status === "queued"
+          ? observed.data
+          : undefined;
       },
     );
     await fixture.stopWorker();
