@@ -23,7 +23,9 @@ export class AuthorizationDeniedError extends Error {
     super(message);
     this.name = "AuthorizationDeniedError";
     if (evidence !== undefined) {
-      this.evidence = evidence;
+      if (evidence !== undefined) {
+        this.evidence = evidence;
+      }
     }
     if (authorization !== undefined) {
       this.authorization = Object.freeze({
@@ -710,11 +712,18 @@ export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
  */
 export class ComputePreparationFailedError extends Error {
   readonly code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" | "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT";
+  readonly evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence;
 
-  constructor(code: ComputePreparationFailedError["code"]) {
+  constructor(
+    code: ComputePreparationFailedError["code"],
+    evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence,
+  ) {
     super("Harness credential initialization could not complete.");
     this.name = "ComputePreparationFailedError";
     this.code = code;
+    if (evidence !== undefined) {
+      this.evidence = evidence;
+    }
   }
 }
 

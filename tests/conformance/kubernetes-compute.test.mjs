@@ -15273,16 +15273,38 @@ for (const [reason, code] of [
 }
 
 test("Kubernetes OAuth reobserves an API-defaulted Job without changing its generation", async () => {
-  const { driver, revision, objects, records, context } = workspaceSetupFixture(false);
+  const { driver, revision, objects, records, context } = workspaceSetupFixture(
+    false,
+    true,
+    undefined,
+    {
+      resources: {
+        ...options().resources,
+        agent: { requests: { cpu: "0.1", memory: "1.5Gi" }, limits: { cpu: "0.5", memory: "2Gi" } },
+      },
+    },
+  );
   stageReadyOAuthSource(objects, revision, context);
   assert.equal((await driver.prepareRevision(revision, context)).ready, false);
   const job = [...objects.values()].find(({ kind }) => kind === "Job");
   const uid = job.metadata.uid;
+  // The API serializes supported quantities by value, without changing this Job.
+  for (const container of [
+    ...job.spec.template.spec.containers,
+    ...job.spec.template.spec.initContainers,
+  ]) {
+    container.resources.requests = { cpu: "100m", memory: "1536Mi" };
+    container.resources.limits = { cpu: "500m", memory: "2048Mi" };
+  }
   job.spec.template.spec.dnsPolicy = "ClusterFirst";
   job.spec.template.spec.containers[0].terminationMessagePath = "/dev/termination-log";
   assert.equal((await driver.prepareRevision(revision, context)).ready, false);
   assert.equal(records.filter(({ kind }) => kind === "Job").length, 1);
   assert.equal(job.metadata.uid, uid);
+
+  job.spec.template.spec.containers[0].resources.requests.memory = "1537Mi";
+  await assert.rejects(driver.prepareRevision(revision, context), /Job changed during handoff/);
+  job.spec.template.spec.containers[0].resources.requests.memory = "1536Mi";
 
   // An owned name alone cannot admit a writer with different storage or network grants.
   job.spec.template.metadata.labels["openclaw.dev/network-profile"] = "broad-egress-v1";
@@ -17736,37 +17758,44 @@ function runtimeLogDriverFixture({ twoCluster = false } = {}) {
         "openclaw.dev/workload-role": role,
       },
     },
-    spec: state.nodeName === undefined ? {} : { nodeName: state.nodeName },
+    spec: {
+      containers: [{ name: state.containerName ?? role }],
+      initContainers: state.initContainers ?? [],
+      ...(state.nodeName === undefined ? {} : { nodeName: state.nodeName }),
+    },
     status: {
       phase:
         state.waitingReason === undefined || state.waitingReason === "CrashLoopBackOff"
           ? "Running"
           : "Pending",
       conditions: [{ type: "Ready", status: state.waitingReason === undefined ? "True" : "False" }],
-      containerStatuses: [
-        {
-          name: role,
-          ready: state.waitingReason === undefined,
-          restartCount: state.restartCount[role],
-          state:
-            state.waitingReason === undefined
-              ? { running: { startedAt: new Date("2026-09-30T11:00:00Z") } }
-              : { waiting: { reason: state.waitingReason } },
-          ...(state.containerId === undefined ? {} : { containerID: state.containerId }),
-          ...(state.restartCount[role] === 0
-            ? {}
-            : {
-                lastState: {
-                  terminated: {
-                    reason: "OOMKilled",
-                    exitCode: 137,
-                    finishedAt: new Date("2026-09-30T10:59:00Z"),
-                  },
-                },
-              }),
-          ...state.containerStatus,
-        },
-      ],
+      initContainerStatuses: state.initContainerStatuses ?? [],
+      containerStatuses: state.noMainStatus
+        ? []
+        : [
+            {
+              name: state.containerName ?? role,
+              ready: state.waitingReason === undefined,
+              restartCount: state.restartCount[role],
+              state:
+                state.waitingReason === undefined
+                  ? { running: { startedAt: new Date("2026-09-30T11:00:00Z") } }
+                  : { waiting: { reason: state.waitingReason } },
+              ...(state.containerId === undefined ? {} : { containerID: state.containerId }),
+              ...(state.restartCount[role] === 0
+                ? {}
+                : {
+                    lastState: {
+                      terminated: {
+                        reason: "OOMKilled",
+                        exitCode: 137,
+                        finishedAt: new Date("2026-09-30T10:59:00Z"),
+                      },
+                    },
+                  }),
+              ...state.containerStatus,
+            },
+          ],
     },
   });
   const calls = [];
@@ -17985,6 +18014,47 @@ test("Kubernetes runtime description reads each plane's Pods and only their own 
   await assert.rejects(
     fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal),
     /invalid Pod/,
+  );
+});
+
+test("Kubernetes runtime description reports declared main and init containers independently", async () => {
+  const fixture = runtimeLogDriverFixture();
+  fixture.state.containerName = "oauth-bootstrap";
+  fixture.state.initContainers = [{ name: "prepare-private-state" }];
+  fixture.state.initContainerStatuses = [
+    {
+      name: "prepare-private-state",
+      state: { terminated: { reason: "Completed", exitCode: 0 } },
+    },
+  ];
+  // Kubernetes can report the completed init container before the main has started.
+  // Its successful exit must not stand in for the main container's missing status.
+  fixture.state.noMainStatus = true;
+  const describe = () =>
+    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal);
+  const pending = await describe();
+  assert.deepEqual(
+    pending.pods[0].containers.map(({ name, state, lastTermination }) => ({
+      name,
+      state,
+      exitCode: lastTermination?.exitCode ?? null,
+    })),
+    [
+      { name: "oauth-bootstrap", state: "unknown", exitCode: null },
+      { name: "prepare-private-state", state: "terminated", exitCode: 0 },
+    ],
+  );
+  fixture.state.noMainStatus = false;
+  fixture.state.containerStatus = {
+    ready: false,
+    state: { terminated: { reason: "Error", exitCode: 1 } },
+  };
+  const failed = await describe();
+  assert.equal(failed.pods[0].containers[0].lastTermination.exitCode, 1);
+  assert.equal(failed.pods[0].containers[1].lastTermination.exitCode, 0);
+  assert.deepEqual(
+    failed.sources[0].pods.map(({ container }) => container),
+    ["oauth-bootstrap", "prepare-private-state"],
   );
 });
 

@@ -1924,7 +1924,7 @@ export class ControllerWorker {
       namespaceId: claim.namespaceId,
       agentId: claim.agentId,
       outcome: this.passOutcome,
-      code: result.outcome === "succeeded" ? "PROVISIONING_HANDED_OFF" : result.code,
+      code: result.outcome === "succeeded" ? "PROVISIONING_COMPLETED" : result.code,
       ...(result.outcome === "succeeded" ? { revisionId: result.revisionId } : {}),
       // A Compute refusal's reason; status and the Collector export keep only the code.
       ...(result.outcome !== "succeeded" && result.reason !== undefined
@@ -3727,6 +3727,7 @@ export class ControllerWorker {
             outcome: "permanent",
             code: error.code,
             cleanupFailedPreparation: true,
+            ...(error.evidence === undefined ? {} : { data: { preparation: error.evidence } }),
           };
         } else if (
           error instanceof RepositoryCredentialAuthorityError ||
@@ -4413,6 +4414,7 @@ export class ControllerWorker {
       resolved.outcome === "permanent" &&
       heldFailureCode === undefined &&
       !expired &&
+      resolved.cleanupFailedPreparation !== true &&
       resolved.refusedCandidateStopped !== true
     ) {
       await this.stopRefusedCandidate(claim, resolved.code);

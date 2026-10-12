@@ -232,7 +232,10 @@ Terminal credential preparation also fails at once through
 [`ComputePreparationFailedError`](../drivers/compute.md#core-lifecycle-operations).
 The worker saves failure and exact revision cleanup in one transaction. Cleanup
 continues after worker restart and does not reopen the failed deployment. The
-selected Compute Driver owns the external failure condition and resource cleanup;
+selected Compute Driver owns the external failure condition and resource cleanup.
+It may supply bounded preparation evidence through the public contracts type;
+OCC validates and persists it before deleting resources. Deployment status exposes
+cleanup separately and retains failure evidence after cleanup and restart;
 see [Kubernetes OAuth bootstrap](../drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job).
 
 Replacement behavior depends on the Harness. Dedicated Codex prepares its

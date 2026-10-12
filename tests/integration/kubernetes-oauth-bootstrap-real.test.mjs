@@ -8,6 +8,7 @@ import {
   kubeconfigPath,
   kubernetesContext,
   fixtureImage,
+  fixtureComputeConfiguration,
   requiresKubernetesAndPostgres,
   hash,
   kubectl,
@@ -53,20 +54,40 @@ test(
         [
           ["gateway.networking.k8s.io", "httproutes"],
           ["gateway.envoyproxy.io", "securitypolicies"],
-        ].map(([group, name]) => ({
-          op: "add",
-          path: "/rules/-",
-          value: {
-            apiGroups: [group],
-            resources: [name],
-            verbs: ["get", "delete"],
-          },
-        })),
+        ]
+          .map(([group, name]) => ({
+            op: "add",
+            path: "/rules/-",
+            value: {
+              apiGroups: [group],
+              resources: [name],
+              verbs: ["get", "delete"],
+            },
+          }))
+          .concat(
+            {
+              op: "add",
+              path: "/rules/-",
+              value: { apiGroups: [""], resources: ["pods/log"], verbs: ["get"] },
+            },
+            {
+              op: "add",
+              path: "/rules/-",
+              value: { apiGroups: [""], resources: ["events"], verbs: ["get", "list"] },
+            },
+          ),
       ),
     );
     const { driver, kubernetesNamespaceName } = await createDriver(
       {
         authentication: controller.authentication,
+        resources: {
+          ...fixtureComputeConfiguration().resources,
+          agent: {
+            requests: { cpu: "0.025", memory: "48Mi" },
+            limits: { cpu: "0.25", memory: "1.5Gi" },
+          },
+        },
         network: {
           dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
           gatewayPort: 8080,
@@ -245,6 +266,60 @@ test(
     }
     const first = await deploy();
     await fixture.startWorker();
+    const initialJob = await waitFor("bootstrap Job admission", async () =>
+      observations.find((job) => job.metadata.labels["openclaw.dev/revision"] === first.id),
+    );
+    await fixture.stopWorker();
+    assert.equal(
+      (await sourceObject(source)).metadata.annotations["openclaw.dev/oauth-phase"],
+      "claimed",
+    );
+    // Recreate an unfinished Deployment-era handoff from its actual credential writer
+    // template. The old writer stays alive after writing and still mounts the same seed/PVC.
+    // Resumed preparation must stop it before the replacement Job touches that volume.
+    await kubectl(
+      "delete",
+      "job",
+      initialJob.metadata.name,
+      "--namespace",
+      placement,
+      "--cascade=foreground",
+      "--wait=true",
+    );
+    const oldTemplate = structuredClone(initialJob.spec.template);
+    delete oldTemplate.metadata.labels["batch.kubernetes.io/controller-uid"];
+    delete oldTemplate.metadata.labels["batch.kubernetes.io/job-name"];
+    delete oldTemplate.metadata.labels["controller-uid"];
+    delete oldTemplate.metadata.labels["job-name"];
+    oldTemplate.spec.restartPolicy = "Always";
+    oldTemplate.spec.containers[0].args[0] += "\nsetInterval(() => {}, 60000);";
+    await applyManifest(
+      JSON.stringify({
+        apiVersion: "apps/v1",
+        kind: "Deployment",
+        metadata: {
+          name: initialJob.metadata.name,
+          namespace: placement,
+          labels: initialJob.metadata.labels,
+          annotations: initialJob.metadata.annotations,
+        },
+        spec: {
+          replicas: 1,
+          strategy: { type: "Recreate" },
+          selector: { matchLabels: { "app.kubernetes.io/name": initialJob.metadata.name } },
+          template: oldTemplate,
+        },
+      }),
+    );
+    await kubectl(
+      "rollout",
+      "status",
+      `deployment/${initialJob.metadata.name}`,
+      "--namespace",
+      placement,
+      "--timeout=60s",
+    );
+    await fixture.startWorker();
     // Stop at the bootstrap handoff boundary: this fixture deliberately has no
     // native Codex or private Gateway route, so it cannot prove runtime activation.
     await waitFor("Job completion and source consumption before native startup", async () => {
@@ -281,6 +356,9 @@ test(
     });
     await fixture.stopWorker();
     const completedJob = jobFor(first, "Complete");
+    assert.equal(await missing("deployment", completedJob.metadata.name, placement), true);
+    // The real API canonicalizes 1.5Gi; ownership comparison must accept its value.
+    assert.equal(completedJob.spec.template.spec.containers[0].resources.limits.memory, "1536Mi");
     assert.equal(completedJob.spec.backoffLimit, 2);
     assert.equal(completedJob.spec.activeDeadlineSeconds, 300);
     assert.equal(completedJob.spec.template.spec.restartPolicy, "Never");
@@ -399,9 +477,52 @@ test(
     assert.equal(patched.status, 200, JSON.stringify(patched.body));
     const failedRevision = await deploy();
     await fixture.startWorker();
+    await waitFor("replacement bootstrap Job admission", async () =>
+      observations.some(
+        (job) => job.metadata.labels["openclaw.dev/revision"] === failedRevision.id,
+      ),
+    );
+    await fixture.stopWorker();
+    await waitFor("actual bootstrap writer retry exhaustion", async () =>
+      jobFor(failedRevision, "Failed"),
+    );
+    // Before retirement, the ordinary runtime API offers the actual main and init
+    // containers. Reading one exact owned stream still uses IAM, redaction and audit.
+    const runtime = await fixture.request(
+      "GET",
+      `${agentPath}/deployments/${failedRevision.id}/runtime`,
+    );
+    assert.equal(runtime.status, 200, JSON.stringify(runtime.body));
+    const streams = runtime.data.sources.find(({ id }) => id === "agent").pods;
+    const writer = streams.find(({ container }) => container === "oauth-bootstrap");
+    const initializer = streams.find(({ container }) => container === "prepare-oauth-home");
+    assert.ok(writer);
+    assert.ok(initializer);
+    for (const stream of [writer, initializer]) {
+      const logs = await fixture.request(
+        "GET",
+        `${agentPath}/deployments/${failedRevision.id}/runtime/logs?source=agent&pod=${stream.name}&container=${stream.container}`,
+      );
+      assert.equal(logs.status, 200, JSON.stringify(logs.body));
+      assert.equal(logs.data.stream.container, stream.container);
+      assert.doesNotMatch(JSON.stringify(logs.body), /oauth-k3d-synthetic-(access|refresh)/);
+    }
+    const refusedContainer = await fixture.request(
+      "GET",
+      `${agentPath}/deployments/${failedRevision.id}/runtime/logs?source=agent&pod=${writer.name}&container=not-owned`,
+    );
+    assert.equal(refusedContainer.status, 400);
+    await fixture.startWorker();
     await waitFor("exhausted bootstrap to fail deployment and finish durable cleanup", async () => {
       const status = await fixture.request("GET", `${agentPath}/deployments/${failedRevision.id}`);
       assert.equal(status.status, 200, JSON.stringify(status.body));
+      if (status.data.status === "failed") {
+        assert.equal(
+          status.data.error.code,
+          "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+          JSON.stringify(status.body),
+        );
+      }
       return (
         status.data.status === "failed" &&
         (
@@ -427,6 +548,22 @@ test(
     );
     const status = await fixture.request("GET", `${agentPath}/deployments/${failedRevision.id}`);
     assert.equal(status.data.error.code, "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED");
+    assert.equal(status.data.cleanup.status, "succeeded");
+    const evidence = status.data.error.data.preparation;
+    assert.equal(evidence.workload.uid, failedJob.metadata.uid);
+    assert.equal(evidence.reason, "retry_limit");
+    assert.ok(
+      evidence.pods.some((pod) =>
+        pod.containers.some(
+          (container) => container.name === "oauth-bootstrap" && container.exitCode === 1,
+        ),
+      ),
+    );
+    assert.doesNotMatch(
+      JSON.stringify(evidence),
+      /oauth-k3d-synthetic-(access|refresh)|credential|message|auth.json/,
+    );
+
     assert.equal(
       (await sourceObject(replacement)).metadata.annotations["openclaw.dev/oauth-phase"],
       "claimed",
@@ -452,6 +589,9 @@ test(
       "failed",
     );
     assert.equal(await missing("job", failedJob.metadata.name, placement), true);
+    const recovered = await fixture.request("GET", `${agentPath}/deployments/${failedRevision.id}`);
+    assert.deepEqual(recovered.data.error.data.preparation, evidence);
+    assert.equal(recovered.data.cleanup.status, "succeeded");
     await fixture.stopWorker();
   },
 );

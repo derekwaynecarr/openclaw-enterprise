@@ -53,6 +53,7 @@ import type {
   ComputeAgentBinding,
   ComputeAgentRevisionBinding,
   ComputePendingReason,
+  ComputePreparationFailureEvidence,
   ComputeReadiness,
   ComputePreflightResult,
   ComputePrepareRevisionFailureDiagnostic,
@@ -236,12 +237,23 @@ type ReadableResourceKind = ManagedResourceKind | "Pod" | "Secret" | "Job";
 
 // API defaulting adds fields to Jobs. Verify every rendered field without
 // patching an immutable template or accepting extra containers/volumes.
-function bootstrapSpecMatches(observed: unknown, desired: unknown): boolean {
+function bootstrapSpecMatches(observed: unknown, desired: unknown, path = ""): boolean {
+  if (
+    /^template\.spec\.(?:initContainers|containers)\.\d+\.resources\.(?:requests|limits)\.[^.]+$/.test(
+      path,
+    ) &&
+    typeof observed === "string" &&
+    typeof desired === "string"
+  ) {
+    return compareResourceQuantities(observed, desired) === 0;
+  }
   if (Array.isArray(desired)) {
     return (
       Array.isArray(observed) &&
       observed.length === desired.length &&
-      desired.every((value, index) => bootstrapSpecMatches(observed[index], value))
+      desired.every((value, index) =>
+        bootstrapSpecMatches(observed[index], value, `${path}.${index}`),
+      )
     );
   }
   const record = asRecord(desired);
@@ -249,7 +261,9 @@ function bootstrapSpecMatches(observed: unknown, desired: unknown): boolean {
     const existing = asRecord(observed);
     return (
       existing !== undefined &&
-      Object.entries(record).every(([key, value]) => bootstrapSpecMatches(existing[key], value))
+      Object.entries(record).every(([key, value]) =>
+        bootstrapSpecMatches(existing[key], value, path ? `${path}.${key}` : key),
+      )
     );
   }
   return Object.is(observed, desired);
@@ -3673,12 +3687,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       sources.push({
         id: role,
         kind: "container",
-        pods: described.map((pod) => ({
-          name: pod.name,
-          uid: pod.uid,
-          container: role,
-          restartCount: pod.containers.find(({ name }) => name === role)?.restartCount ?? 0,
-        })),
+        pods: described.flatMap((pod, index) =>
+          this.runtimeLogContainerNames(observed[index]!).map((container) => ({
+            name: pod.name,
+            uid: pod.uid,
+            container,
+            restartCount: pod.containers.find(({ name }) => name === container)?.restartCount ?? 0,
+          })),
+        ),
         available: described.length > 0,
         ...(described.length > 0 ? {} : { unavailableCode: "NO_POD" as const }),
         retention: RUNTIME_LOG_RETENTION,
@@ -3698,7 +3714,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): Promise<AgentRuntimeLogChunk> {
     const revision = this.runtimeLogRevision(binding);
     const role = request.source;
-    if (!this.runtimeStatusContainers(revision).includes(role) || request.container !== role) {
+    if (!this.runtimeStatusContainers(revision).includes(role)) {
       throw new ResourceConflictError("The runtime log request does not match the revision.");
     }
     const signal = request.signal;
@@ -3714,6 +3730,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     if (owned === undefined) {
       throw new DependencyUnavailableError("The runtime log Pod is no longer available.");
+    }
+    if (!this.runtimeLogContainerNames(owned).includes(request.container)) {
+      throw new ResourceConflictError(
+        "The runtime log request does not match an owned Pod container.",
+      );
     }
     const clients = await this.clients(target.plane);
     let raw: string;
@@ -3772,9 +3793,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
         podUid: latestStatus?.uid ?? request.podUid,
         container: request.container,
         restartCount:
-          latestStatus?.containers.find(({ name }) => name === role)?.restartCount ??
-          this.runtimePodStatus(owned, role, target).containers.find(({ name }) => name === role)
-            ?.restartCount ??
+          latestStatus?.containers.find(({ name }) => name === request.container)?.restartCount ??
+          this.runtimePodStatus(owned, role, target).containers.find(
+            ({ name }) => name === request.container,
+          )?.restartCount ??
           0,
       },
       observedAt: new Date().toISOString(),
@@ -3825,6 +3847,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  private runtimeLogContainerNames(pod: KubernetesRecord): readonly string[] {
+    const spec = asRecord(pod.spec) ?? {};
+    // Main containers lead the default selection; init containers remain selectable.
+    return [
+      ...(Array.isArray(spec.containers) ? spec.containers : []),
+      ...(Array.isArray(spec.initContainers) ? spec.initContainers : []),
+    ]
+      .map(asRecord)
+      .map((container) => container?.name)
+      .filter((name): name is string => isNonEmptyString(name))
+      .slice(0, 16);
+  }
+
   private runtimePodStatus(
     pod: KubernetesRecord,
     role: RuntimeLogContainerSourceId,
@@ -3842,8 +3877,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ...(Array.isArray(status.containerStatuses) ? status.containerStatuses : []),
     ]
       .map((entry) => asRecord(entry))
-      .filter((entry): entry is Record<string, unknown> => isNonEmptyString(entry?.name))
-      .slice(0, 16);
+      .filter((entry): entry is Record<string, unknown> => isNonEmptyString(entry?.name));
     return {
       role,
       cluster:
@@ -3859,7 +3893,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         : metadata.creationTimestamp instanceof Date
           ? metadata.creationTimestamp.toISOString()
           : null,
-      containers: statuses.map((entry) => this.runtimeContainerStatus(entry)),
+      containers: this.runtimeLogContainerNames(pod).map((name) =>
+        this.runtimeContainerStatus(statuses.find((entry) => entry.name === name) ?? { name }),
+      ),
     };
   }
 
@@ -12621,6 +12657,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       await replaceSource("claimed");
     }
     const name = this.oauthBootstrapName(revision);
+    await this.retireOAuthBootstrapDeployment(revision, namespace);
     const seed = await this.getOwned("Secret", name, namespace, ownership);
     const data = { "auth.json": Buffer.from(JSON.stringify(nativeAuth)).toString("base64") };
     if (seed !== undefined && !isDeepStrictEqual(seed.data, data)) {
@@ -12687,6 +12724,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         terminal.reason === "DeadlineExceeded"
           ? "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT"
           : "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+        await this.oauthBootstrapFailureEvidence(revision, namespace, job, terminal),
       );
     }
     if (
@@ -12819,12 +12857,152 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
+  private async retireOAuthBootstrapDeployment(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    const name = this.oauthBootstrapName(revision);
+    const deployment = await this.getOwned(
+      "Deployment",
+      name,
+      namespace,
+      this.pluginRuntimeOwnership(revision),
+    );
+    if (deployment === undefined) {
+      return;
+    }
+    const clients = await this.clients(namespace.plane);
+    await this.request(
+      () =>
+        clients.apps.deleteNamespacedDeployment({
+          name,
+          namespace: namespace.name,
+          body: {
+            propagationPolicy: "Foreground",
+            preconditions: {
+              uid: required(deployment.metadata.uid, "OAuth bootstrap Deployment UID"),
+              resourceVersion: required(
+                deployment.metadata.resourceVersion,
+                "OAuth bootstrap Deployment version",
+              ),
+            },
+          },
+        }),
+      { mutating: true },
+    );
+    // An unfinished writer must leave the volume before another writer starts.
+    await this.waitForRevisionPodsToTerminate(revision, namespace, "agent", name);
+  }
+
+  private async oauthBootstrapFailureEvidence(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    job: ManagedKubernetesObject<"Job">,
+    terminal: Record<string, unknown>,
+  ): Promise<ComputePreparationFailureEvidence> {
+    const reasons = new Set([
+      "Completed",
+      "Error",
+      "OOMKilled",
+      "ContainerCannotRun",
+      "StartError",
+      "ImagePullBackOff",
+      "ErrImagePull",
+      "CreateContainerConfigError",
+      "CreateContainerError",
+      "RunContainerError",
+      "ContainerCreating",
+      "PodInitializing",
+    ]);
+    const pods = (await this.revisionPods(revision, namespace, "agent"))
+      .filter(
+        (pod) =>
+          Array.isArray(asRecord(pod.metadata)?.ownerReferences) &&
+          (asRecord(pod.metadata)!.ownerReferences as unknown[]).some(
+            (owner) => asRecord(owner)?.uid === job.metadata.uid && asRecord(owner)?.kind === "Job",
+          ),
+      )
+      .sort((a, b) =>
+        String(asRecord(b.metadata)?.creationTimestamp).localeCompare(
+          String(asRecord(a.metadata)?.creationTimestamp),
+        ),
+      )
+      .slice(0, 4);
+    let reason: ComputePreparationFailureEvidence["reason"] = "unknown";
+    if (terminal.reason === "DeadlineExceeded") {
+      reason = "deadline";
+    } else if (terminal.reason === "BackoffLimitExceeded") {
+      reason = "retry_limit";
+    }
+    return {
+      workload: {
+        kind: "Job",
+        name: job.metadata.name,
+        uid: required(job.metadata.uid, "OAuth bootstrap UID"),
+        namespace: namespace.name,
+      },
+      reason,
+      observedAt: new Date().toISOString(),
+      startedAt: kubernetesTime(job.status?.startTime),
+      finishedAt: kubernetesTime(terminal.lastTransitionTime),
+      pods: pods.map((pod) => {
+        const status = asRecord(pod.status) ?? {};
+        const spec = asRecord(pod.spec) ?? {};
+        const metadata = asRecord(pod.metadata)!;
+        const scheduled = Array.isArray(status.conditions)
+          ? status.conditions.map(asRecord).find((condition) => condition?.type === "PodScheduled")
+          : undefined;
+        const containers = (["init", "main"] as const)
+          .flatMap((kind) => {
+            const declared = kind === "init" ? spec.initContainers : spec.containers;
+            const observed =
+              kind === "init" ? status.initContainerStatuses : status.containerStatuses;
+            return (Array.isArray(declared) ? declared : []).map((value) => {
+              const name = String(asRecord(value)?.name);
+              const entry = Array.isArray(observed)
+                ? observed.map(asRecord).find((entry) => entry?.name === name)
+                : undefined;
+              const state = this.runtimeContainerStatus(entry ?? { name });
+              return {
+                name,
+                kind,
+                state: state.state,
+                reason: reasons.has(state.reason ?? "") ? state.reason : null,
+                exitCode: state.lastTermination?.exitCode ?? null,
+                startedAt: state.startedAt,
+                finishedAt: state.lastTermination?.finishedAt ?? null,
+              };
+            });
+          })
+          .slice(0, 16);
+        let scheduling: ComputePreparationFailureEvidence["pods"][number]["scheduling"] = "unknown";
+        if (scheduled?.status === "True") {
+          scheduling = "scheduled";
+        } else if (scheduled?.reason === "Unschedulable") {
+          scheduling = "unschedulable";
+        } else if (scheduled?.status === "False") {
+          scheduling = "pending";
+        }
+        return {
+          name: String(metadata.name),
+          uid: String(metadata.uid),
+          phase: ["Pending", "Running", "Succeeded", "Failed"].includes(String(status.phase))
+            ? (status.phase as "Pending" | "Running" | "Succeeded" | "Failed")
+            : "Unknown",
+          scheduling,
+          containers,
+        };
+      }),
+    };
+  }
+
   private async removeOAuthBootstrap(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
   ): Promise<void> {
     const name = this.oauthBootstrapName(revision);
     const ownership = this.pluginRuntimeOwnership(revision);
+    await this.retireOAuthBootstrapDeployment(revision, namespace);
     const job = await this.getOwned("Job", name, namespace, ownership);
     if (job !== undefined) {
       const clients = await this.clients(namespace.plane);

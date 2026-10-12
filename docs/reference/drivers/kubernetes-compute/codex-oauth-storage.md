@@ -47,6 +47,10 @@ parallelism one, `restartPolicy: Never`, `backoffLimit: 2`, and a five-minute
 also bounds time spent waiting for scheduling or storage. Compute creates the
 Job once and observes its existing conditions on later passes. It does not patch
 or recreate a failed Job to reset either budget.
+Reobservation accepts equivalent API-canonicalized resource quantities while
+rejecting changed limits or requests. Before admitting a Job, Compute retires
+any exact owned bootstrap Deployment and waits for its writer Pods to disappear.
+The seed and private claim survive this cutover.
 
 The writer locks the private directory while it validates or installs the bundle
 and receipt, then exits. Kernel-owned locking serializes duplicate executions
