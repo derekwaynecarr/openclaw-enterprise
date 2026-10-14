@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: "2026-10-14"
-last_updated_session: "01a13783-3cb5-7f53-8668-b2e3affa2b12"
+last_updated_session: "authoring-run/fba0a85c-ba37-4764-871e-9fdf80ee1083"
 ---
 
 # Agent Native Admin UI Flow
@@ -110,12 +110,15 @@ Then the selected Compute Driver's `id` and `implementation` must match `revisio
 ### 4. OCC derives the isolated Agent host
 
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
+`apps/controller/src/gateway/native-admin-host.mjs:deriveNativeAdminHost`
 
-`deriveNativeAdminHost` hashes Installation ID, Namespace ID, and Agent ID into an opaque label under the configured domain. `nativeAdminTarget` replaces the hostname of `publicOrigin` with that derived Agent host and returns `/` as the browser entrypoint for that Agent.
+`deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque hostname under the configured domain. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/` as the entrypoint.
 
-The host hash is not reversible. Native-host admission resolves the host back to an exact Agent by checking existing Installation, Namespace, and Agent state for the derived host. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed. This flow does not add a persistent host registry.
+The first-Agent script imports this Node-only helper without requiring workspace dependencies.
 
-`nativeAdminGatewayHttpBase` accepts only a `wss:` endpoint without username, password, query, or hash, then converts it to `https:` while preserving authority and the Agent base path. This keeps workspace-file WSS behavior unchanged while defining the private HTTP base needed by the native UI bridge.
+Native-host admission resolves the irreversible hash by checking existing Installation, Namespace, and Agent state without a persistent host registry. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
+
+`nativeAdminGatewayHttpBase` requires a `wss:` endpoint without userinfo, query, or hash, then converts it to `https:` preserving authority and the Agent base path. Workspace-file WSS behavior stays unchanged.
 
 ### 5. Shared cookie admits the Agent host
 
@@ -222,6 +225,8 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 11:53: Extracted shared hostname derivation so the first-Agent script starts without installed workspace dependencies. (authoring-run/fba0a85c-ba37-4764-871e-9fdf80ee1083 - 5511d28d1)
 
 - 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
 

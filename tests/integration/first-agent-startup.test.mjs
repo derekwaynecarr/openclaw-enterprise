@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -82,6 +82,39 @@ function runFirstAgent(env, ...args) {
   );
   return output;
 }
+
+test("first-Agent starts without installed workspace dependencies", async (t) => {
+  const directory = await mkdtemp(join(await realpath(tmpdir()), "oce-first-agent-source-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  // Run real sources outside the checkout so installed workspace packages cannot
+  // hide import failures in the host-run command used by First Agent Smoke.
+  for (const path of [
+    "package.json",
+    "scripts/first-agent.mjs",
+    "scripts/first-agent-database.mjs",
+    "scripts/first-agent-model.mjs",
+    "apps/controller/src",
+  ]) {
+    await cp(join(repository, path), join(directory, path), { recursive: true });
+  }
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(
+    process.execPath,
+    [join(directory, "scripts/first-agent.mjs"), "--help"],
+    {
+      cwd: directory,
+      encoding: "utf8",
+      env,
+      timeout: 10_000,
+    },
+  );
+
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  assert.match(result.stdout, /Usage: node scripts\/first-agent\.mjs/);
+  assert.match(result.stdout, /--control-ui/);
+});
 
 test("first-Agent accepts current Compose-backed Kubernetes development state", async (t) => {
   const { engineLog, env } = await fixture(t, "none");

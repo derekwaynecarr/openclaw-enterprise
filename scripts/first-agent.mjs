@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
-import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin.ts";
+import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
 import { selectFirstAgentModel, verifyFirstAgentModel } from "./first-agent-model.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
