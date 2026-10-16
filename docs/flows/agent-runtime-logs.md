@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-10-13
-last_updated_session: authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907
+updated: 2026-10-15
+last_updated_session: authoring-run/43cb74b9-e1fe-4fc2-adde-9d932b061d7c
 ---
 
 # Agent runtime logs flow
@@ -17,8 +17,6 @@ bounded records. Downloads stay local.
 - Trigger: `GET /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/runtime`
   and `GET .../runtime/logs` (optionally `download=true`) from the console Logs
   tab, `occ agent runtime|logs` (`internal/occcli/agent_runtime.go`) or the API.
-  CLI revision selection uses `agentRevision`/`latestRevisionID`; see the
-  [CLI reference](../reference/cli.md#runtime-status-and-logs).
 - Source: `apps/controller/src/index.ts:createFastifyApp`,
   `packages/occ/src/index.ts:OpenClawController.describeAgentRuntime` and
   `readAgentRuntimeLogs`, `packages/occ/src/runtime-logs/`, and
@@ -27,8 +25,7 @@ bounded records. Downloads stay local.
 - Assumptions: `deploymentId` names an admitted revision of the exact Agent.
   Status requires Agent `operate`/`read` plus revision `read`. Logs require Agent
   `read` and `read_logs` (or `administer`, unless a Restriction denies `read_logs`),
-  covering every revision that Agent deploys. `authorizeRuntimeLogRead` checks
-  `read_logs` first.
+  for every revision. `authorizeRuntimeLogRead` checks `read_logs` first.
 
 ## Flow
 
@@ -80,7 +77,7 @@ container's current termination, otherwise the prior one. Event
 reads keep only the Pod's newest 100 eligible Events across continuation pages,
 drop a settled `FailedScheduling` PVC retry, and derive `container` from
 `involvedObject.fieldPath` (`null` for Pod Events). A log read passes
-`{ source, events: false }`: one source, no Events. Each
+`{ source, events: false }`. Each
 Kubernetes call has a five-second deadline; a `403` becomes
 `RuntimeLogsForbiddenByClusterError`. `runtime-logs/description.ts:validRuntimeDescription`
 checks names, UIDs, counts and RFC 3339 UTC timestamps. A malformed, impossible
@@ -181,7 +178,7 @@ anchors or overflowing timestamp groups report gaps. gRPC `NOT_FOUND` (absent
 Sandbox, or concealed from a non-member) maps to
 `RUNTIME_LOGS_SANDBOX_NOT_FOUND`, never to an empty page. Lines naming two
 Sandbox IDs are refused; a new Sandbox ID emits `stream_replaced`.
-`sanitizeSandboxLogLines` parses the OCSF shorthand into allowlisted fields.
+OpenShell decorates decisions; OCC redacts them. See [policy evidence](agent-sandbox-policy.md).
 
 A download (`download=true`) forces `tailLines` to 1000, rejects a `cursor` with
 `400`, and starts a new view; `apps/controller/src/index.ts:auditAction`
@@ -235,6 +232,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 16:14: Move OpenShell decision parsing into its Driver; redact shared metadata. (authoring-run/43cb74b9-e1fe-4fc2-adde-9d932b061d7c - a28596ab8)
 
 - 2026-10-13: Key cursor hashes; `v1` cursors expire. (#2274)
 

@@ -366,3 +366,6 @@ shows organization-wide policy restrictions. Missing-credential, read-only, and
 save-failure stories cover surrounding states. Capture final interactions and
 native values outside the repository; attach screenshots and video to the task
 and PR.
+
+For policy-denial states and the reviewed-addition walkthrough, follow the
+[Agent policy storyboard](../../scripts/console-storybook/policy-workflow.md).

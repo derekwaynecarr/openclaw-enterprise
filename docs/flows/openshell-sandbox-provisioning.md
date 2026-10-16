@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-14
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+updated: 2026-10-15
+last_updated_session: authoring-run/43cb74b9-e1fe-4fc2-adde-9d932b061d7c
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -22,8 +22,7 @@ Gateway receives, while network policy limits its use to the node executable
 and Agent Gateway endpoint. This exposes the token to the Sandbox and is not a
 production credential-delivery contract.
 
-Both Kubernetes-only and Compose development control planes install the pinned
-Gateway and render the workspace chart, without compatibility projections.
+Development control planes install the pinned Gateway and workspace chart.
 
 ## Entry Points
 
@@ -93,35 +92,35 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-The written Installation declares the `openshell` Backend, Gateway endpoint,
-Sandbox and a Credential Gateway whose `binaries` list holds native Codex for
-x64 and ARM64 runtimes, whatever the launcher host. Credential-source profiles,
-not Sandbox policy, govern egress.
+The Installation declares the `openshell` Backend, Sandbox and Credential Gateway
+with Codex binaries for x64/ARM64. Credential-source profiles govern model
+egress; Sandbox binary and endpoint rules govern tool egress.
 
-`scripts/dev-up` validates Kubernetes/OpenShell and invokes `occ dev up`.
-Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects
-Kubernetes-only. Before state creation, Kubernetes-only rejects API-port
-collisions and records engine, cluster, namespace, port and key destination.
-Both verify the pinned archive, package charts and import digest-pinned
-Gateway/Sandbox/supervisor images. Kubernetes-only builds or selects controller/runtime images, imports them
-with PostgreSQL and resolves in-cluster digests.
+`scripts/dev-up` invokes `occ dev up`; Compose is default, while
+`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only. Preflight
+records engine, cluster, namespace, ports and key destination and rejects collisions.
+Both verify pinned charts and digest-pinned OpenShell images; Kubernetes-only also
+imports controller/runtime and PostgreSQL images and resolves their cluster digests.
 
-Both profiles import larger OCE images before pinned OpenShell Sandbox and
-supervisor images, then install OpenShell workloads. This prevents k3s image
-garbage collection during platform-image imports from removing idle OpenShell images.
+`internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` reads an
+optional `--sandbox-network-policy-file` before provisioning. It decodes one
+bounded YAML document; `scripts/validate-sandbox-network-policy.mjs` checks the
+effective configuration using the OpenShell Driver schema and validator.
+Invalid policy fails before provisioning. Rules enter `state.json` and
+append to generated rules in `installation.yaml`; API/worker share that snapshot.
+Input edits have no effect. See [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
 
-After Agent Sandbox rollout failure, `prepareOpenShell` calls
+Both import OCE images before OpenShell workloads, avoiding k3s garbage
+collection of idle OpenShell images during platform imports.
+
+On Agent Sandbox rollout failure,
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
-once before returning the original error for rollback. Synchronous capture
-selects the fixed Deployment, controller-UID-linked ReplicaSets/Pods and associated Warning
-reasons. It excludes messages, environment, full labels and logs, and marks
-unavailable, malformed or oversized results.
-
-Capture gets a fresh 15-second context, three-second request/command timeouts,
-256 KiB/command and a 32 KiB record cap. Direct commands are awaited; 200 ms pipe
-draining does not terminate arbitrary descendants. Error-output writes ignore
-failures; writer latency/durability are outside the subprocess budget. Capture
-neither retries nor diagnoses the failure.
+captures Deployment, owned ReplicaSet/Pod and Warning reasons once before rollback.
+Messages, environment, full labels and logs are excluded; invalid/unavailable
+results are marked. Budgets are 15 seconds overall, three seconds/command,
+256 KiB/command and 32 KiB/record. Commands are awaited; 200 ms pipe draining
+does not terminate descendants. Writer latency/durability is unbounded and write
+errors ignored. Capture neither retries nor diagnoses.
 
 After Helm, `network.providerHarness` records Gateway
 ClusterIP, Pod selector and TCP/8080. The Agent Gateway aliases only the advertised hostname to that IP, preserving
@@ -131,7 +130,7 @@ Compose runs PostgreSQL, OCC and its k3d-targeting worker; Kubernetes-only uses
 `oce-system` and in-cluster authentication. Both install private Envoy routing
 and operator Workspaces, limiting Gateway access to API, worker, supervisor
 callbacks and dedicated Agent Gateways. See
-[local deployment guides](../guides/deploy/local-kubernetes-development.md).
+[local deployment](../guides/deploy/local-kubernetes-development.md).
 
 Cleanup validates recorded engine/state before deleting the named cluster and
 Compose project/volumes; partial cleanup retains recovery state.
@@ -197,10 +196,9 @@ Only dedicated Codex or OpenClaw revisions pinned to this Driver are accepted.
 Kubernetes, filesystem, process and binary-scoped network policy use the
 `v0.1.3-pre.2` wire contract. Landlock is required; unsupported enums, inherited
 keys, old `passthrough` TLS spelling and missing executable paths fail before
-launch. Readiness `timeoutMs` must be a positive safe integer. The Installation
-loader names it; startup instead logs `startup-error` / `STARTUP_FAILED` before
-Kubernetes calls. Duplicate names and reserved `workspace-node-enrollment` fail
-before Driver construction. Rename them, retaining binaries and endpoints.
+launch. Readiness `timeoutMs` must be a positive safe integer. Invalid configuration
+fails before Kubernetes calls. Duplicate names and reserved
+`workspace-node-enrollment` fail before Driver construction.
 
 After the setup-Secret gate above, `provisionHarness` creates or adopts the
 runtime provider with the final node envelope, never a placeholder. Renewal
@@ -344,6 +342,8 @@ networking. Native OpenClaw remains verification-only.
 
 ## Related docs
 
+- [Agent Sandbox policy admission and live application](agent-sandbox-policy.md)
+
 - [OpenShell Sandbox Driver](../reference/drivers/openshell-sandbox.md) and [OpenShell Credential Gateway](../reference/drivers/openshell-credential-gateway.md)
 - [Credential source lifecycle](credential-source-lifecycle.md)
 - [OpenShell tests](../testing/openshell.md)
@@ -355,6 +355,10 @@ networking. Native OpenClaw remains verification-only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 16:14: Link frozen Agent policy admission and later live application. (authoring-run/43cb74b9-e1fe-4fc2-adde-9d932b061d7c - a28596ab8)
+
+- 2026-10-14 14:52: Validate and snapshot startup Sandbox network policy overrides through the Driver. (authoring-run/5e9763cf-c7fd-4990-94ac-6bc267d0287a - a28596ab8cf5e028a5eb91c276feb19a3775554c)
 
 - 2026-10-14 20:27: Release refused WebSocket probes. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 4727e9b109a2127150e03e39e859d45e0668f82f)
 

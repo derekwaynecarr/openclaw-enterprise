@@ -497,3 +497,28 @@ func (client *Client) DeleteAgent(namespaceID, agentID string) (any, error) {
 		nil,
 	)
 }
+
+// GetAgentSandboxPolicy reads desired policy and confirmed application evidence.
+func (client *Client) GetAgentSandboxPolicy(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "sandbox-policy")
+}
+
+// UpdateAgentSandboxPolicy saves an expected-version replacement without applying it.
+func (client *Client) UpdateAgentSandboxPolicy(namespaceID, agentID string, body jsontext.Value) (any, error) {
+	return client.send(http.MethodPut, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy"}, body)
+}
+
+// ApplyAgentSandboxPolicy requests live application; acknowledgement is not enforcement evidence.
+func (client *Client) ApplyAgentSandboxPolicy(namespaceID, agentID, revisionID string, expectedVersion int) (any, error) {
+	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", "apply"}, map[string]any{"revisionId": revisionID, "expectedVersion": expectedVersion})
+}
+
+// SetAgentSandboxPolicyEditing changes future edit permission admission, preserving grants.
+func (client *Client) SetAgentSandboxPolicyEditing(namespaceID, agentID string, enabled bool) (any, error) {
+	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", "editing"}, map[string]any{"enabled": enabled})
+}
+
+// GetAgentSandboxRecommendations reads bounded provider suggestions, independently of logs.
+func (client *Client) GetAgentSandboxRecommendations(namespaceID, agentID, revisionID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID, "sandbox-policy", "recommendations")
+}

@@ -159,6 +159,8 @@ set
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
 
+For additional binary and endpoint rules, see [startup network policy](local-sandbox-network-policy.md).
+
 To choose the host engine:
 
 ```bash

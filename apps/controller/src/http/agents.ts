@@ -32,6 +32,7 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     return { ...agent };
   }
   return {
+    sandboxPolicyEditing: agent.sandboxPolicyEditing === true,
     id: agent.id,
     namespaceId: agent.namespaceId,
     name: agent.name,

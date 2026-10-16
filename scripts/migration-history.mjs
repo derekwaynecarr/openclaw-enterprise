@@ -175,6 +175,12 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 51) {
         return "preProvisioningDeploymentOutcome";
       }
+      if (receipts.length === 54) {
+        return "preSandboxPolicyAdministrator";
+      }
+      if (receipts.length === 53) {
+        return "preSandboxPolicies";
+      }
       if (receipts.length === 52) {
         return "preComputePreparationFailureEvidence";
       }
@@ -185,6 +191,12 @@ function classifyReceipts(receipts, manifest) {
     }
   } else {
     requireReceiptsMatchEntries(receipts, manifest.entries);
+  }
+  if (receipts.length === 54) {
+    return "preSandboxPolicyAdministrator";
+  }
+  if (receipts.length === 53) {
+    return "preSandboxPolicies";
   }
   if (receipts.length === 0) {
     return "empty";

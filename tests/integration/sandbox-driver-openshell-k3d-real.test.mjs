@@ -1664,6 +1664,35 @@ function createIntegrationSandboxDriverFactory(
       capability: "sandbox",
       implementation: selection.implementation,
       facets: Object.freeze(["networking", "filesystem", "process"]),
+      networkPolicy: { live: true, wildcards: true, portRanges: true },
+      admitNetworkPolicy(additions, version, defaults) {
+        return new OpenShellSandboxDriver(selection.configuration, {
+          id: selection.id,
+          implementation: "openshell",
+          backend: backendFor(undefined),
+        }).admitNetworkPolicy(additions, version, defaults);
+      },
+      async observeNetworkPolicy(context, snapshot) {
+        return delegate(
+          undefined,
+          context.namespace.name,
+          existingEndpointForNamespace(context),
+        ).observeNetworkPolicy(context, snapshot);
+      },
+      async applyNetworkPolicy(context, input) {
+        return delegate(
+          undefined,
+          context.namespace.name,
+          existingEndpointForNamespace(context),
+        ).applyNetworkPolicy(context, input);
+      },
+      async readPolicyRecommendations(context, limit) {
+        return delegate(
+          undefined,
+          context.namespace.name,
+          existingEndpointForNamespace(context),
+        ).readPolicyRecommendations(context, limit);
+      },
       configureAgent(configuration, harness) {
         // Configuration admission performs no gateway I/O.
         return new OpenShellSandboxDriver(selection.configuration, {
@@ -4133,6 +4162,190 @@ async function holdNativeOpenClawDemo(context, topology) {
   }
 }
 
+async function assertAgentNetworkPolicyLifecycle(topology) {
+  const base = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+  const policyPath = `${base}/sandbox-policy`;
+  const grant = {
+    id: "python-demo",
+    binary: "/usr/bin/python3.11",
+    host: "example.org",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const python = async (agentId = topology.agent.id) => {
+    const pods = await resources("pods", topology.gatewayPlacement);
+    const gateway = pods.find(
+      (pod) =>
+        pod.metadata.labels?.["openclaw.dev/agent"] === agentId &&
+        pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+    );
+    assert.ok(gateway);
+    // HTTP error responses still prove connectivity; sandbox refusal remains an uncaught URLError.
+    const command = `/usr/bin/python3.11 - <<'PYTHON'
+import urllib.request, urllib.error
+try:
+    response = urllib.request.urlopen("https://example.org", timeout=20)
+except urllib.error.HTTPError as error:
+    response = error
+print("HTTP", response.code)
+print(response.read(160).decode("utf-8", errors="replace"))
+PYTHON`;
+    const result = await requestCodexTurnFromGatewayPod({
+      namespace: topology.gatewayPlacement,
+      gatewayPod: gateway.metadata.name,
+      providerModel,
+      prompt: `Run exactly this command once through the exec tool, without changing it or attempting other network tools. Report its exit status and output: ${command}`,
+    });
+    const executed = result.items
+      .filter(({ method }) => method === "item/completed")
+      .map(({ params }) => params?.item)
+      .find(
+        (item) => item?.type === "commandExecution" && item.command?.includes("urllib.request"),
+      );
+    assert.ok(executed, "the real Agent must execute the Python command");
+    return executed;
+  };
+  // Before any additions, enforcement denies the actual interpreter request.
+  const denied = await python();
+  assert.notEqual(denied.exitCode, 0);
+  assert.match(denied.aggregatedOutput ?? "", /Permission denied|Errno 13/);
+  const logs = await topology.request(
+    "GET",
+    `${base}/deployments/${topology.revision.id}/runtime/logs?source=sandbox&tailLines=1000`,
+  );
+  assert.equal(logs.status, 200, JSON.stringify(logs.error));
+  assert.ok(
+    logs.data.records.some(
+      (row) => row.decision?.decision === "denied" && row.decision.host === grant.host,
+    ),
+  );
+  const suggestions = await topology.request(
+    "GET",
+    `${base}/revisions/${topology.revision.id}/sandbox-policy/recommendations`,
+  );
+  assert.equal(suggestions.status, 200, JSON.stringify(suggestions.error));
+  const initial = await topology.request("GET", policyPath);
+  assert.equal(initial.data.editingEnabled, false);
+  assert.equal(
+    (
+      await topology.request("PUT", policyPath, {
+        expectedVersion: initial.data.policy.version,
+        additions: [grant],
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (await topology.request("PATCH", `${policyPath}/editing`, { enabled: true })).status,
+    200,
+  );
+  let version = initial.data.policy.version;
+  const change = async (additions) => {
+    const saved = await topology.request("PUT", policyPath, {
+      expectedVersion: version,
+      additions,
+    });
+    assert.equal(saved.status, 200, JSON.stringify(saved.error));
+    version = saved.data.version;
+    // Stage the application while the real worker is stopped, then prove durable recovery
+    // through a new worker and database pool before any provider effect occurs.
+    await topology.pauseWorker();
+    try {
+      const applied = await topology.request("POST", `${policyPath}/apply`, {
+        expectedVersion: version,
+        revisionId: topology.revision.id,
+      });
+      assert.equal(applied.status, 202, JSON.stringify(applied.error));
+      assert.equal(applied.data.application.state, "pending");
+    } finally {
+      await topology.resumeWorker();
+    }
+    await waitFor(
+      "matching loaded live network policy",
+      async () => {
+        const view = await topology.request("GET", policyPath);
+        assert.equal(view.status, 200, JSON.stringify(view.error));
+        assert.notEqual(
+          view.data.policy.application?.state,
+          "failed",
+          JSON.stringify(view.data.policy.application),
+        );
+        return view.data.policy.application?.state === "applied" ? view.data : undefined;
+      },
+      120_000,
+    );
+  };
+  await change([grant]);
+  const allowed = await python();
+  assert.equal(allowed.exitCode, 0, "a confirmed grant must permit the same real Python request");
+  assert.match(allowed.aggregatedOutput ?? "", /HTTP [1-5][0-9]{2}/);
+  const allowedLogs = await topology.request(
+    "GET",
+    `${base}/deployments/${topology.revision.id}/runtime/logs?source=sandbox&tailLines=1000`,
+  );
+  assert.equal(allowedLogs.status, 200, JSON.stringify(allowedLogs.error));
+  assert.ok(
+    allowedLogs.data.records.some(
+      (row) => row.decision?.decision === "allowed" && row.decision.host === grant.host,
+    ),
+    "the provider confirms the real connection was allowed",
+  );
+  const unchanged = await topology.request("GET", base);
+  assert.equal(
+    unchanged.data.activeRevisionId,
+    topology.revision.id,
+    "live application must not redeploy",
+  );
+  const snapshot = await topology.observerPool.query(
+    "SELECT admitted_spec->'sandbox_policy' AS policy FROM occ.agent_revisions WHERE id=$1",
+    [topology.revision.id],
+  );
+  assert.deepEqual(
+    snapshot.rows[0].policy.additions,
+    [],
+    "live changes must preserve immutable revision evidence",
+  );
+  // A second ordinary Agent shares the Installation defaults but receives no addition.
+  const second = await deployAdditionalCredentialAgent(
+    topology,
+    topology.agent.harnessAuth.sourceId,
+    [],
+  );
+  const isolated = await python(second.agent.id);
+  assert.notEqual(isolated.exitCode, 0, "another Agent must remain denied");
+  assert.match(isolated.aggregatedOutput ?? "", /Permission denied|Errno 13/);
+  // Release the shared credential reference before the later credential-revocation scenarios.
+  const deleted = await topology.request("DELETE", second.path);
+  assert.equal(deleted.status, 202, JSON.stringify(deleted.error));
+  await waitFor(
+    "isolated policy Agent deletion",
+    async () => {
+      const remaining = await topology.observerPool.query(
+        "SELECT 1 FROM occ.agents WHERE id = $1",
+        [second.agent.id],
+      );
+      return remaining.rowCount === 0 ? true : undefined;
+    },
+    120_000,
+  );
+  assert.equal(
+    (await topology.request("PATCH", `${policyPath}/editing`, { enabled: false })).status,
+    200,
+  );
+  assert.equal((await python()).exitCode, 0, "disabling editing must preserve approved access");
+  assert.equal(
+    (await topology.request("PUT", policyPath, { expectedVersion: version, additions: [] })).status,
+    409,
+  );
+  assert.equal(
+    (await topology.request("PATCH", `${policyPath}/editing`, { enabled: true })).status,
+    200,
+  );
+  await change([]);
+  const revoked = await python();
+  assert.notEqual(revoked.exitCode, 0, "explicit removal must restore enforcement");
+  assert.match(revoked.aggregatedOutput ?? "", /Permission denied|Errno 13/);
+}
+
 async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   const nonce = `openshell-boundary-${randomUUID()}`;
   const providerWorkspaceVariable = topology.gatewayPod.spec.containers
@@ -4515,6 +4728,7 @@ test(
         "OpenShell integration: real in-Sandbox model turn passed; testing actual filesystem and network enforcement.\n",
       );
       await assertOpenShellToolFilesystemAndNetworkEnforcement(topology);
+      await assertAgentNetworkPolicyLifecycle(topology);
       process.stderr.write(
         "OpenShell integration: tool filesystem and egress verified; testing Pod-absent replacement and cleanup.\n",
       );

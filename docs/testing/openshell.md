@@ -131,6 +131,10 @@ the Agent Gateway. Exact workload identity, approved mounts and privileges,
 source withdrawal, denied egress, replacement, and cleanup remain required.
 Missing prerequisites fail rather than skip.
 
+Codex also exercises Python deny/grant/allow/revoke, loaded-version confirmation
+across a worker restart, isolation from another Agent, and disabling edits while
+preserving access. Suggestions and decorated logs are read through OCC.
+
 After the tool-source turns, the Codex scenario deploys a second Agent that
 attaches one of the tool sources. When the first Agent withdraws that source,
 the second Agent still receives its token. The scenario then checks that:
@@ -266,12 +270,7 @@ the token's admitted lifetime ends or the test cleans it up. See the
 [qualification contract](../reference/drivers/openshell-sandbox.md#qualification-contract)
 and the [pre.5 experiment handoff](openshell-pre5-local-experiment.md).
 
-Local `sandbox-driver-startup`, `controller-lifecycle`, and
-`postgres-platform-state` integration tests cover driver selection and Backend
-membership, revision lifecycle, and persistence. The
-`credential-source-occ`, `openshell-gateway-wire`, and `kubernetes-compute`
-conformance tests cover credential source admission, provider RPC encoding, and
-Compute's credential-source rendering. None of these exercises the real
+Other startup, lifecycle, persistence, and wire tests do not exercise real
 OpenShell tools.
 
 ### Development profile

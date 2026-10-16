@@ -1,3 +1,4 @@
+import { renderAgentSandboxPolicy } from "./sandbox-policy.mjs";
 import { element, button } from "../dom.mjs";
 import {
   configuredHarnessId,
@@ -871,6 +872,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     "channels",
     ...(selected === "draft" ? ["repositories", "credentials"] : []),
     "workspace",
+    "policy",
     ...(selected === "draft" ? [] : ["logs"]),
   ];
   let selectedTab = tabsForSelection.includes(tab) ? tab : "configuration";
@@ -1030,6 +1032,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         ]
       : []),
     ["workspace", "Workspace files"],
+    ["policy", "Policy denials"],
     ...(selected === "draft" ? [] : [["logs", "Logs"]]),
   ]) {
     const control = button(
@@ -2079,6 +2082,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     content.replaceChildren();
     if (tab === "workspace") {
       content.append(renderWorkspaceFiles(tabContext, agent, path));
+      state.loading = false;
+      content.style.minHeight = "";
+      return;
+    }
+    if (tab === "policy") {
+      state.reusable = false;
+      content.append(renderAgentSandboxPolicy(tabContext, { agent, revisionId: selected }));
       state.loading = false;
       content.style.minHeight = "";
       return;
