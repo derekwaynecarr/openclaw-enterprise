@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: 2026-10-19
-last_updated_session: authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13
+last_updated_session: authoring-run/a9906404-d12d-4f05-ba24-16be225b527c
 ---
 
 # Agent sandbox policy flow
@@ -50,6 +50,10 @@ The required facet argument currently admits `networking` only. Other facets
 fail before network policy access. The temporary
 `TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing` requires
 Installation and Agent administration; Guardrails will replace this switch.
+
+Both state adapters return `sandboxPolicyEditing: false` at Agent creation,
+matching the PostgreSQL column default and subsequent reads. The separately
+authorized editing operation changes this flag.
 
 `packages/occ/src/state/postgres-state.ts` performs versioned updates. Agent
 creation creates its one policy through a database trigger. Constraints enforce
@@ -132,6 +136,8 @@ destinations, preserving an Agent's Policy denials link after sign-in.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-19 14:18: Align Agent creation and reload defaults for policy editing in both state adapters. (authoring-run/a9906404-d12d-4f05-ba24-16be225b527c - 7e677523ba1ad953707b14f6b6c2f041e5ccd6b7)
 
 - 2026-10-19 09:23: Require a policy facet, mark temporary editing admission, and commit exhausted application recovery atomically. (authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13 - bc3ba215dd9927692bc2882ffaf06a35c27fed4a)
 

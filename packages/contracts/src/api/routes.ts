@@ -1399,7 +1399,7 @@ export const occApiRoutes = [
       params: SandboxPolicyParams,
       querystring: EmptyQuery,
       body: SandboxPolicyUpdateBody,
-      response: { 200: SandboxPolicyResponse, ...mutationErrors, 503: ErrorResponseRef },
+      response: { 200: SandboxPolicyResponse, ...createErrors },
     },
   },
   {
@@ -1416,7 +1416,7 @@ export const occApiRoutes = [
       params: SandboxPolicyParams,
       querystring: EmptyQuery,
       body: SandboxPolicyApplyBody,
-      response: { 202: SandboxPolicyResponse, ...mutationErrors, 503: ErrorResponseRef },
+      response: { 202: SandboxPolicyResponse, ...createErrors },
     },
   },
   {
@@ -1435,7 +1435,7 @@ export const occApiRoutes = [
       params: SandboxPolicyParams,
       querystring: EmptyQuery,
       body: SandboxPolicyEditingBody,
-      response: { 200: AgentResponse, ...mutationErrors, 503: ErrorResponseRef },
+      response: { 200: AgentResponse, ...createErrors },
     },
   },
   {

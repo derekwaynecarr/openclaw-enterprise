@@ -3429,12 +3429,12 @@ select:not([multiple])[size="1"] {
 }
 .sandbox-policy .agent-card {
   padding: 1.2rem;
-  border: 1px solid var(--border, #d6d0c5);
+  border: 1px solid var(--color-border);
   border-radius: 0.8rem;
 }
 .sandbox-decision {
   padding: 1rem;
-  border: 1px solid var(--border, #d6d0c5);
+  border: 1px solid var(--color-border);
   border-radius: 0.6rem;
   margin-block: 0.7rem;
   overflow-wrap: anywhere;
@@ -3483,7 +3483,7 @@ select:not([multiple])[size="1"] {
   min-width: 0;
   display: grid;
   gap: 0.65rem;
-  border: 1px solid var(--border, #d6d0c5);
+  border: 1px solid var(--color-border);
   border-radius: 0.5rem;
 }
 .sandbox-policy-form label {

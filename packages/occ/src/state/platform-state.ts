@@ -2465,6 +2465,7 @@ function repositories(
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
         ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
+        sandboxPolicyEditing: false,
         desiredRuntimeState: "stopped" as const,
         status: "active" as const,
       });
