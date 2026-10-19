@@ -25,6 +25,20 @@ network, and credential enforcement. Exact workload identity, approved mounts
 and privileges, source withdrawal, replacement, and cleanup remain required.
 Missing prerequisites fail rather than skip.
 
+## Agent network policy
+
+The policy scenario uses the production HTTP admission path, PostgreSQL worker,
+and real OpenShell policy RPCs. It exercises a Python denial, an explicitly
+applied grant, removal, and isolation from a second Agent. Denial logs and native
+recommendations are checked separately.
+
+It revokes each required permission after work is queued and checks failure
+before `UpdateConfig`, unchanged loaded provider state, and attributable audit
+evidence. A test barrier also interrupts the worker after the real native write
+succeeds but before OCC records its receipt. A restarted worker must confirm
+the loaded policy without issuing the write again. These cases require the
+real runtime; local wire fixtures do not establish their outcomes.
+
 ## Credential route
 
 After the egress turn, the test writes a probe script into the shared workspace

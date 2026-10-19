@@ -131,6 +131,10 @@ Sandbox case uses a test-only compatibility bridge. Use the k3d helper below to
 run that case. The [Sandbox Driver reference](../reference/drivers/openshell-sandbox.md#qualification-contract)
 describes the remaining limits.
 
+Codex also exercises Python deny/grant/allow/revoke, loaded-version confirmation
+across a worker restart, isolation from another Agent, and disabling edits while
+preserving access. Suggestions and decorated logs are read through OCC.
+
 ### Native OpenClaw with k3d
 
 The [k3d helper](kubernetes.md#develop-with-local-containers-and-k3d) prepares
