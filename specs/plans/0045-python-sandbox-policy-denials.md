@@ -254,17 +254,18 @@ networkPolicies:
 ## Verification
 
 Real-runtime proof uses enforcing k3d, PostgreSQL, selected images, and authorized
-model credentials. Local evidence below is from the source baseline plus this
-uncommitted implementation; CI has not run on a published head.
+model credentials. The 2026-10-19 native checks use production source
+`14b4dd30b75f33717f85b552e6d989df83eaa234` plus uncommitted fixture changes;
+CI has not run on this local head.
 
 | Required outcome | Evidence and remaining proof |
 | --- | --- |
 | Startup input | Go validation, snapshot, and ceiling/default separation passed; prior real startup proof retained. |
 | Source selection | Live logs/drafts/history comparison passed with aggregation/version/watch limits. |
-| Agent enforcement | Manual real workflow passed: deny, grant, native loaded confirmation, allowed connection, disable-preserve, revoke-deny; second Agent stayed denied. Automated OpenShell workflow extended, not yet run. |
+| Agent enforcement | Automated deny/grant/allow/remove/deny, loaded confirmation, disable-preserve, and second-Agent isolation passed. |
 | Delegation/persistence | [HTTP/PostgreSQL integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs) covers disabled editing, independent resource authority, ceiling rejection, stale edits, database constraints, and explicit redeployment snapshots. |
-| Application truth | Manual live application preserved the revision and recovered queued work across worker restart. Automated restart, conflict, and failure proof remains required. |
-| Read contracts | Native wire, Driver decoration, core sanitization, and replay checks passed. Full authenticated native config scopes remain unverified. |
+| Application truth | Queued revocation of either exact permission prevented native dispatch. Post-write worker restart recovered without duplicate UpdateConfig; revision snapshot stayed unchanged. |
+| Read contracts | Native status/recommendation/write RPCs passed authenticated sandbox:read, config:read, and config:write boundaries. Workspace role isolation remains unqualified. |
 | Console workflow | Fresh prepared fixture previews and real browser review/save/apply exercised. Full Storybook build awaits explicit dependency-install authorization. |
 | UI evidence | Final screenshots and real interaction video captured outside the checkout; upload before merge. |
 
@@ -272,9 +273,10 @@ Register cases in owning CI lanes. Parsing fixtures do not replace runtime proof
 
 ## Remaining verification
 
-Run the extended real OpenShell suite, including worker restart, and verify native
-authenticated read/write scopes. Finish final checks and UI evidence, independent
-review, and CI before merge. Full conformance encountered three prerequisite
+The extended real OpenShell suite passed (1 test, no skips) on linux/amd64 with
+OpenShell v0.1.4 and Codex/gpt-5.1 through an API-key provider. The full lane
+also requires an unavailable Codex PAT. Finish
+final checks, UI evidence, independent review, and CI before merge. Full conformance encountered three prerequisite
 failures because installed GitHub CLI 2.97.0 differs from required 2.100.0; no tool
 upgrade or dependency installation was performed implicitly.
 
@@ -313,6 +315,8 @@ PR media, CI, and review remain pending.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-19: Complete native lifecycle, authority revocation, post-write worker recovery, and authenticated scope proof; retain qualification limits.
 
 - 2026-10-19: Address PR #2599 migration, recovery, fixture, and contract feedback; record passing local checks and remaining native/UI proof. (authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13 - bc3ba215dd9927692bc2882ffaf06a35c27fed4a)
 

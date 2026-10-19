@@ -89,6 +89,12 @@ transport access. Its create-time Sandbox spec remains unchanged; status reads
 confirm the later policy version independently. Other Sandbox Drivers may support
 redeployment without live application.
 
+The OCC gateway identity needs OpenShell `sandbox:read` and Workspace role `user`
+for `GetSandbox` and `GetSandboxPolicyStatus`, and `config:write` and Workspace
+role `admin` for `UpdateConfig`. Recommendations through `GetDraftPolicy` need
+`config:read` and Workspace role `user`. OpenShell scope enforcement must be configured
+on its OIDC gateway; these permissions are separate from OCE resource authority.
+
 ## Denials and recommendations
 
 The console's **Policy denials** tab uses the existing bounded, exact-revision
@@ -115,5 +121,6 @@ complete change signals. Editing works without logs or suggestions.
 
 See the [operator workflow](../guides/topics/agent-sandbox-policy.md),
 [Driver contract](drivers/sandbox.md), [API](api.md), and
-[source flow](../flows/agent-sandbox-policy.md). Authenticated OpenShell scope and
-live runtime verification are tracked in the [implementation plan](../../specs/plans/0045-python-sandbox-policy-denials.md).
+[source flow](../flows/agent-sandbox-policy.md). See [runtime coverage](../testing/openshell-coverage.md#agent-network-policy)
+and the [implementation plan](../../specs/plans/0045-python-sandbox-policy-denials.md)
+for verification and qualification limits.
