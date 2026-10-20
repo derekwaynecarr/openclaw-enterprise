@@ -112,6 +112,115 @@ export async function createQaBrowser(f) {
   });
   return {
     nativeOrigin: f.controlPlane === "compose" ? nativeOrigin : undefined,
+    async verifySecrets(agent) {
+      const secretsPage = await browser.newPage();
+      const base = `/namespaces/${agent.namespaceId}`;
+      const name = `qa-console-${randomUUID()}`;
+      const syntheticValue = `synthetic-console-${randomUUID()}`;
+      const configurationPath = `${base}/configurations/${agent.configurationId}`;
+      const configuration = await f.api("GET", configurationPath);
+      let secret;
+      let configurationChanged = false;
+      try {
+        await secretsPage.goto(`${f.consoleUrl}/console/secrets?namespace=${agent.namespaceId}`);
+        await secretsPage.getByRole("button", { name: "Create Secret", exact: true }).click();
+        const create = secretsPage.getByRole("dialog", { name: "Create Secret", exact: true });
+        await create.getByLabel("Secret name", { exact: true }).fill(name);
+        await create.getByLabel("Value", { exact: true }).fill(syntheticValue);
+        await create.getByRole("button", { name: "Create Secret", exact: true }).click();
+        await secretsPage
+          .getByRole("dialog", { name: "Secret created", exact: true })
+          .getByRole("button", { name: "Close" })
+          .click();
+        secret = (await f.api("GET", `${base}/secrets`)).find((item) => item.name === name);
+        assert.ok(secret, "console-created Secret must be persisted by the shipped controller");
+        await secretsPage.getByRole("button", { name, exact: true }).click();
+        await secretsPage
+          .getByRole("dialog", { name, exact: true })
+          .getByRole("button", { name: "Replace value", exact: true })
+          .click();
+        const replace = secretsPage.getByRole("dialog", {
+          name: "Replace Secret value",
+          exact: true,
+        });
+        await replace.getByLabel("Value", { exact: true }).fill(`${syntheticValue}-replacement`);
+        await replace.getByRole("button", { name: "Replace value", exact: true }).click();
+        await secretsPage
+          .getByRole("dialog", { name: "Secret value replaced", exact: true })
+          .getByRole("button", { name: "Close" })
+          .click();
+
+        // Change this scenario's Agent draft Configuration, leaving the active revision intact.
+        // The real Configuration admission and stored reference must prevent Secret deletion.
+        configurationChanged = true;
+        await f.api("PATCH", configurationPath, {
+          values: configuration.values,
+          secretBindings: {
+            ...configuration.secretBindings,
+            QA_CONSOLE_SECRET: { source: secret.ref },
+          },
+        });
+        await secretsPage.getByRole("button", { name, exact: true }).click();
+        const detail = secretsPage.getByRole("dialog", { name, exact: true });
+        await detail.getByText(agent.configurationId, { exact: true }).waitFor();
+        assert.equal(
+          await detail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
+          true,
+        );
+        // Bypass the disabled control to verify the actual server also rejects the reference.
+        const refused = await secretsPage.evaluate(
+          async (path) => (await fetch(path, { method: "DELETE" })).status,
+          `${base}/secrets/${secret.id}`,
+        );
+        assert.equal(refused, 409);
+        await detail.getByRole("button", { name: "Close" }).click();
+        await f.api("PATCH", configurationPath, {
+          values: configuration.values,
+          secretBindings: configuration.secretBindings ?? {},
+        });
+        configurationChanged = false;
+        await secretsPage.getByRole("button", { name, exact: true }).click();
+        await secretsPage
+          .getByRole("dialog", { name, exact: true })
+          .getByRole("button", { name: "Delete Secret", exact: true })
+          .click();
+        await secretsPage
+          .getByRole("dialog", { name: "Delete Secret", exact: true })
+          .getByRole("button", { name: "Permanently delete Secret", exact: true })
+          .click();
+        await secretsPage.getByRole("dialog", { name: "Secret deleted", exact: true }).waitFor();
+        assert.equal(
+          (await f.api("GET", `${base}/secrets`)).some((item) => item.id === secret.id),
+          false,
+        );
+        await f.record(`${agent.preset}-console-secrets`, {
+          agentId: agent.id,
+          configurationId: agent.configurationId,
+          secretId: secret.id,
+          created: true,
+          replaced: true,
+          referenceBlockedDeletion: true,
+          deleted: true,
+        });
+        secret = null;
+      } finally {
+        try {
+          if (configurationChanged) {
+            await f.api("PATCH", configurationPath, {
+              values: configuration.values,
+              secretBindings: configuration.secretBindings ?? {},
+            });
+          }
+          // A lost creation reply can leave an owned Secret before its ID was read.
+          const owned = (await f.api("GET", `${base}/secrets`)).find((item) => item.name === name);
+          if (owned) {
+            await f.api("DELETE", `${base}/secrets/${owned.id}`);
+          }
+        } finally {
+          await secretsPage.close();
+        }
+      }
+    },
     async verify(agent) {
       const gateway = await f.gatewayUrl(agent);
       let origin = nativeOrigin;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 const scenarioPresets = {
   "model-ui": ["OpenClaw", "Codex"],
+  "console-secrets": ["OpenClaw", "Codex"],
   calendar: ["Codex"],
   "git-full": ["OpenClaw", "Codex"],
   "git-read": ["Codex"],
@@ -83,7 +84,7 @@ export function selectQaMatrix(env = process.env) {
     scenarios,
     requiredEnv,
     repository,
-    browser: activeScenarios.includes("model-ui"),
+    browser: activeScenarios.some((name) => ["model-ui", "console-secrets"].includes(name)),
     scope:
       installation === "all" && preset === "all" && scenarios.length === allScenarios.length
         ? "full"

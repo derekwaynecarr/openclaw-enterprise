@@ -145,7 +145,7 @@ export async function login(
   await page.getByLabel("Email", { exact: true }).fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL(/\/console\/(agents|backends|namespaces|settings)/);
+  await page.waitForURL(/\/console\/(agents|backends|namespaces|settings|secrets)/);
 }
 
 // Browser storage the console wrote, except the tab-scoped Installation-access probe answer

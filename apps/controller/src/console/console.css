@@ -2637,6 +2637,42 @@ select:not([multiple])[size="1"] {
 .credential-secret-dialog .form-field {
   margin: 0;
 }
+.secrets-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-block: var(--space-5);
+}
+.secrets-toolbar .field {
+  flex: 1 1 16rem;
+  margin: 0;
+}
+.secret-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+.secret-row > div {
+  min-width: 0;
+}
+.secret-row button {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.secret-row .resource-id,
+.secret-consumers {
+  overflow-wrap: anywhere;
+}
+.secret-value--masked {
+  -webkit-text-security: disc;
+}
+.secret-dialog h3,
+.secret-dialog h4 {
+  margin-top: var(--space-4);
+}
 @keyframes dialog-open {
   from {
     opacity: 0;

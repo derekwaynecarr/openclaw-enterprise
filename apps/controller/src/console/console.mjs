@@ -14,6 +14,7 @@ import { createShell, initials, panel, sorted } from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
 import { renderNamespaces } from "./namespaces.mjs";
+import { renderSecrets } from "./secrets.mjs";
 
 const app = document.querySelector("#app");
 const lifetime = createViewLifetime();
@@ -550,7 +551,7 @@ function clearRetainedViewsOutsideNamespaces(readable) {
 }
 
 function clearPasswordInputs() {
-  document.querySelectorAll('input[type="password"]').forEach((input) => {
+  document.querySelectorAll('input[type="password"], [data-secret-value]').forEach((input) => {
     if (input.value) {
       if (mountedViewState) {
         mountedViewState.reusable = false;
@@ -778,6 +779,13 @@ function headerPage(current) {
     return { creating: true };
   }
   return current.agentId ? { agentId: current.agentId } : null;
+}
+
+function collectionPath(feature, selection) {
+  return (
+    { namespaces: "/namespaces", backends: "/backends" }[feature] ??
+    `/namespaces/${encodeURIComponent(selection)}/${feature}`
+  );
 }
 
 function renderShell(
@@ -1500,8 +1508,9 @@ async function loadPage({
       )?.id ??
       null;
     replaceUrl(pageUrl(current.target));
-    const agentsNamespaceUnavailable =
-      current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
+    const scopedNamespaceUnavailable =
+      ["agents", "secrets"].includes(current.feature) &&
+      !namespaces.some((item) => item.id === namespaceId);
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
       // Namespace admission is done, so the header selector, when the shown page has one, is
       // usable while the destination's first read runs. A switch resets the lifetime, discarding
@@ -1520,11 +1529,11 @@ async function loadPage({
     // an unknown answer (a failed read) keeps the controls.
     const permissionsPath = `/namespaces/${encodeURIComponent(namespaceId)}/permissions`;
     const permissionsRead =
-      !agentsNamespaceUnavailable && current.feature === "agents" && !current.agentId
+      !scopedNamespaceUnavailable && current.feature === "agents" && !current.agentId
         ? request(permissionsPath).catch(() => null)
         : null;
     let firstPermissions = null;
-    if (!agentsNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
+    if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (current.agentId) {
         firstAgent = await request(
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
@@ -1533,11 +1542,7 @@ async function loadPage({
         firstItems =
           current.feature === "namespaces"
             ? namespaces
-            : await request(
-                current.feature === "backends"
-                  ? "/backends"
-                  : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-              );
+            : await request(collectionPath(current.feature, namespaceId));
       }
       if (!lifetime.isCurrent(active)) {
         return;
@@ -1551,7 +1556,7 @@ async function loadPage({
     }
     const retainedState = retainedView?.state;
     let unchanged = false;
-    if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
+    if (retained && reuseView && retainedState && !scopedNamespaceUnavailable) {
       const fresh = new Map([["/namespaces", namespaces]]);
       if (firstAgent) {
         fresh.set(
@@ -1559,12 +1564,7 @@ async function loadPage({
           firstAgent,
         );
       } else if (firstItems && current.feature !== "namespaces") {
-        fresh.set(
-          current.feature === "backends"
-            ? "/backends"
-            : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          firstItems,
-        );
+        fresh.set(collectionPath(current.feature, namespaceId), firstItems);
       }
       if (firstPermissions !== null) {
         fresh.set(permissionsPath, firstPermissions);
@@ -1619,7 +1619,7 @@ async function loadPage({
     if (
       retained &&
       reuseView &&
-      !agentsNamespaceUnavailable &&
+      !scopedNamespaceUnavailable &&
       (document.activeElement === document.body ||
         (heldHeading !== null && document.activeElement === heldHeading))
     ) {
@@ -1661,7 +1661,7 @@ async function loadPage({
     // so nothing is focused twice (finding 1528). A fresh load whose reads beat the loading
     // delay has no shell yet: its startup status stands in, until the overview reveals or the
     // delay passes and the loading page takes its place (finding 1537).
-    const agentEntry = current.agentId && !current.creating && !agentsNamespaceUnavailable;
+    const agentEntry = current.agentId && !current.creating && !scopedNamespaceUnavailable;
     const startupStandIn =
       agentEntry && !shell && loadingTimer !== null ? app.querySelector(":scope > .startup") : null;
     const standIn =
@@ -1766,7 +1766,7 @@ async function loadPage({
       markMountedRoute(current);
       return;
     }
-    if (agentsNamespaceUnavailable) {
+    if (scopedNamespaceUnavailable) {
       clearRetainedViewsForNamespace(namespaceId);
       panel(
         shell.view,
@@ -1859,8 +1859,8 @@ async function loadPage({
       // Painted without the permissions answer: a return reads it again instead of reusing this.
       viewState.reusable = false;
     }
-    if (current.creating || (current.feature === "agents" && !current.agentId)) {
-      // The Agents list and Create Agent show the selected Namespace's status (finding 1895), so a
+    if (current.creating || (["agents", "secrets"].includes(current.feature) && !current.agentId)) {
+      // The Agent and Secret pages show the selected Namespace's status (finding 1895), so a
       // return rebuilds them when it changed. Other Namespaces' changes keep the view.
       const shownNamespace = namespaceId;
       const shownStatus = agentContext.namespace?.status;
@@ -2002,14 +2002,7 @@ async function loadPage({
     if (!Array.isArray(items)) {
       throw new Error("Invalid collection response");
     }
-    viewState.reads.set(
-      current.feature === "namespaces"
-        ? "/namespaces"
-        : current.feature === "backends"
-          ? "/backends"
-          : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-      JSON.stringify(items),
-    );
+    viewState.reads.set(collectionPath(current.feature, namespaceId), JSON.stringify(items));
     if (current.feature === "agents") {
       renderAgentList({ ...agentContext, items, permissions: firstPermissions });
       showChatLinkFailure(shell.view, chatLinkFailure);
@@ -2019,6 +2012,8 @@ async function loadPage({
         items,
         renderRows,
       );
+    } else if (current.feature === "secrets") {
+      renderSecrets({ ...agentContext, items });
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;

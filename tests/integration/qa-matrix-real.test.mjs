@@ -144,6 +144,18 @@ test(
                 }
                 const scenarios = [
                   [
+                    "console-secrets",
+                    async (agent, step) => {
+                      await step(
+                        "console Secret lifecycle and Agent Configuration references",
+                        async () => {
+                          assert.ok(browser, "blocked by browser setup failure");
+                          await browser.verifySecrets(agent);
+                        },
+                      );
+                    },
+                  ],
+                  [
                     "model-ui",
                     async (agent, step) => {
                       await step(

@@ -2033,12 +2033,42 @@ export function installFixture(scenario, evidence) {
           return error(404);
         }
         if (method === "GET") {
-          return response(structuredClone(secret));
+          return response({
+            ...structuredClone(secret),
+            consumers: structuredClone(
+              scenario.secretConsumers ?? {
+                agents: [],
+                configurations: [],
+                credentialSources: [],
+                provisioningRequests: [],
+                unreadable: 0,
+                truncated: false,
+              },
+            ),
+          });
         }
         if (method === "PATCH") {
-          const updated = { ...secret, name: body.name ?? secret.name };
+          const updated = { ...secret };
           secrets.set(id, updated);
           return response(structuredClone(updated));
+        }
+        if (method === "DELETE") {
+          const consumers = scenario.secretConsumers;
+          if (
+            consumers &&
+            (consumers.unreadable ||
+              consumers.truncated ||
+              [
+                consumers.agents,
+                consumers.configurations,
+                consumers.credentialSources,
+                consumers.provisioningRequests,
+              ].some((ids) => ids.length))
+          ) {
+            return response(undefined, 409, "RESOURCE_CONFLICT");
+          }
+          secrets.delete(id);
+          return new Response(null, { status: 204 });
         }
       }
     }

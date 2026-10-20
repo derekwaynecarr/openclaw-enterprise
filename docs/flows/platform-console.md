@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-10-20
-last_updated_session: authoring-run/e988d724-dd95-4e63-a711-5fd44393f211
+last_updated_session: authoring-run/9b10a6df-a6ce-4d38-859d-480a59d95cf0
 ---
 
 # Platform console request flow
@@ -40,6 +40,7 @@ graph TD
     DBG --> F
     D --> E["Request current page resource"]
     E --> NC["Create Namespace"]
+    E --> SEC["Manage Namespace Secret metadata and values"]
     E --> E1["Edit starter JSON and select associations"]
     E1 --> S1["Select Secret or open creation modal"]
     S1 -->|select| S3["Stage binding until Apply"]
@@ -56,6 +57,10 @@ graph TD
     NC --> NPOST["POST authorizes, persists and queues provisioning"]
     S1 -->|create| S2["POST stores Namespace Secret immediately"]
     S2 --> S3
+    SEC --> SAPI["Authorize Secret list, read, create, replace or delete"]
+    SAPI -->|metadata or confirmed mutation| I
+    SAPI -->|unconfirmed write| SU["Erase input and block resubmission"]
+    SU -->|manual inspection| SEC
     E1 -->|draft runtime| M1["POST creates Configuration with staged bindings"]
     E1 -->|supported Dedicated and valid repository selection| M3["POST queues provisioning with inline Configuration"]
     M3 --> M4["Worker creates resources, grants and first deployment"]
@@ -180,12 +185,28 @@ to Agents; global pages remain open; recovered warnings disappear.
 
 `packages/occ/src/index.ts:OpenClawController.listNamespaces`, `listAgents`
 
-Agents use the selected Namespace's route. OCC authorizes Namespace reads and
+Agents and Secrets use the selected Namespace's route. OCC authorizes Namespace reads and
 filters Agents by exact read permission; Namespace listing filters its
 Installation-wide collection. No readable selection means no Agent request.
 `GET /backends` ignores selection and requires Installation `administer` before
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
+
+`apps/controller/src/console/secrets.mjs:renderSecrets` lists metadata and reads
+the exact Secret's `consumers` before showing actions. Agent IDs link to their
+pages; hidden counts and truncation remain visible. Known references disable
+Delete; the server rechecks references on submission. Create and replacement
+wait for Namespace readiness. Each mutation uses the tracked request client and
+the existing Secret API; no browser code calls a Driver directly.
+
+`secrets.mjs:editValue` masks new input, preserves whitespace, and clears it after
+the request or dismissal. `console.mjs:clearPasswordInputs` also clears marked
+Secret inputs before retaining a view. Pending requests block navigation and
+dismissal. A denied write disables submission; an unconfirmed write cannot be
+replayed from that dialog. `secrets.mjs:confirmDelete` offers an explicit exact
+status read after an uncertain delete; a denial never confirms removal.
+Replacement hands delivery to explicit Agent deployment or CredentialSource
+update under the [Secret delivery contract](../reference/drivers/kubernetes-secret.md#update-and-redeploy).
 
 `apps/controller/src/console/namespaces.mjs:renderNamespaces` sends Name-rule-valid names
 through tracked `POST /namespaces`; `OpenClawController.createNamespace` authorizes
@@ -313,6 +334,10 @@ refresh and inspection.
   They verify navigation, isolation, creation, draft/history/channel editing, and
   authentication, not PostgreSQL persistence, Backend health, runtime dispatch,
   worker leases, or Compute effects.
+- `node --test tests/browser/console-secrets.test.mjs` exercises Secret mutation,
+  Agent references, denials, and lost replies with passive test Secret storage.
+  The `console-secrets` [QA scenario](../testing/ci.md#qa-matrix) selects real
+  shipped storage; it requires the documented runtime and credential setup.
 - API tests cover safe discovery, permission boundaries, empty versus missing
   wiring, static MIME/allowlisting, and unchanged API JSON errors. See
   [Testing](../testing/README.md) for commands and the image smoke boundary.
@@ -333,6 +358,8 @@ refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-20 15:53: Add Namespace Secret management and uncertain-write recovery in the accompanying console change. (authoring-run/9b10a6df-a6ce-4d38-859d-480a59d95cf0 - e8185dac8)
 
 - 2026-10-20 05:00: Move the Create Agent form trace to [Agent creation](platform-console/agent-creation.md). (docs-split-1020)
 - 2026-10-19 15:16: Namespace creation and recovery. (authoring-run/e988d724-dd95-4e63-a711-5fd44393f211 - 141515257737cccdb75137fabbeec707915856af)

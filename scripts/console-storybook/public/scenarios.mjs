@@ -413,6 +413,171 @@ const shareExistingPerson = [
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
 export const scenarios = {
+  secrets: {
+    group: "Pages/Secrets",
+    name: "Populated",
+    path: "/console/secrets",
+    description:
+      "Namespace Secret metadata. Search by name or ID; values are never returned. Simulated UI proof.",
+    steps: [
+      "Create a Secret with a dummy value, replace it, then delete it. Switch Namespace to inspect isolation in navigation.",
+    ],
+  },
+  secretsMobile: {
+    group: "Pages/Secrets",
+    name: "Mobile",
+    path: "/console/secrets",
+    mobile: true,
+    description: "The Secret list and dialogs at phone width. Simulated UI proof.",
+  },
+  secretsEmpty: {
+    group: "Pages/Secrets",
+    name: "Empty",
+    path: "/console/secrets",
+    emptySecrets: true,
+    description: "An authorized list without Secrets offers creation.",
+  },
+  secretsLoading: {
+    group: "Pages/Secrets",
+    name: "Loading",
+    path: "/console/secrets",
+    rules: [{ path: presetSecretsPath, hold: true }],
+    description: "Namespace admission succeeds while the Secret list is still loading.",
+  },
+  secretsUnavailable: {
+    group: "Pages/Secrets",
+    name: "Read unavailable",
+    path: "/console/secrets",
+    rules: [{ path: presetSecretsPath, status: 503 }],
+    description: "A failed Secret collection read shows recovery, with no stale rows.",
+  },
+  secretsNoNamespace: {
+    group: "Pages/Secrets",
+    name: "No readable Namespace",
+    path: "/console/secrets",
+    emptyNamespaces: true,
+    description: "Secret requests require an admitted Namespace selection.",
+  },
+  secretsNamespaceNotReady: {
+    group: "Pages/Secrets",
+    name: "Namespace provisioning",
+    path: "/console/secrets",
+    namespaceStatus: "provisioning",
+    description: "Metadata stays readable; creation and replacement wait for Namespace readiness.",
+  },
+  secretsCreate: {
+    group: "Pages/Secrets",
+    name: "Create",
+    path: "/console/secrets",
+    actions: [click("Create Secret")],
+    description:
+      "A name and masked value. Whitespace is preserved; Show value reveals only the value just entered.",
+  },
+  secretsMissingValue: {
+    group: "Pages/Secrets",
+    name: "Missing value",
+    path: "/console/secrets",
+    actions: [
+      click("Create Secret"),
+      { selector: "#secret-name", value: "Team API key" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description: "Required-value errors remain beside their field; no request is sent.",
+  },
+  secretsCreateDenied: {
+    group: "Pages/Secrets",
+    name: "Create denied",
+    path: "/console/secrets",
+    denySecretCreate: true,
+    actions: [
+      click("Create Secret"),
+      { selector: "#secret-name", value: "Team API key" },
+      { selector: "#secret-value", value: "synthetic-story-value" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "The API refuses creation, clears the entered value and disables the refused write.",
+  },
+  secretsUnknownSave: {
+    group: "Pages/Secrets",
+    name: "Unknown save outcome",
+    path: "/console/secrets",
+    rules: [{ path: presetSecretsPath, method: "POST", bodyError: true }],
+    actions: [
+      click("Create Secret"),
+      { selector: "#secret-name", value: "Team API key" },
+      { selector: "#secret-value", value: "synthetic-story-value" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "An unreadable reply leaves the outcome unknown. The value is erased and this dialog cannot resubmit.",
+  },
+  secretsConsumers: {
+    group: "Pages/Secrets",
+    name: "Consumers and restricted references",
+    path: "/console/secrets",
+    secretConsumers: {
+      agents: ["agt_00000000-0000-4000-8000-000000000001"],
+      configurations: ["cfg_00000000-0000-4000-8000-000000000001"],
+      credentialSources: [],
+      provisioningRequests: [],
+      unreadable: 2,
+      truncated: true,
+    },
+    actions: [click("Demo model API key (simulated)")],
+    description:
+      "Agent links, other consumer IDs, unreadable counts and incomplete results. Known consumers block deletion. Simulated UI proof only.",
+  },
+  secretsReplace: {
+    group: "Pages/Secrets",
+    name: "Replace value",
+    path: "/console/secrets",
+    actions: [click("Demo model API key (simulated)"), click("Replace value")],
+    description:
+      "Replacement preserves the reference and explains deployment and CredentialSource handoff. Existing values are never loaded.",
+  },
+  secretsReplaceDenied: {
+    group: "Pages/Secrets",
+    name: "Replace denied",
+    path: "/console/secrets",
+    rules: [{ suffix: "/secrets/sec_demo_model", method: "PATCH", status: 403, code: "FORBIDDEN" }],
+    actions: [
+      click("Demo model API key (simulated)"),
+      click("Replace value"),
+      { selector: "#secret-value", value: "synthetic-story-value" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description: "A denied replacement clears the entered value and disables further submission.",
+  },
+  secretsDelete: {
+    group: "Pages/Secrets",
+    name: "Delete confirmation",
+    path: "/console/secrets",
+    actions: [click("Demo model API key (simulated)"), click("Delete Secret")],
+    description:
+      "Permanent storage deletion requires confirmation and explains upstream revocation and previously delivered values.",
+  },
+  secretsDeleteConflict: {
+    group: "Pages/Secrets",
+    name: "Concurrent reference conflict",
+    path: "/console/secrets",
+    rules: [
+      {
+        suffix: "/secrets/sec_demo_model",
+        method: "DELETE",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+      },
+    ],
+    actions: [
+      click("Demo model API key (simulated)"),
+      click("Delete Secret"),
+      click("Permanently delete Secret"),
+    ],
+    description:
+      "A newly added reference can refuse deletion after the detail read. Reopen the detail to inspect current consumers.",
+  },
+
   runtimeImages: {
     group: "Pages/Navigation",
     name: "Debug runtime images",
