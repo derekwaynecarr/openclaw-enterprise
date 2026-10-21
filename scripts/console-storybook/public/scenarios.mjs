@@ -472,6 +472,10 @@ export const scenarios = {
     actions: [click("Create Secret")],
     description:
       "A name and masked value. Whitespace is preserved; Show value reveals only the value just entered.",
+    steps: [
+      "Enter a name and a dummy value. Use Show value beside the Value label, then hide it again.",
+      "Press Enter from Secret name to submit. After the save, Close is the only dialog action.",
+    ],
   },
   secretsMissingValue: {
     group: "Pages/Secrets",

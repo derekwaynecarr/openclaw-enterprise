@@ -123,9 +123,10 @@ export function renderSecrets(context) {
     const body = element("div");
     const notice = element("div");
     const close = button("Close", closeModal);
-    const current = { dialog, body, heading, feedback: notice, close, pending: false };
+    const actions = element("div", { className: "dialog-actions" }, close);
+    const current = { dialog, body, heading, feedback: notice, close, actions, pending: false };
     modal = current;
-    dialog.append(heading, body, notice, element("div", { className: "dialog-actions" }, close));
+    dialog.append(heading, body, notice, actions);
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
       closeModal();
@@ -293,7 +294,7 @@ export function renderSecrets(context) {
     replace.disabled = !ready;
     const remove = button("Delete Secret", () => confirmDelete(detail), { tone: "danger" });
     remove.disabled = referenced;
-    current.body.append(element("div", { className: "form-actions" }, replace, remove));
+    current.actions.append(replace, remove);
   }
 
   function editValue(secret = null) {
@@ -348,16 +349,18 @@ export function renderSecrets(context) {
         reveal.textContent = masked ? "Show value" : "Hide value";
         reveal.setAttribute("aria-pressed", String(!masked));
       },
-      { tone: "ghost", size: "sm", "aria-pressed": "false" },
+      { tone: "ghost", size: "sm", "aria-pressed": "false", "aria-controls": value.id },
     );
-    const submit = element(
-      "button",
-      { type: "submit", className: "button button--primary" },
-      replacing ? "Replace value" : "Create Secret",
-    );
+    const valueField = field({
+      label: "Value",
+      control: value,
+      help: "Whitespace is preserved. The value cannot be read back.",
+      className: "secret-value-field",
+    });
+    value.before(reveal);
     const form = element(
       "form",
-      { novalidate: "" },
+      { id: "secret-value-form", novalidate: "" },
       replacing
         ? element("p", {}, `Secret: ${secret.name} · ${secret.id}`)
         : field({
@@ -365,16 +368,16 @@ export function renderSecrets(context) {
             control: name,
             help: "Unique within this Namespace. Names cannot be changed.",
           }),
-      field({
-        label: "Value",
-        control: value,
-        help: "Whitespace is preserved. The value cannot be read back.",
-      }),
-      reveal,
+      valueField,
       replacing ? element("p", { className: "muted" }, REPLACEMENT_NOTICE) : null,
-      element("div", { className: "form-actions" }, submit),
+    );
+    const submit = element(
+      "button",
+      { type: "submit", form: form.id, className: "button button--primary" },
+      replacing ? "Replace value" : "Create Secret",
     );
     current.body.append(form);
+    current.actions.append(submit);
     (replacing ? value : name).focus();
     let unknown = false;
     form.addEventListener("submit", async (event) => {
@@ -407,6 +410,7 @@ export function renderSecrets(context) {
           return;
         }
         value.value = "";
+        submit.remove();
         current.heading.textContent = replacing ? "Secret value replaced" : "Secret created";
         current.body.replaceChildren(
           statusBlock(
@@ -479,7 +483,7 @@ export function renderSecrets(context) {
       ),
     );
     const confirm = button("Permanently delete Secret", () => void remove(), { tone: "danger" });
-    current.body.append(element("div", { className: "form-actions" }, confirm));
+    current.actions.append(confirm);
     current.close.focus();
     let unknown = false;
     async function remove() {
@@ -498,6 +502,7 @@ export function renderSecrets(context) {
         }
         items = items.filter((item) => item.id !== secret.id);
         renderList();
+        confirm.remove();
         current.heading.textContent = "Secret deleted";
         current.body.replaceChildren(statusBlock("success", null, "The Secret was deleted."));
       } catch (error) {
@@ -538,6 +543,7 @@ export function renderSecrets(context) {
       }
       current.pending = true;
       current.close.disabled = true;
+      confirm.remove();
       current.feedback.replaceChildren(statusBlock("info", null, "Checking Secret status…"));
       try {
         const detail = await context.request(exactPath(secret.id));
