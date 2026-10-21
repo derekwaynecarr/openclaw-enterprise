@@ -194,16 +194,18 @@ test("unknown console Secret writes erase entered material and never replay muta
   );
 });
 
-test("console Secret denial and a concurrent new Agent reference preserve server authority", async (t) => {
+test("console Secret writes honor read-only access, revocation and a new Agent reference", async (t) => {
   const audit = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink: audit });
+  const storage = createTestSecretDriver();
+  const fixture = await createConsoleAppFixture(t, {
+    auditSink: audit,
+    secretDriver: storage,
+    provisionedPeople: ["secret-reader"],
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Restricted operations", { ready: true });
-  const secret = await fixture.createSecret(
-    namespace.id,
-    "Shared credential",
-    "synthetic-restricted-value",
-  );
+  const original = "synthetic-restricted-value";
+  const secret = await fixture.createSecret(namespace.id, "Shared credential", original);
   const privateSecret = await fixture.createSecret(
     namespace.id,
     "Private consumers",
@@ -215,24 +217,29 @@ test("console Secret denial and a concurrent new Agent reference preserve server
     {},
     { harnessAuth: { method: "api_key", source: privateSecret.ref } },
   );
-  const member = await fixture.createAccountWithPolicy("secret-reader", (principal) => {
-    const roleId = "secret-reader";
-    fixture.policy.roles.push({
-      id: roleId,
-      namespaceId: namespace.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "secret" },
-      ],
+  const [member] = fixture.provisionedAccounts;
+  const iam = `/namespaces/${namespace.id}/iam`;
+  async function grant(action, resourceKind, resourceId) {
+    const role = await fixture.request("POST", `${iam}/roles`, {
+      body: { permissions: [{ action, resourceKind }] },
     });
-    fixture.policy.bindings.push({
-      id: "secret-reader-binding",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId,
+    assert.equal(role.status, 201, JSON.stringify(role.body));
+    const bindings = `${iam}/access-bindings`;
+    const binding = await fixture.request("POST", bindings, {
+      body: {
+        subjectKind: "identity",
+        subjectId: member.principal.id,
+        roleId: role.data.id,
+        resourceKind,
+        resourceId,
+      },
     });
-  });
+    assert.equal(binding.status, 201, JSON.stringify(binding.body));
+    return `${bindings}/${binding.data.id}`;
+  }
+  await grant("read", "namespace", namespace.id);
+  await grant("read", "secret", privateSecret.id);
+  await grant("read", "secret", secret.id);
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, secretsUrl(namespace), member.credentials);
   await page.getByRole("button", { name: privateSecret.name, exact: true }).click();
@@ -244,26 +251,80 @@ test("console Secret denial and a concurrent new Agent reference preserve server
     true,
   );
   await privateDetail.getByRole("button", { name: "Close" }).click();
-  await page.getByRole("button", { name: secret.name, exact: true }).click();
-  await dialog(page, secret.name)
-    .getByRole("button", { name: "Replace value", exact: true })
-    .click();
-  const replace = dialog(page, "Replace Secret value");
-  await replace.getByLabel("Value", { exact: true }).fill("synthetic-denied-replacement");
-  await replace.getByRole("button", { name: "Replace value", exact: true }).click();
-  await replace.getByText(/Your access does not include/).waitFor();
-  assert.equal(
-    await replace.getByRole("button", { name: "Replace value", exact: true }).isDisabled(),
-    true,
-  );
-  assert.equal(await replace.getByLabel("Value", { exact: true }).inputValue(), "");
-  assert.ok(
-    audit
-      .list()
-      .some((event) => event.outcome === "denied" && event.actorId === member.principal.id),
-  );
 
-  await replace.getByRole("button", { name: "Close" }).click();
+  // Match the browser's 403 to the exact IAM denial. A denial returned after a storage
+  // side effect would still look correct in the dialog, even if the write were then undone.
+  const form = page.getByRole("dialog");
+  const value = form.getByLabel("Value", { exact: true });
+  const collection = fixture.origin + secretPath(namespace);
+  async function expectDenied(name, method, action, storedValue = original) {
+    const creating = action === "create";
+    const url = creating ? collection : `${collection}/${secret.id}`;
+    const callCount = storage.calls.length;
+    const response = page.waitForResponse(
+      (result) => result.url() === url && result.request().method() === method,
+    );
+    const submit = form.getByRole("button", { name, exact: true });
+    await submit.click();
+    const refused = await response;
+    assert.equal(refused.status(), 403);
+    const { error, meta } = await refused.json();
+    assert.equal(error.code, "FORBIDDEN");
+    const denial = audit
+      .list()
+      .find((event) => event.requestId === meta.requestId && event.outcome === "denied");
+    assert.deepEqual(denial?.authorization, {
+      principalId: member.principal.id,
+      action,
+      resource: {
+        kind: "secret",
+        id: creating ? namespace.id : secret.id,
+        namespaceId: namespace.id,
+      },
+    });
+    assert.equal(
+      storage.calls.length,
+      callCount,
+      "a denied write must not reach the Secret Driver",
+    );
+    assert.equal(storage.valueFor(secret), storedValue);
+    await form.getByText(/Your access does not include/).waitFor();
+    assert.equal(await submit.isDisabled(), true);
+    if (method !== "DELETE") {
+      assert.equal(await value.inputValue(), "");
+    }
+    await form.getByRole("button", { name: "Close" }).click();
+  }
+  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await form.getByLabel("Secret name").fill("Reader cannot create this");
+  await value.fill("synthetic-denied-create");
+  await expectDenied("Create Secret", "POST", "create");
+
+  async function openAction(name) {
+    await page.getByRole("button", { name: secret.name, exact: true }).click();
+    await dialog(page, secret.name).getByRole("button", { name, exact: true }).click();
+  }
+  await openAction("Replace value");
+  await value.fill("synthetic-denied-replacement");
+  await expectDenied("Replace value", "PATCH", "update");
+  await openAction("Delete Secret");
+  await expectDenied("Permanently delete Secret", "DELETE", "delete");
+
+  // This member can now replace this Secret. Remove just that grant while the next edit is
+  // open: the same session and Secret must use the permission in effect when Save is pressed.
+  const updateGrant = await grant("update", "secret", secret.id);
+  const allowed = "synthetic-authorized-replacement";
+  await openAction("Replace value");
+  await value.fill(allowed);
+  await form.getByRole("button", { name: "Replace value", exact: true }).click();
+  await dialog(page, "Secret value replaced").getByRole("button", { name: "Close" }).click();
+  assert.equal(storage.valueFor(secret), allowed);
+
+  await openAction("Replace value");
+  await value.fill("synthetic-revoked-replacement");
+  assert.equal((await fixture.request("DELETE", updateGrant)).status, 204);
+  await expectDenied("Replace value", "PATCH", "update", allowed);
+
   // Return to an administrator and read an unreferenced Secret, then race a valid Agent
   // binding against its confirmation. The DELETE route must recheck dependencies.
   await page.context().clearCookies();
