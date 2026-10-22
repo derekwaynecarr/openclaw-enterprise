@@ -190,6 +190,8 @@ export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers
 
 export const PolicyDenials = story("policyDenials");
 export const PolicyUnicodeExecutable = story("policyUnicodeExecutable");
+export const PolicyDenialsMany = story("policyDenialsMany");
+export const PolicyRulesPopulated = story("policyRulesPopulated");
 export const PolicyDenialsEmpty = story("policyDenialsEmpty");
 export const PolicyDenialsDisabled = story("policyDenialsDisabled");
 export const PolicyDenialsUnsupported = story("policyDenialsUnsupported");
