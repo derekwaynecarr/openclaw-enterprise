@@ -8668,6 +8668,9 @@ for (const [id, state, name] of [
     ...(state === "discoveryDenied"
       ? { rules: [{ suffix: "/driver-configurations", status: 403 }] }
       : {}),
+    ...(state === "editDenied"
+      ? { rules: [{ method: "PATCH", suffix: "/sandbox-policy/networking/editing", status: 403 }] }
+      : {}),
     ...(state === "stalePreview" ? { rules: [{ suffix: "/validate", delayMs: 3000 }] } : {}),
     description:
       "Observed denial records, aggregated provider suggestions, and governed policy additions remain distinct.",
@@ -8675,7 +8678,7 @@ for (const [id, state, name] of [
       "Expand a denial to inspect the sanitized log. Review its exact executable and endpoint before saving an addition.",
       "Select denial rows across pages, then Allow selected. Confirm the validated proposal retains existing rules and combines repeated executable/host/port requests. Back to editing preserves the draft.",
       "Open Manage rules. Search the five-row pages, use a row menu to edit or remove a rule, or Add rule. Compare Save for later with Save and apply to current revision. Apply saved policy is unavailable while a proposal has unsaved edits.",
-      "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
+      "Use the Policy editing switch in the Network policy card on the page. Open Manage rules and confirm the editing toggle is absent, saved rules remain, and Add rule follows the editing setting. Close the dialog to re-enable editing. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
     ],
     gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
     ...(state === "unicode"
@@ -8683,8 +8686,8 @@ for (const [id, state, name] of [
           description:
             "A normalized executable path has 281 Unicode code points and 551 UTF-16 code units, within the API schema's 512-code-point limit.",
           steps: [
-            "Copy the full executable path from Installation delegation ceiling. Choose Review suggestion, then paste the copied path into Executable path. Confirm the value still ends with /tool.",
-            "Choose Review changes. Confirm the complete executable path, including /tool, appears in Proposed rules. Choose Save and confirm policy v2 keeps that same path while the current revision stays unchanged.",
+            "Open View network limits and copy the full executable path from the Installation ceiling. Close the dialog, choose Review suggestion, then paste the copied path into Executable path. Confirm the value still ends with /tool.",
+            "Choose Review changes. Confirm the complete executable path, including /tool, appears in Proposed rules. Choose Save for later and confirm policy v2 keeps that same path while the current revision stays unchanged.",
             "Reset the story to repeat. The six directory components each contain 45 Deseret letters (U+10400); the path is 1091 UTF-8 bytes.",
           ],
           gap: "Simulated UI proof only. This story does not validate a real executable, save to OCC, apply OpenShell policy or start a workload.",
@@ -8785,3 +8788,53 @@ for (const [id, source, name, theme] of [
       "Deployment branding from the production theme loader. Resource, session, and runtime states are simulated.",
   };
 }
+
+const policySuggestions = Array.from({ length: 12 }, (_, index) => ({
+  id: `suggested-${index}`,
+  status: "pending",
+  observations: 12 - index,
+  grant: {
+    id: `suggested-rule-${index}`,
+    binary: "/usr/bin/python3.11",
+    host: `service-${index + 1}.example.org`,
+    ports: [{ from: 443, to: 443 }],
+  },
+}));
+for (const [id, outcome, name] of [
+  ["policySuggestionsExpanded", undefined, "Twelve suggestions with compact review"],
+  ["policySavedForLater", "saved", "Saved rules awaiting application"],
+  ["policyApplying", "pending", "Waiting for Sandbox confirmation"],
+  ["policyApplied", "applied", "Confirmed running policy"],
+  ["policyRetryApplication", "failed", "Inspect then retry unconfirmed application"],
+]) {
+  scenarios[id] = {
+    ...scenarios.policyRulesPopulated,
+    name,
+    policySuggestions,
+    policyInitialOutcome: outcome,
+    policyKeepPending: outcome === "pending",
+    policyNewDenials: 0,
+    steps: [
+      "Inspect three suggestions, show all twelve, then show fewer. Expand a full executable path.",
+      "Open View network limits directly from the page. The ceiling is read-only and grants no access.",
+      "Manage rules: inspect five at a time. Remove a rule and review through the fixed footer. Done preserves the local proposal without saving.",
+      "For failed application, Refresh status reads without applying. Retry application is a separate explicit action after inspection.",
+    ],
+  };
+}
+scenarios.policyDenialsDisabled = {
+  ...scenarios.policyDenialsDisabled,
+  policyRuleCount: 10,
+  policySuggestions,
+};
+scenarios.policyEditingAdminDenied = {
+  ...scenarios.policyDenialsDisabled,
+  name: "Editing administration refused",
+  policyAdminDenied: true,
+};
+scenarios.policyNoNetworkLimits = {
+  ...scenarios.policyDenialsDisabled,
+  name: "No additional network access delegated",
+  policyRuleCount: 0,
+  policyCeiling: [],
+};

@@ -123,6 +123,7 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
   // The list names the setting as a dotted path, as the API's refusals do, never a JSON pointer
   // (finding 2538).
   await page
+    .locator(".sandbox-policy-form")
     .getByText(`Configuration setting additions[0]: ${GRANT_EXCEEDS_CEILING}`, { exact: true })
     .waitFor();
   assert.equal(await page.getByText(/^\/additions/).count(), 0);
@@ -239,7 +240,7 @@ test("A refused policy editing change says who can change it", async (t) => {
       response.url().endsWith(`/agents/${agent.id}/sandbox-policy/networking/editing`) &&
       response.request().method() === "PATCH",
   );
-  await tab.getByRole("button", { name: "Disable policy editing", exact: true }).click();
+  await tab.getByRole("switch", { name: "Policy editing", checked: true }).click();
   assert.equal((await refused).status(), 403);
   await tab.getByText(POLICY_EDITING_SETTING_REFUSED, { exact: true }).waitFor();
 });
@@ -334,7 +335,7 @@ test("A policy read grant after the page loaded shows the policy on the first vi
   role.permissions.push({ action: "read", resourceKind: "sandbox_policy" });
   await page.getByRole("tab", { name: "Policy denials", exact: true }).click();
   const tab = page.locator(".sandbox-policy");
-  await tab.getByText(/^Policy v\d+ · Editing/).waitFor();
+  await tab.getByText("0 explicit rules", { exact: true }).waitFor();
   await settlePageRequests(page);
   assert.equal(await tab.getByText(/Your access does not include reading/).count(), 0);
   assert.equal(
@@ -363,24 +364,17 @@ test("Policy denials on the draft says where denials and suggestions come from",
     }
     assert.equal(await tab.getByRole("checkbox", { name: "Follow policy denials" }).count(), 0);
     assert.equal(await tab.getByRole("searchbox", { name: "Filter loaded denials" }).count(), 0);
-    // No empty band where the rows would be: only the grid gap and the two elements' own margins
-    // separate the reason from the suggestions card (finding 2522).
-    assert.equal(await tab.locator(".sandbox-decisions").isVisible(), false);
-    const band = await tab.evaluate((section) => {
-      const style = (node) => globalThis.getComputedStyle(node);
-      const reason = [...section.children].find((node) =>
-        node.textContent?.startsWith("Policy denials come from deployed versions."),
-      );
-      const card = section.querySelector(":scope > .agent-card");
-      return {
-        expected:
-          Number.parseFloat(style(section).rowGap) +
-          Number.parseFloat(style(reason).marginBottom) +
-          Number.parseFloat(style(card).marginTop),
-        space: card.getBoundingClientRect().top - reason.getBoundingClientRect().bottom,
-      };
-    });
-    assert.ok(Math.abs(band.space - band.expected) < 1, JSON.stringify(band));
+    // Suggestions now precede the log. With no deployed source, the log retains only its
+    // heading and explanation; hidden window controls must not reserve space below it.
+    for (const selector of [
+      ".sandbox-decisions",
+      ".sandbox-denials-toolbar",
+      ".sandbox-log-pager",
+      ".sandbox-window-details",
+    ]) {
+      const node = tab.locator(selector);
+      assert.equal(await node.isVisible(), false, selector);
+    }
   };
   await tab
     .getByText("Policy denials come from deployed versions. This Agent has no current version.")
@@ -431,9 +425,10 @@ test("Agent policy proposals save separately or save then apply the newly saved 
   await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
   assert.equal(
     await page
-      .getByRole("button", { name: "Apply saved policy to current revision", exact: true })
-      .isDisabled(),
-    true,
+      .getByRole("dialog")
+      .getByRole("button", { name: "Apply saved rules", exact: true })
+      .count(),
+    0,
   );
   // Delay a real successful preview while the user edits; the old response must not replace the draft.
   const preview = await holdRequests(t, page, `${fixture.origin}${base}/validate`, {
@@ -449,7 +444,7 @@ test("Agent policy proposals save separately or save then apply the newly saved 
   );
   preview.release();
   await previewResponse;
-  await page.getByText("Draft changed. Review again before saving.", { exact: true }).waitFor();
+  await page.getByText(/rule change to review/).waitFor();
   assert.equal(await page.getByRole("button", { name: "Save for later", exact: true }).count(), 0);
   assert.equal(
     await page.getByRole("textbox", { name: "Rule ID", exact: true }).inputValue(),
@@ -478,6 +473,9 @@ test("Agent policy proposals save separately or save then apply the newly saved 
 
   // The combined action must submit the accepted version, rather than applying the
   // old saved version while silently leaving a local proposal behind.
+  await page.getByRole("button", { name: "Manage rules", exact: true }).click();
+  await page.getByLabel("Actions for network rule 1", { exact: true }).click();
+  await page.getByRole("button", { name: "Edit rule", exact: true }).click();
   await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill("python-reviewed");
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   await page
@@ -518,7 +516,8 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
-  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
+  await page.getByRole("button", { name: "Manage rules", exact: true }).click();
+  await page.getByRole("button", { name: "Add rule", exact: true }).click();
   await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill(grant.id);
   await page.getByRole("textbox", { name: "Destination hostname", exact: true }).fill(grant.host);
   await page.getByRole("button", { name: "Add Port ranges", exact: true }).click();
@@ -548,7 +547,7 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   const saved = page.waitForResponse(
     (response) => response.request().method() === "PUT" && response.url().endsWith(base),
   );
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("button", { name: "Save for later", exact: true }).click();
   assert.equal((await saved).status(), 200);
   await page.getByText(/Policy v2 saved\. The current revision is unchanged\./).waitFor();
   const persisted = (await fixture.request("GET", base)).data.policy;
@@ -568,6 +567,9 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   // Keep the schema owner's limit: exceeding 512 code points is an explicit
   // validation refusal, not a truncated input or a second saved policy.
   const tooLong = grant.binary + "a".repeat(232);
+  await page.getByRole("button", { name: "Manage rules", exact: true }).click();
+  await page.getByLabel("Actions for network rule 1", { exact: true }).click();
+  await page.getByRole("button", { name: "Edit rule", exact: true }).click();
   await executable.click();
   await executable.press("ControlOrMeta+A");
   await page.keyboard.insertText(tooLong);
@@ -634,13 +636,13 @@ test("Agent policy under protected execution offers only removal of saved networ
     .waitFor();
   // Neither adding a rule nor widening a saved rule is available under protected execution.
   assert.equal(
-    await page.getByRole("button", { name: "Add rule", exact: true }).isDisabled(),
-    true,
+    await page.getByRole("button", { name: "Add rule", exact: true }).isVisible(),
+    false,
   );
-  await page.getByLabel("Actions for network rule 1", { exact: true }).click();
-  for (const name of ["Edit rule", "Remove rule"]) {
-    assert.equal(await page.getByRole("button", { name, exact: true }).isDisabled(), true, name);
-  }
+  assert.equal(
+    await page.getByLabel("Actions for network rule 1", { exact: true }).isVisible(),
+    false,
+  );
   const preview = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" && response.url().endsWith(`${base}/validate`),
@@ -695,8 +697,8 @@ test("Agent policy under protected execution offers only removal of saved networ
     0,
   );
   assert.equal(
-    await page.getByRole("button", { name: "Add rule", exact: true }).isDisabled(),
-    true,
+    await page.getByRole("button", { name: "Add rule", exact: true }).isVisible(),
+    false,
   );
 });
 
@@ -800,7 +802,7 @@ test("overlapping policy refreshes retain the newest read and continue pending p
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
   await page.getByRole("button", { name: "Manage rules", exact: true }).click();
-  await page.getByText("Matches saved policy v1.", { exact: false }).waitFor();
+  await page.getByText("Saved rules awaiting application", { exact: false }).waitFor();
   const url = `${fixture.origin}${base}`;
   const first = await holdRequests(t, page, url, { once: true, method: "GET", afterServer: true });
   await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
@@ -825,7 +827,7 @@ test("overlapping policy refreshes retain the newest read and continue pending p
   const secondResponse = page.waitForResponse((response) => response.url() === url);
   second.release();
   await secondResponse;
-  await page.getByText("Matches saved policy v2.", { exact: false }).waitFor();
+  await page.getByText("Saved rules awaiting application", { exact: false }).waitFor();
   await page.getByLabel("Actions for network rule 1", { exact: true }).click();
   await page.getByRole("button", { name: "Edit rule", exact: true }).click();
   assert.equal(
@@ -834,7 +836,8 @@ test("overlapping policy refreshes retain the newest read and continue pending p
   );
 
   await page
-    .getByRole("button", { name: "Apply saved policy to current revision", exact: true })
+    .getByRole("dialog")
+    .getByRole("button", { name: "Apply saved rules", exact: true })
     .click();
   await page.getByText(/Application to the current revision is pending/).waitFor();
   const reads = pathRequests(requests, "GET", base).length;
@@ -879,10 +882,12 @@ for (const c of [
     );
     const { page } = await newPage(t, fixture);
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
-    await page.getByText("Matches saved policy v2.", { exact: false }).waitFor();
+    await page.getByRole("button", { name: "Manage rules", exact: true }).click();
     await page
-      .getByRole("button", { name: "Apply saved policy to current revision", exact: true })
+      .getByRole("dialog", { name: "Manage network rules", exact: true })
+      .getByRole("button", { name: "Apply saved rules", exact: true })
       .click();
+    await page.getByRole("button", { name: "Done", exact: true }).click();
     await page.getByText(/Application to the current revision is pending/).waitFor();
     await page.route(`${fixture.origin}${base}`, async (route) => {
       if (route.request().method() !== "GET") {
@@ -897,11 +902,12 @@ for (const c of [
       await route.fulfill({ response, json: body });
     });
     // The pending application's poll reads the failure.
-    const notice = page.locator(".notice", { hasText: c.text });
+    const notice = page.locator(".sandbox-application-feedback").getByText(c.text, { exact: true });
     await notice.waitFor();
     assert.equal(await notice.textContent(), c.text);
-    // The code stays on the status line beside the failed state.
-    await page.getByText(`Application: failed · ${c.reason} ·`, { exact: false }).waitFor();
+    // The explanation stays prominent; the full reason code is available in Policy details.
+    await page.getByText("Policy details", { exact: true }).click();
+    await page.getByText(new RegExp(`Application: failed .*${c.reason}`)).waitFor();
   });
 }
 

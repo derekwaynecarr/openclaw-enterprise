@@ -160,6 +160,18 @@ policy preserves existing rules and passes the normal preview, save, and apply
 admission. Selecting denials grants no access until the user reviews and saves.
 **Manage rules** searches and pages explicit rules, five at a time, with separate
 controls to edit or remove a rule. Installation defaults stay read-only.
+The **Policy editing** switch sits beside **Manage rules**. With editing off,
+**View rules**, suggestions, and **View network limits** remain available for
+inspection; mutation controls are hidden. The ceiling has a separate read-only
+dialog. **Policy details** on the page shows versions and Installation defaults.
+Suggestions initially show three entries, with an explicit action to show the rest.
+Their executable basenames have expandable full paths. Bulk review shows selected
+record and new-rule counts, repeated requests, and already-covered requests.
+The rule dialog footer offers review for unsaved changes, application for saved
+changes, and **Done** when no action remains. Save feedback distinguishes saved,
+pending, confirmed, and unconfirmed outcomes. **Refresh status** only reads;
+**Retry application** requires an explicit refresh of the failed application and
+rechecks application authority. Neither action starts a deployment.
 
 Provider suggestions use a separate authorized and audited read. OpenShell's
 `GetDraftPolicy` returns aggregated chunks, including its lifecycle and observation

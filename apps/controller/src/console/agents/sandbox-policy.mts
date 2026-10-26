@@ -324,6 +324,17 @@ export function renderAgentSandboxPolicy(
   let editorIndex: number | undefined;
   let editingRules = false;
   let reviewSummary = "";
+  let stagedReview:
+    | {
+        selected: number;
+        fresh: number;
+        repeated: number;
+        covered: number;
+        requests: { grant: SandboxNetworkGrant; count: number; covered: boolean }[];
+      }
+    | undefined;
+  let outcomeRequested = false;
+  let failedApplicationInspected = false;
   const manageButton = button("Manage rules", () => openPolicyDialog());
   function openPolicyDialog(index?: number) {
     dialogInvoker =
@@ -335,6 +346,87 @@ export function renderAgentSandboxPolicy(
       dialog.showModal();
     }
   }
+  const limitsTitle = element("h2", { id: "sandbox-network-limits-title" }, "Network limits");
+  const limitsBody = element("div", { className: "dialog-body sandbox-network-limits-body" });
+  const limitsDialog = element("dialog", {
+    className: "dialog dialog--framed sandbox-network-limits-dialog",
+    "aria-labelledby": limitsTitle.id,
+  });
+  let limitsInvoker: Element | null;
+  limitsDialog.append(
+    element(
+      "div",
+      { className: "dialog-header" },
+      limitsTitle,
+      button("×", () => limitsDialog.close(), {
+        tone: "ghost",
+        "aria-label": "Close network limits",
+      }),
+    ),
+    limitsBody,
+    element(
+      "div",
+      { className: "dialog-actions" },
+      button("Done", () => limitsDialog.close()),
+    ),
+  );
+  dismissOnBackdrop(limitsDialog);
+  limitsDialog.addEventListener("close", () => {
+    if (current()) {
+      const target = limitsInvoker?.isConnected
+        ? limitsInvoker
+        : policySummary.querySelector(".sandbox-network-limits-link");
+      if (target instanceof HTMLElement) {
+        target.focus();
+      }
+    }
+  });
+  function openNetworkLimits() {
+    if (!view) {
+      return;
+    }
+    limitsInvoker = document.activeElement;
+    limitsBody.replaceChildren(
+      element(
+        "p",
+        {},
+        "The Installation ceiling defines the maximum additional network access you can request for this Agent. Ceiling entries do not grant access by themselves.",
+      ),
+      element(
+        "div",
+        { className: "sandbox-limits-heading" },
+        element("h3", {}, "Installation ceiling"),
+        element("span", { className: "badge" }, "Read-only"),
+      ),
+      element(
+        "p",
+        { className: "hint" },
+        "These limits are set by Installation configuration. Turning policy editing on or off does not change them.",
+      ),
+      ...(view.ceiling.length
+        ? [
+            element(
+              "p",
+              { className: "hint" },
+              `${view.ceiling.length} configured ${view.ceiling.length === 1 ? "entry" : "entries"} · Executable, destination and permitted ports`,
+            ),
+            ruleList(view.ceiling),
+          ]
+        : [
+            element(
+              "p",
+              { className: "notice" },
+              "No additional network access is delegated. Agent-specific network rules cannot be added. Installation defaults still apply.",
+            ),
+          ]),
+      element(
+        "p",
+        { className: "hint" },
+        "Policy changes must also meet Agent permissions and execution restrictions.",
+      ),
+    );
+    limitsDialog.showModal();
+  }
   const suggestions = element("section", { className: "agent-card" });
   const logStatus = element("p", { role: "status" }, "Loading policy denials…");
   const logWindowStatus = element("p", { className: "hint" });
@@ -344,7 +436,7 @@ export function renderAgentSandboxPolicy(
   const logRows = element("div", { className: "sandbox-decisions" });
   const logNotices = element("div", { className: "sandbox-log-notices" });
   const logPager = element("div");
-  const selection = element("div", { className: "sandbox-selection" });
+  const selection = element("div", { className: "sandbox-selection", hidden: true });
   const selected = new Set<LogLine>();
   const expanded = new Set<LogLine>();
   let visibleDenials: LogLine[] = [];
@@ -561,6 +653,8 @@ export function renderAgentSandboxPolicy(
     selectPage.indeterminate = checked > 0 && checked < selectable.length;
     selectPage.disabled = !editable() || selectable.length === 0;
     selectPageText.textContent = `Select page (${selectable.length})`;
+    selection.hidden = !editable();
+    section.classList.toggle("sandbox-readonly", !editable());
     selectionActions.hidden = selected.size === 0;
     const elsewhere = [...selected].filter((record) => !visibleDenials.includes(record)).length;
     selectionCount.textContent = `${selected.size} selected${elsewhere ? ` · ${elsewhere} outside this page` : ""}`;
@@ -850,6 +944,19 @@ export function renderAgentSandboxPolicy(
     const existing = additions;
     const fresh = distinct.filter((grant) => !grantCovered(grant, existing));
     reviewSummary = `${grants.length} selected denial${grants.length === 1 ? "" : "s"} · ${distinct.length} distinct request${distinct.length === 1 ? "" : "s"} · ${fresh.length} new rule${fresh.length === 1 ? "" : "s"}`;
+    stagedReview = batch
+      ? {
+          selected: grants.length,
+          fresh: fresh.length,
+          repeated: grants.length - distinct.length,
+          covered: distinct.length - fresh.length,
+          requests: distinct.map((grant) => ({
+            grant,
+            count: grants.filter((item) => grantKey(item) === grantKey(grant)).length,
+            covered: grantCovered(grant, existing),
+          })),
+        }
+      : undefined;
     const index = additions.length;
     additions.push(...structuredClone(fresh));
     draftGeneration += 1;
@@ -865,43 +972,174 @@ export function renderAgentSandboxPolicy(
     }
   }
 
+  function selectionReviewSummary() {
+    if (stagedReview) {
+      return element(
+        "section",
+        { className: "sandbox-bulk-summary" },
+        element(
+          "h3",
+          {},
+          `${stagedReview.selected} ${stagedReview.selected === 1 ? "denial" : "denials"} selected → ${stagedReview.fresh} new ${stagedReview.fresh === 1 ? "rule" : "rules"}`,
+        ),
+        element(
+          "p",
+          {},
+          `${stagedReview.repeated} repeated ${stagedReview.repeated === 1 ? "denial" : "denials"} grouped · ${stagedReview.covered} distinct ${stagedReview.covered === 1 ? "request" : "requests"} already covered by saved or proposed rules.`,
+        ),
+        element(
+          "p",
+          { className: "hint" },
+          "Review the executable, destination and ports below. Access changes only after saving and confirmed application, or deployment.",
+        ),
+        element(
+          "details",
+          { className: "sandbox-selection-breakdown" },
+          element("summary", {}, "How the selection becomes rules"),
+          ...stagedReview.requests.map((item) =>
+            element(
+              "p",
+              { className: "resource-id" },
+              `${visibleText(item.grant.binary)} → ${item.grant.host}:${item.grant.ports.map((port) => (port.from === port.to ? port.from : `${port.from}–${port.to}`)).join(", ")} · ${item.count} ${item.count === 1 ? "denial" : "denials"} → ${item.covered ? "already covered" : "1 new rule"}`,
+            ),
+          ),
+        ),
+      );
+    }
+    return reviewSummary ? element("p", { className: "hint" }, reviewSummary) : null;
+  }
+
   function prefill(grant: SandboxNetworkGrant) {
     stageGrants([grant], false);
   }
 
+  let suggestionsExpanded = false;
+  let suggestionsShowAll = false;
   function renderSuggestions() {
     suggestions.hidden = recommendations.length === 0 && suggestionStatus.dataset.loaded === "true";
     suggestions.className = "sandbox-suggestions";
     suggestions.replaceChildren();
-    if (recommendations.length === 1 && editable()) {
-      const entry = recommendations[0]!;
-      suggestions.append(
-        element(
-          "div",
-          {},
-          element("strong", {}, "1 suggested rule"),
-          element("p", { className: "resource-id" }, grantText(entry.grant)),
-        ),
-        button("Review suggestion", () => prefill(entry.grant), { size: "sm" }),
-      );
-    } else {
-      suggestions.append(
-        element(
-          "h3",
-          {},
-          recommendations.length
-            ? `${recommendations.length} suggested rules`
-            : "Policy suggestions",
-        ),
-        suggestionStatus,
-        ...recommendations.map((entry) =>
+    const canReview = editable();
+    const showCandidates = canReview || suggestionsExpanded;
+    let suggestionHelp = "Inspect potential fixes. Changes require additional policy permissions.";
+    if (!view?.editingEnabled) {
+      suggestionHelp = "Inspect potential fixes. Policy editing must be on to make changes.";
+    } else if (view.policy.application?.state === "pending" || mutation) {
+      suggestionHelp = "Inspect potential fixes while the current update completes.";
+    } else if (protectedExecution()) {
+      suggestionHelp =
+        "Inspect observed requests. Protected execution restricts network additions.";
+    } else if (canReview) {
+      suggestionHelp = "Review observed requests before adding network access.";
+    }
+    const summary = element(
+      "div",
+      { className: "sandbox-suggestions-copy" },
+      element(
+        "h3",
+        {},
+        recommendations.length
+          ? `${recommendations.length} suggested ${recommendations.length === 1 ? "rule" : "rules"}`
+          : "Policy suggestions",
+      ),
+      element("p", { className: "hint" }, suggestionHelp),
+    );
+    suggestions.append(
+      element(
+        "div",
+        { className: "sandbox-suggestions-head" },
+        summary,
+        !canReview && recommendations.length
+          ? button(
+              suggestionsExpanded ? "Hide suggestions" : "View suggestions",
+              () => {
+                suggestionsExpanded = !suggestionsExpanded;
+                renderSuggestions();
+                suggestions
+                  .querySelector<HTMLButtonElement>('[data-suggestions-toggle="visibility"]')
+                  ?.focus();
+              },
+              {
+                size: "sm",
+                "aria-expanded": String(suggestionsExpanded),
+                "data-suggestions-toggle": "visibility",
+              },
+            )
+          : null,
+      ),
+    );
+    if (suggestionStatus.dataset.loaded !== "true") {
+      suggestions.append(suggestionStatus);
+    }
+    if (showCandidates) {
+      for (const entry of suggestionsShowAll ? recommendations : recommendations.slice(0, 3)) {
+        const grant = entry.grant;
+        const ports = grant.ports
+          .map(({ from, to }) => (from === to ? from : `${from}–${to}`))
+          .join(", ");
+        const path = element(
+          "details",
+          { className: "sandbox-executable-path" },
+          element("summary", {}, "Full executable path"),
+          element("p", { className: "resource-id" }, visibleText(grant.binary)),
+        );
+        suggestions.append(
           element(
             "div",
             { className: "sandbox-suggestion-row" },
-            element("p", { className: "resource-id" }, grantText(entry.grant)),
-            editable()
-              ? button("Review suggestion", () => prefill(entry.grant), { size: "sm" })
-              : null,
+            element(
+              "div",
+              { className: "sandbox-suggestion-target" },
+              element(
+                "div",
+                { className: "sandbox-suggestion-label" },
+                element(
+                  "p",
+                  { className: "resource-id" },
+                  `${visibleText(grant.binary.split("/").at(-1))} → ${visibleText(grant.host)}:${ports}`,
+                ),
+                element(
+                  "span",
+                  { className: "sandbox-observations" },
+                  Number.isInteger(entry.observations)
+                    ? `Observed ${entry.observations} ${entry.observations === 1 ? "time" : "times"}`
+                    : "Observation count unavailable",
+                ),
+              ),
+              path,
+            ),
+            canReview ? button("Review suggestion", () => prefill(grant), { size: "sm" }) : null,
+          ),
+        );
+      }
+    }
+    if (showCandidates && recommendations.length > 3) {
+      suggestions.append(
+        element(
+          "div",
+          { className: "sandbox-suggestions-footer" },
+          element(
+            "span",
+            { className: "hint" },
+            `Showing ${suggestionsShowAll ? recommendations.length : 3} of ${recommendations.length}`,
+          ),
+          button(
+            suggestionsShowAll
+              ? "Show fewer suggestions"
+              : `Show all ${recommendations.length} suggestions`,
+            () => {
+              suggestionsShowAll = !suggestionsShowAll;
+              renderSuggestions();
+              suggestions
+                .querySelector<HTMLButtonElement>('[data-suggestions-toggle="all"]')
+                ?.focus();
+            },
+            {
+              tone: "link",
+              size: "sm",
+              "aria-expanded": String(suggestionsShowAll),
+              "data-suggestions-toggle": "all",
+            },
           ),
         ),
       );
@@ -929,7 +1167,9 @@ export function renderAgentSandboxPolicy(
         ? []
         : [button("Refresh suggestions", () => void loadSuggestions())]),
     );
-    suggestions.append(details);
+    if (canReview || suggestionsExpanded || !recommendations.length) {
+      suggestions.append(details);
+    }
   }
 
   async function loadSuggestions() {
@@ -1057,22 +1297,20 @@ export function renderAgentSandboxPolicy(
   }
 
   function renderEditor() {
-    dialogTitle.textContent = editingRules ? "Edit network rule" : "Manage network rules";
+    dialogTitle.textContent = view?.editingEnabled ? "Manage network rules" : "View network rules";
+    if (editingRules) {
+      dialogTitle.textContent = "Edit network rule";
+    }
     dialogActions.replaceChildren(button("Done", closeDialog, { disabled: mutation }));
     policyPanel.replaceChildren(
       feedback,
-      button("Refresh policy", () => void loadPolicy(), { disabled: mutation }),
+      button("Refresh policy", () => void loadPolicy(true), { disabled: mutation }),
     );
     if (!view) {
       policyPanel.append(element("p", { role: "status" }, "Loading Agent policy…"));
       return;
     }
     const { configuration, editingEnabled, policy } = view;
-    const settings = element(
-      "details",
-      { className: "sandbox-policy-settings" },
-      element("summary", {}, "Policy settings and Installation limits"),
-    );
     if (unknownOutcome) {
       policyPanel.append(
         element(
@@ -1084,128 +1322,83 @@ export function renderAgentSandboxPolicy(
       return;
     }
     const { application } = policy;
-    settings.append(
-      element(
-        "p",
-        {},
-        view.capability
-          ? `Policy v${policy.version} · Editing ${editingEnabled ? "enabled" : "disabled"}`
-          : "This Sandbox Driver does not support per-Agent network policy.",
-      ),
-      element(
-        "p",
-        { className: "muted" },
-        protectedExecution()
-          ? "Defaults remain read-only. Saved network rules can only be removed while protected execution applies. Disabling editing preserves saved rules."
-          : "Defaults remain read-only. Only the additions below are editable. Disabling editing preserves approved grants.",
-      ),
-      element(
-        "details",
-        {},
-        element("summary", {}, "Read-only Installation defaults"),
-        element(
-          "p",
-          { className: "muted" },
-          view.defaultsRevisionId
-            ? `Admitted for running version ${view.defaultsRevisionId}. Generated transport access is managed separately.`
-            : protectedExecution()
-              ? "Defaults from the selected Sandbox Driver. Protected versions use Credential Proxy routes instead."
-              : "Defaults from the selected Sandbox Driver. Generated transport access is managed separately.",
-        ),
-        view.defaults === null
-          ? element("p", {}, "No editable network-policy capability is available.")
-          : element("pre", {}, visibleText(JSON.stringify(view.defaults, null, 2))),
-      ),
-      element(
-        "details",
-        {},
-        element("summary", {}, "Installation delegation ceiling"),
-        ...(view.ceiling.length
-          ? view.ceiling.map((grant) => element("p", {}, grantText(grant)))
-          : [element("p", {}, "No additions are delegated.")]),
-      ),
-      button(
-        editingEnabled ? "Disable policy editing" : "Enable policy editing",
-        () =>
-          void mutate(
-            async () => {
-              await context.request(`${policyPath}/editing`, {
-                method: "PATCH",
-                body: { enabled: !editingEnabled },
-              });
-              await loadPolicy();
-            },
-            false,
-            (error) =>
-              requestFailure(error).status === 403
-                ? POLICY_EDITING_SETTING_REFUSED
-                : errorText(error, "changing the editing setting", POLICY_CHANGE_GRANT),
-          ),
-        { disabled: mutation },
-      ),
-      element(
-        "p",
-        { className: "hint" },
-        "Changing the editing setting requires Installation and Agent administration. Editing additions requires separate Agent policy and SandboxPolicy permissions.",
-      ),
-    );
-    if (policy.applied) {
-      const applied = policy.applied;
-      settings.append(
-        element(
-          "p",
-          {},
-          `Last confirmed live policy: v${applied.policyVersion} · Provider version ${applied.providerVersion} · Revision ${applied.revisionId}`,
-        ),
-      );
-    }
-    if (application) {
-      settings.append(
-        element(
-          "p",
-          { role: "status" },
-          `Application: ${application.state}${application.providerVersion ? ` · Provider version ${application.providerVersion}` : ""}${application.reason ? ` · ${application.reason}` : ""} · Revision ${application.revisionId}`,
-        ),
-      );
-      if (application.state === "failed") {
-        // Keep the reason code beside its explanation for audit correlation.
-        const reason = application.reason;
-        settings.append(
-          element(
-            "p",
-            { className: "notice" },
-            reason && Object.hasOwn(APPLICATION_FAILURES, reason)
-              ? APPLICATION_FAILURES[reason]
-              : APPLICATION_UNCONFIRMED,
-          ),
-        );
-      }
-    } else {
-      settings.append(
-        element(
-          "p",
-          { className: "muted" },
-          "Saved policy changes take effect on explicit deployment or confirmed live application.",
-        ),
-      );
-    }
     const pending = application?.state === "pending";
     const canApply = canApplySavedPolicy();
     const form = element("form", { className: "sandbox-policy-form" });
-    const draftStatus = element("p", { role: "status", className: "hint" });
-    const reviewButton = element("button", { type: "submit" }, "Review changes");
-    const applyButton = button("Apply saved policy to current revision", () => {
-      if (policyPanel.contains(applyButton)) {
-        void mutate(applySavedPolicy);
-      }
+    form.id = "sandbox-network-policy-form";
+    const reviewButton = element(
+      "button",
+      {
+        type: "submit",
+        form: form.id,
+        className: "button button--primary",
+      },
+      "Review changes",
+    );
+    const footerStatus = element("span", {
+      className: "sandbox-dialog-change-status",
+      role: "status",
     });
     function updateDraftStatus() {
       const dirty = hasProposedChanges();
-      draftStatus.textContent = dirty
-        ? "Unsaved changes. Adding or removing a proposed rule does not save or apply it."
-        : `Matches saved policy v${policy.version}. Editing rules only changes your proposal.`;
-      reviewButton.disabled = !editable() || pending || !dirty;
-      applyButton.disabled = !editable() || !canApply || pending || dirty;
+      let changes = 1;
+      if (Array.isArray(additions)) {
+        const addedOrChanged = additions.filter(
+          (rule) => !policy.additions.some((saved) => sameValue(saved, rule)),
+        ).length;
+        const proposed = additions;
+        const removed = policy.additions.filter(
+          (saved) => !proposed.some((rule) => rule?.id === saved.id),
+        ).length;
+        changes = Math.max(1, addedOrChanged + removed);
+      }
+      const unapplied =
+        policy.applied?.revisionId !== revisionId ||
+        policy.applied?.policyVersion !== policy.version;
+      const failed = application?.state === "failed";
+      footerStatus.textContent = "No unsaved changes";
+      if (dirty) {
+        footerStatus.textContent = `${changes} rule ${changes === 1 ? "change" : "changes"} to review`;
+      } else if (pending) {
+        footerStatus.textContent = "Applying…";
+      } else if (failed) {
+        footerStatus.textContent = "Application unconfirmed";
+      } else if (unapplied) {
+        footerStatus.textContent = "Saved rules awaiting application";
+      }
+      const canReview =
+        canEdit() &&
+        (!protectedExecution() || (Array.isArray(additions) && additions.length === 0));
+      reviewButton.disabled = mutation || !canReview || pending;
+      dialogActions.replaceChildren(
+        footerStatus,
+        button("Done", closeDialog, { disabled: mutation }),
+      );
+      if (dirty && editingEnabled && canReview) {
+        dialogActions.append(reviewButton);
+      } else if (
+        !dirty &&
+        (unapplied || failed) &&
+        !pending &&
+        (!failed || failedApplicationInspected) &&
+        canApply
+      ) {
+        dialogActions.append(
+          button(
+            failed ? "Retry application" : "Apply saved rules",
+            () => void mutate(applySavedPolicy),
+            {
+              tone: "primary",
+              disabled: mutation,
+            },
+          ),
+        );
+      }
+      const addRule = rulesOverview.querySelector(".sandbox-add-rule");
+      addRule?.classList.toggle(
+        "button--primary",
+        !dirty && !(unapplied && !pending && (!failed || failedApplicationInspected) && canApply),
+      );
     }
     if (!configuration) {
       return;
@@ -1223,7 +1416,6 @@ export function renderAgentSandboxPolicy(
       !Array.isArray(itemSchema);
     const index = editorIndex ?? 0;
     form.append(
-      draftStatus,
       configurationFields(
         single ? (itemSchema as JSONSchema) : configuration.configurationSchema,
         single && Array.isArray(additions) ? additions[index] : { additions },
@@ -1249,23 +1441,22 @@ export function renderAgentSandboxPolicy(
             : validationDetails,
           onEdit: () => {
             reviewSummary = "";
+            stagedReview = undefined;
             draftGeneration += 1;
             feedback.className = "";
             feedback.setAttribute("role", "status");
-            feedback.textContent = "Draft changed. Review again before saving.";
+            feedback.textContent = "";
           },
         },
       ),
       ...(validationDetails.length ? [configurationErrors(validationDetails)] : []),
     );
     form.append(
-      reviewButton,
       button("Back to rules", () => {
         editingRules = false;
         renderEditor();
       }),
     );
-    updateDraftStatus();
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (
@@ -1384,6 +1575,11 @@ export function renderAgentSandboxPolicy(
             view.policy = saved;
             additions = structuredClone(saved.additions);
             savedVersion = saved.version;
+            outcomeRequested = true;
+            selected.clear();
+            stagedReview = undefined;
+            editingRules = false;
+            dialog.close();
             if (apply) {
               await applySavedPolicy();
             } else {
@@ -1414,7 +1610,7 @@ export function renderAgentSandboxPolicy(
       const review = element(
         "section",
         { className: "sandbox-policy-review" },
-        reviewSummary ? element("p", { className: "hint" }, reviewSummary) : null,
+        selectionReviewSummary(),
         ...(changed.length
           ? [element("h3", {}, `Rules to add or update · ${changed.length}`), ruleList(changed)]
           : []),
@@ -1448,9 +1644,7 @@ export function renderAgentSandboxPolicy(
       );
       dialogTitle.textContent = "Review policy changes";
       rulesOverview.hidden = true;
-      settings.hidden = true;
       form.replaceWith(review);
-      applyButton.hidden = true;
     });
     const rulesOverview = element(
       "section",
@@ -1479,9 +1673,10 @@ export function renderAgentSandboxPolicy(
             editorIndex = additions.length - 1;
             editingRules = true;
             reviewSummary = "";
+            stagedReview = undefined;
             renderEditor();
           },
-          { tone: "primary", size: "sm", disabled: !editable() },
+          { tone: "primary", size: "sm", className: "sandbox-add-rule", disabled: !editable() },
         ),
       ),
       element(
@@ -1503,6 +1698,7 @@ export function renderAgentSandboxPolicy(
                     editorIndex = index;
                     editingRules = true;
                     reviewSummary = "";
+                    stagedReview = undefined;
                     renderEditor();
                   },
                   { disabled: !editable() },
@@ -1515,6 +1711,7 @@ export function renderAgentSandboxPolicy(
                     }
                     additions.splice(index, 1);
                     reviewSummary = "";
+                    stagedReview = undefined;
                     draftGeneration += 1;
                     renderEditor();
                   },
@@ -1551,12 +1748,7 @@ export function renderAgentSandboxPolicy(
             ),
           ]
         : []),
-      editingRules ? null : draftStatus,
       ...(validationDetails.length ? [configurationErrors(validationDetails)] : []),
-      button("Review changes", () => form.requestSubmit(), {
-        tone: "primary",
-        disabled: !editable() || !hasProposedChanges(),
-      }),
     );
     rulesOverview.hidden = editingRules;
     form.hidden = !editingRules;
@@ -1581,8 +1773,6 @@ export function renderAgentSandboxPolicy(
         : []),
       rulesOverview,
       form,
-      applyButton,
-      settings,
       ...(!view.capability?.live
         ? [
             element(
@@ -1593,9 +1783,28 @@ export function renderAgentSandboxPolicy(
           ]
         : []),
     );
+    if (!editable() && !editingRules) {
+      for (const action of rulesOverview.querySelectorAll<HTMLButtonElement>("button")) {
+        if (["Add rule", "Review changes"].includes(action.textContent)) {
+          action.hidden = true;
+        }
+      }
+      for (const menu of rulesOverview.querySelectorAll<HTMLElement>(".sandbox-rule-actions")) {
+        menu.hidden = true;
+      }
+      const hint = rulesOverview.querySelector(".hint");
+      if (hint) {
+        hint.textContent =
+          "Existing rules still apply. Changes require enabled editing and policy permissions.";
+      }
+    }
+
+    updateDraftStatus();
   }
 
   async function applySavedPolicy() {
+    outcomeRequested = true;
+    failedApplicationInspected = false;
     if (!view?.configuration || !canApplySavedPolicy() || hasProposedChanges()) {
       return;
     }
@@ -1620,7 +1829,7 @@ export function renderAgentSandboxPolicy(
     }, delay);
   }
 
-  async function loadPolicy() {
+  async function loadPolicy(inspectFailure = false) {
     clearTimeout(policyTimer);
     const sequence = ++policyReadSequence;
     const generation = draftGeneration;
@@ -1633,6 +1842,7 @@ export function renderAgentSandboxPolicy(
       }
       const wasPending = view?.policy.application?.state === "pending";
       view = loaded;
+      failedApplicationInspected = inspectFailure && loaded.policy.application?.state === "failed";
       if (view.capability === null) {
         // The draft tab reads no logs or suggestions, so the unsupported state is shown from here too.
         void policySupported();
@@ -1689,6 +1899,53 @@ export function renderAgentSandboxPolicy(
     }
   }
 
+  function policyEditingExplanation() {
+    if (!view?.editingEnabled) {
+      return [
+        element(
+          "p",
+          { className: "hint sandbox-editing-explanation" },
+          "Editing is off. Existing rules still apply. Turn on Policy editing above to review and allow requests. Changing this setting requires Installation and Agent administration.",
+        ),
+      ];
+    }
+    if (
+      !editable() &&
+      !mutation &&
+      !unknownOutcome &&
+      view.policy.application?.state !== "pending"
+    ) {
+      return [
+        element(
+          "p",
+          { className: "hint" },
+          "Policy changes require additional permission or may be restricted for this Agent.",
+        ),
+      ];
+    }
+    return [];
+  }
+
+  async function setPolicyEditing(enabled: boolean) {
+    await mutate(
+      async () => {
+        await context.request(`${policyPath}/editing`, {
+          method: "PATCH",
+          body: { enabled: !enabled },
+        });
+        await loadPolicy();
+      },
+      false,
+      (error) =>
+        requestFailure(error).status === 403
+          ? POLICY_EDITING_SETTING_REFUSED
+          : errorText(error, "changing the editing setting", POLICY_CHANGE_GRANT),
+    );
+    if (current() && feedback.getAttribute("role") !== "alert") {
+      policySummary.querySelector<HTMLButtonElement>(".sandbox-editing-switch, button")?.focus();
+    }
+  }
+
   function renderPolicy() {
     if (policyReadDenied) {
       policySummary.replaceChildren(
@@ -1697,12 +1954,38 @@ export function renderAgentSandboxPolicy(
       );
       return;
     }
+    // Keep the failed read and its recovery action visible after a mutation finishes.
+    if (policyReadUnavailable) {
+      return;
+    }
+    manageButton.disabled = mutation || !view;
+    manageButton.textContent = view?.editingEnabled ? "Manage rules" : "View rules";
+    const controls = element("div", { className: "sandbox-policy-controls" });
+    if (view) {
+      const enabled = view.editingEnabled;
+      const editing = button(enabled ? "On" : "Off", () => void setPolicyEditing(enabled), {
+        className: "sandbox-editing-switch",
+        role: "switch",
+        "aria-label": "Policy editing",
+        "aria-checked": String(enabled),
+        disabled: mutation || unknownOutcome,
+      });
+      controls.append(
+        element(
+          "div",
+          { className: "sandbox-editing-control" },
+          element("span", {}, "Policy editing"),
+          editing,
+        ),
+      );
+    }
+    controls.append(manageButton);
     policySummary.replaceChildren(
       element(
         "div",
-        { className: "sandbox-policy-card-head" },
+        { className: "sandbox-policy-card-head sandbox-policy-header" },
         element("h2", {}, "Network policy"),
-        manageButton,
+        controls,
       ),
     );
     if (!view) {
@@ -1722,20 +2005,11 @@ export function renderAgentSandboxPolicy(
           return { label: "Applied", tone: "success" };
         }
         return {
-          label: applied ? "Changes not applied" : "Application unconfirmed",
+          label: applied || policy.version > 1 ? "Saved for later" : "Application unconfirmed",
           tone: "warning",
         };
       }
       const presentation = policyStatus();
-      policySummary
-        .querySelector("h2")
-        ?.append(
-          element(
-            "span",
-            { className: "badge", "data-tone": presentation.tone },
-            presentation.label,
-          ),
-        );
       policySummary.append(
         ...(hasProposedChanges()
           ? [
@@ -1747,10 +2021,65 @@ export function renderAgentSandboxPolicy(
             ]
           : []),
         element(
-          "p",
-          { className: "hint" },
-          `${policy.additions.length} explicit rules · Saved v${policy.version} · ${applied ? `Last confirmed live v${applied.policyVersion}` : "Live version unconfirmed"}`,
+          "div",
+          { className: "sandbox-policy-meta" },
+          element(
+            "div",
+            { className: "sandbox-policy-rule-status" },
+            element(
+              "strong",
+              {},
+              `${policy.additions.length} explicit ${policy.additions.length === 1 ? "rule" : "rules"}`,
+            ),
+            element("span", { "aria-hidden": "true" }, "·"),
+            element(
+              "span",
+              { className: "badge", "data-tone": presentation.tone, role: "status" },
+              presentation.label,
+            ),
+          ),
+          button("View network limits", openNetworkLimits, {
+            tone: "link",
+            size: "sm",
+            className: "sandbox-network-limits-link",
+            "aria-haspopup": "dialog",
+          }),
+          element(
+            "details",
+            { className: "sandbox-policy-versions" },
+            element("summary", {}, "Policy details"),
+            element(
+              "details",
+              {},
+              element("summary", {}, "Read-only Installation defaults"),
+              element(
+                "p",
+                { className: "hint" },
+                view.defaultsRevisionId
+                  ? `Admitted for running revision ${view.defaultsRevisionId}. Generated transport access is managed separately.`
+                  : "Defaults from the selected Sandbox Driver. Generated transport access is managed separately.",
+              ),
+              element("pre", {}, visibleText(JSON.stringify(view.defaults, null, 2))),
+            ),
+            policy.application
+              ? element(
+                  "p",
+                  { className: "hint" },
+                  `Application: ${policy.application.state} · Revision ${policy.application.revisionId}${policy.application.reason ? ` · ${policy.application.reason}` : ""}`,
+                )
+              : null,
+
+            element("p", { className: "hint" }, `Saved version: v${policy.version}`),
+            element(
+              "p",
+              { className: "hint" },
+              applied
+                ? `Last confirmed live version: v${applied.policyVersion}`
+                : "Live version unconfirmed",
+            ),
+          ),
         ),
+        ...policyEditingExplanation(),
         ...(unknownOutcome
           ? [
               element(
@@ -1762,8 +2091,105 @@ export function renderAgentSandboxPolicy(
           : []),
       );
     }
+    const currentPolicy = view?.policy;
+    const application = currentPolicy?.application;
+    const confirmed =
+      currentPolicy?.applied?.revisionId === revisionId &&
+      currentPolicy.applied.policyVersion === currentPolicy.version;
+    let outcome;
+    if (unknownOutcome) {
+      outcome = {
+        tone: "warning",
+        title: "Change outcome unknown",
+        text: "Refresh status to check the saved policy before making another change.",
+      };
+    } else if (application?.state === "failed") {
+      outcome = {
+        tone: "warning",
+        title: "Application unconfirmed",
+        text:
+          application.reason && Object.hasOwn(APPLICATION_FAILURES, application.reason)
+            ? APPLICATION_FAILURES[application.reason]
+            : APPLICATION_UNCONFIRMED,
+      };
+    } else if (application?.state === "pending") {
+      outcome = {
+        tone: "info",
+        title: "Applying…",
+        text: "Your rules are saved. Waiting for confirmation from the running Agent’s Sandbox.",
+      };
+    } else if (
+      currentPolicy &&
+      !confirmed &&
+      (currentPolicy.applied?.revisionId === revisionId ||
+        currentPolicy.version > 1 ||
+        outcomeRequested)
+    ) {
+      outcome = {
+        tone: "info",
+        title: "Saved for later",
+        text:
+          currentPolicy.applied?.revisionId === revisionId
+            ? "Your rules are saved. The running Agent still uses its previously applied rules."
+            : "Your rules are saved. Apply them explicitly or deploy a new version when ready.",
+      };
+    } else if (confirmed && (outcomeRequested || application?.state === "applied")) {
+      outcome = {
+        tone: "success",
+        title: "Applied to the running Agent",
+        text: "The Sandbox confirmed these rules are active. Earlier denials remain in the historical log.",
+      };
+    }
+    if (outcome) {
+      const actions = element("div", { className: "sandbox-outcome-actions" });
+      if (outcome.title === "Saved for later" && !hasProposedChanges() && canApplySavedPolicy()) {
+        actions.append(
+          button("Apply saved rules", () => void mutate(applySavedPolicy), {
+            size: "sm",
+            disabled: mutation,
+          }),
+        );
+      }
+      if (
+        outcome.title === "Applying…" ||
+        outcome.title === "Application unconfirmed" ||
+        outcome.title === "Change outcome unknown"
+      ) {
+        actions.append(
+          button("Refresh status", () => void loadPolicy(true), { size: "sm", disabled: mutation }),
+        );
+      }
+      if (
+        application?.state === "failed" &&
+        failedApplicationInspected &&
+        !hasProposedChanges() &&
+        canApplySavedPolicy()
+      ) {
+        actions.append(
+          button("Retry application", () => void mutate(applySavedPolicy), {
+            size: "sm",
+            disabled: mutation,
+          }),
+        );
+      }
+      policySummary.append(
+        element(
+          "section",
+          {
+            className: "sandbox-application-feedback",
+            "data-tone": outcome.tone,
+            role: outcome.tone === "warning" ? "alert" : "status",
+          },
+          element("h3", {}, outcome.title),
+          element("p", {}, outcome.text),
+          actions,
+        ),
+      );
+    }
     if (dialog.open) {
       renderEditor();
+    } else if (feedback.textContent) {
+      policySummary.append(feedback);
     }
   }
 
@@ -1804,6 +2230,7 @@ export function renderAgentSandboxPolicy(
     logPager,
     windowDetails,
     dialog,
+    limitsDialog,
   );
   renderPolicy();
   // A caller whose permission answer denies sandbox policy read is not sent the policy read; an

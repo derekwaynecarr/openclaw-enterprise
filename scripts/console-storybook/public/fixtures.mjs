@@ -465,6 +465,7 @@ export function installFixture(scenario, evidence) {
         : {}),
       harness: { id: harnessId, version: "demo", mode: owner.executionMode },
       compute: { id: "kubernetes-demo", implementation: "kubernetes" },
+      ...(scenario.policyState ? { sandboxDriverId: "sandbox-story" } : {}),
       servicePrincipalId: owner.servicePrincipalId,
       ...(owner.repositoryBindings?.length
         ? {
@@ -758,6 +759,30 @@ export function installFixture(scenario, evidence) {
       providerVersion: "4",
       appliedAt: createdAt,
     };
+  }
+  const policyCeiling = scenario.policyCeiling ?? [
+    policyGrant,
+    ...(scenario.policyDenialCount
+      ? [{ ...policyGrant, id: "observed-services-ceiling", host: "*.example.org" }]
+      : []),
+    ...sandboxPolicy.additions,
+    ...(scenario.policySuggestions ?? []).map((entry) => entry.grant),
+  ];
+  if (scenario.policyInitialOutcome) {
+    sandboxPolicy.version = 2;
+    if (scenario.policyInitialOutcome !== "saved") {
+      sandboxPolicy.application = {
+        id: "00000000-0000-4000-8000-000000000009",
+        revisionId: candidateRevisionId,
+        policyVersion: 2,
+        state: scenario.policyInitialOutcome,
+        requestedBy: "identity_demo",
+        requestedAt: createdAt,
+      };
+    }
+    if (scenario.policyInitialOutcome === "applied") {
+      sandboxPolicy.applied.policyVersion = 2;
+    }
   }
   let policyNewRead = false;
   if (scenario.policyState === "failed" || scenario.policyState === "failedCeiling") {
@@ -1587,7 +1612,11 @@ export function installFixture(scenario, evidence) {
             // Simulate another operator saving between reads; HTTP workflow coverage uses real saves.
             sandboxPolicy.version = read;
           }
-          if (sandboxPolicy.application?.state === "pending" && ++policyPolls > 1) {
+          if (
+            sandboxPolicy.application?.state === "pending" &&
+            !scenario.policyKeepPending &&
+            ++policyPolls > 1
+          ) {
             sandboxPolicy.application.state = "applied";
             sandboxPolicy.application.providerVersion = "5";
             sandboxPolicy.applied = {
@@ -1602,7 +1631,7 @@ export function installFixture(scenario, evidence) {
             configuration: policyDescriptor,
             editingEnabled: policyEditing,
             protectedExecution: scenario.policyState === "protected",
-            ceiling: [policyGrant],
+            ceiling: policyCeiling,
             defaults:
               scenario.policyState === "unsupported"
                 ? null
@@ -1633,6 +1662,9 @@ export function installFixture(scenario, evidence) {
           suffix === "/sandbox-policy/networking/editing" &&
           method === "PATCH"
         ) {
+          if (scenario.policyAdminDenied) {
+            return error(403, "AUTHORIZATION_DENIED");
+          }
           policyEditing = body.enabled;
           return response({ ...agent, sandboxPolicyEditing: policyEditing });
         }
@@ -1701,7 +1733,8 @@ export function installFixture(scenario, evidence) {
           }
           return response({
             recommendations:
-              scenario.policyState === "empty"
+              scenario.policySuggestions ??
+              (scenario.policyState === "empty"
                 ? []
                 : [
                     {
@@ -1713,7 +1746,7 @@ export function installFixture(scenario, evidence) {
                           : policyGrant,
                       observations: 4,
                     },
-                  ],
+                  ]),
             truncated: false,
           });
         }

@@ -6,9 +6,12 @@ observed denials. A version that runs without a Sandbox records none, and the ta
 says so. Policy reads and changes have independent permissions; see the
 [policy reference](../../reference/sandbox-policies.md).
 
-1. Check the **Network policy** card above the log. It shows the saved version,
-   last confirmed live version, and any suggested rules. Suggestions are untrusted
-   candidates; **Review suggestion** opens a local proposal.
+1. Check the **Network policy** card above the log. **Policy details** shows saved
+   and confirmed live versions and read-only Installation defaults. **View network
+   limits** opens the Installation ceiling, which grants no access by itself.
+   Suggestions are untrusted candidates. The card shows three at a time; **Show all**
+   expands the list. Expand **Full executable path** before reviewing a suggestion.
+   With editing off, **View suggestions** still lets you inspect candidates.
 2. Read the denial count and any gap notices. The log starts with five rows per
    page. Search the loaded window or use **Next** to inspect more records. Expand
    a row for decision metadata and its sanitized log. Missing fields stay unknown.
@@ -20,10 +23,13 @@ says so. Policy reads and changes have independent permissions; see the
    current page. Exact executable, host, and port requests become proposed rules.
    Repeated requests and requests covered by saved or proposed rules do not add
    duplicate rules. Incomplete metadata cannot prefill a rule.
-4. To manage rules manually, choose **Manage rules**. Search the list or page
-   through five rules at a time. Use **Add rule** or a row's menu to edit or remove
-   a rule. These changes stay local. Under **Policy settings and Installation
-   limits**, check the delegation ceiling and read-only defaults.
+4. Administrators can use the **Policy editing** switch beside **Manage rules**.
+   Its **On** or **Off** label states the current setting. Disabling editing preserves
+   saved rules. **View rules** remains available with editing off. To change rules,
+   enable editing and choose **Manage rules**. Search or page through five rules at
+   a time. Use **Add rule** or a row's menu to edit or remove a rule. These changes
+   stay local. The dialog footer offers **Review changes** when the draft changes;
+   **Done** closes without saving and retains the proposal on this page.
 5. Select **Review changes** after editing a rule. A batch opens this review
    directly. Check the rules to add, update, or remove. The preview shows field
    errors without saving or applying. **Back to editing** retains the proposal.
@@ -33,11 +39,14 @@ says so. Policy reads and changes have independent permissions; see the
    A successful tool result provides the final execution evidence.
    If the Console cannot confirm which rules were saved, open **Manage rules**,
    select **Refresh policy**, and inspect the saved version before applying it.
-7. To apply a policy saved earlier, open **Manage rules** and select **Apply saved
-   policy to current revision**. This control is unavailable while your proposal
-   has unsaved edits. When live application is unsupported, use **Deploy new
-   version** explicitly. Deployment requires deploy permission and can interrupt
-   the Agent.
+7. To apply a policy saved earlier, choose **Apply saved rules** on the card or
+   in the **Manage rules** footer. This action is unavailable while the proposal
+   has unsaved edits. **Applying…** waits for provider confirmation. If application
+   is unconfirmed, use **Refresh status** to read the outcome without submitting
+   another request. If the refreshed application still failed, **Retry application**
+   offers a separate explicit request to authorized users. When live application
+   is unsupported, use **Deploy new version** explicitly. Deployment requires deploy
+   permission and can interrupt the Agent.
 
 The schema supplies field descriptions and constraints. Shapes without a form
 use a schema-aware JSON editor. A preview for an older draft or policy version
