@@ -963,7 +963,7 @@ test("Run diagnostics access and outcomes", async (t) => {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+      detailUrl(fixture, namespace.id, agent.id, revision.id, "deployment"),
       credentials,
     );
     const observations = page.locator(".version-diagnostics");

@@ -3366,7 +3366,11 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(
-    await page.locator('.revision-selector [aria-label$=", current version"]').count(),
+    await page
+      .getByRole("combobox", { name: "Viewing version", exact: true })
+      .getByRole("option")
+      .filter({ hasText: "Selected for service" })
+      .count(),
     0,
   );
   await workspace.click();
