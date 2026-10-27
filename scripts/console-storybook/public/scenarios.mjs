@@ -6140,6 +6140,24 @@ export const scenarios = {
       "Select Open draft. The healthy current draft remains editable independently of the unreadable historical snapshot.",
     ],
   },
+  deploymentSnapshotUnavailable: {
+    group: "Pages/Agent detail",
+    name: "Deployment snapshot unavailable",
+    path: `${currentVersion}&tab=deployment`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      { suffix: "/revisions/rev_00000000-0000-4000-8000-000000000006", status: 503, once: true },
+    ],
+    description:
+      "A historical version's snapshot read fails while Deployment is open. Its error and Retry stay visible beside the latest deployment's activity.",
+    steps: [
+      "Read Configuration unavailable inside Deployment. The latest deployment remains separate from the viewed version's failed snapshot read.",
+      "Choose Retry. The same historical version and Deployment tab stay selected, and its deployment record and diagnostics appear.",
+      "Repeat at phone width. Switching to Configuration also shows the snapshot error until Retry succeeds.",
+    ],
+    gap: "Simulated UI proof; browser regressions exercise recovery through the controller API.",
+  },
   revisionError: {
     group: "Pages/Agent detail",
     name: "Revision history unavailable",
@@ -7978,7 +7996,7 @@ export const scenarios = {
       "v7 finishes deploying while Workspace files are open. Unedited files are reread in place from it.",
     steps: [
       "Wait about 5 seconds for Deployment activity to record v7 as succeeded, or click Refresh deployment.",
-      "IDENTITY.md keeps its missing-file error and adds no reread warning.",
+      "IDENTITY.md keeps its Missing indicator in the desktop tabs and phone picker, with no reread warning. A later confirmed-missing read clears a previous Needs attention indicator; the browser regression covers that recovery.",
       "SOUL.md says it could not be reread. Click Reload SOUL.md: the warning is replaced by SOUL.md loaded.",
     ],
     gap: "Simulated API results demonstrate presentation only. Browser tests cover reread ordering and later rereads clearing a failure.",

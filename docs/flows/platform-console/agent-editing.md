@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-27
-last_updated_session: authoring-run/f3434faa-8624-4f34-83a2-521047f80329
+last_updated_session: authoring-run/99997d03-9533-4cff-b942-8fe773c472db
 ---
 
 # Console Agent editing and runtime requests
@@ -25,8 +25,8 @@ Trace Agent edits and credentials. See the
 graph TD
   subgraph Browser["Browser"]
     A["Read Agent or version"] -->|readable settings| B["Open detail action"]
-    A -->|unreadable settings| AE["Show metadata and warning"]
-    AE -->|refresh or browse versions| A
+    A -->|unreadable settings| AE["Show metadata and read error"]
+    AE -->|refresh, retry or browse versions| A
     B --> C["Edit draft or save credential bindings"]
     B --> P["Edit Agent plugin selections"]
     B --> Q["Deploy saved draft"]
@@ -72,14 +72,16 @@ details without activating it. Its picker includes the saved draft and loaded ve
 **Load older versions** appends another page, keeps the viewed version, and returns focus
 to the picker when no more pages remain. **Deployment** contains the newest readable
 version's activity (`agents/deployment-evidence.mts`), the viewed version's record, and diagnostics.
-These panels stay mounted while hidden so polling continues across tabs. The picker
+Hidden panels stay mounted and polling. The picker
 marks failed versions from listed `deploymentStatus` and `deploymentErrorCode`, surviving
 reloads; superseded or stopped endings stay unmarked.
+`detail.mts:renderTab` shows snapshot-read errors inside Deployment. Transient failures
+offer **Retry**, which rereads the same version on that tab.
 Routine completion folds. Pending work, startup warnings, and incomplete cleanup also
 show an attention message outside Deployment, linking to the affected version.
 Deployment recovery remains above the summary when a deployment fails.
-A first read landing after the `FIRST_ACTIVITY_WAIT_MS` reveal shows its outcome with
-the details folded, unless cleanup, warnings, or an overview error open them. If an
+A first read after `FIRST_ACTIVITY_WAIT_MS` shows its outcome folded unless cleanup,
+warnings, or an overview error expand it. If an
 overview refresh fails, the page keeps the outcome and an attention notice outside Deployment.
 
 On failure, `agents/deployment-recovery.mts` shows the API's message, which names the next
@@ -335,6 +337,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 13:55: Document Deployment snapshot-read recovery; uncommitted changes. (authoring-run/99997d03-9533-4cff-b942-8fe773c472db - b1e6d83d1cde4741d6f0b857e30e473ec1f97a18)
 
 - 2026-10-27 09:30: Document the Agent detail version picker, Deployment tab, and direct Agent UI access. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
 

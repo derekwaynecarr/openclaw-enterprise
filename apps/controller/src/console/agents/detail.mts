@@ -3713,6 +3713,23 @@ export async function renderAgentDetail(
     }
   }
 
+  function snapshotErrorPanel(cause: unknown, tabContext: DetailContext) {
+    return errorPanel(
+      cause,
+      tabContext,
+      () => {
+        context.deniedReads?.forget(snapshotPath);
+        context.navigate(target(selected, selectedTab), namespaceId, true);
+      },
+      {
+        version: selected !== "draft",
+        // The current version, every listed one and one this tab deployed are known to exist.
+        exists:
+          selected === currentRevisionId || listedRevisions.has(selected) || deployedHere(selected),
+      },
+    );
+  }
+
   async function renderTab({ activated = false } = {}) {
     // A Logs view left before it showed no longer holds the cards below it back.
     view.classList.remove("agent-logs-opening");
@@ -3818,7 +3835,13 @@ export async function renderAgentDetail(
     content.replaceChildren();
     if (tab === "deployment") {
       if (selected !== "draft") {
-        details ??= loadDetails();
+        const data = await (details ??= loadDetails());
+        if (!tabContext.isCurrent() || deleting) {
+          return;
+        }
+        if (data && "error" in data) {
+          versionEvidence.replaceChildren(snapshotErrorPanel(data.error, tabContext));
+        }
       }
       state.reusable = false;
       state.loading = false;
@@ -4013,24 +4036,7 @@ export async function renderAgentDetail(
     state.loading = false;
     if (data && "error" in data) {
       state.reusable = false;
-      content.append(
-        errorPanel(
-          data.error,
-          tabContext,
-          () => {
-            context.deniedReads?.forget(snapshotPath);
-            context.navigate(target(selected, selectedTab), namespaceId, true);
-          },
-          {
-            version: selected !== "draft",
-            // The current version, every listed one and one this tab deployed are known to exist.
-            exists:
-              selected === currentRevisionId ||
-              listedRevisions.has(selected) ||
-              deployedHere(selected),
-          },
-        ),
-      );
+      content.append(snapshotErrorPanel(data.error, tabContext));
     } else if (data) {
       renderConfigurationTab(tabContext, tab, data);
     }

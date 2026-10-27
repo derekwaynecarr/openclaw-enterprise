@@ -105,6 +105,65 @@ import {
   READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
 
+test("Deployment shows a historical version's snapshot read failure and Retry recovers", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deployment snapshot retry", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Snapshot retry", nativeValues("retry"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const current = await fixture.deployAgent(namespace.id, agent.id);
+  await fixture.activateRevision(namespace.id, agent.id, current.id, first.revision.id);
+
+  for (const openingTab of ["deployment", "configuration"]) {
+    await t.test(`opening from ${openingTab}`, async (t) => {
+      const { page } = await newPage(t, fixture);
+      const snapshotPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${first.revision.id}`;
+      // A transient snapshot read failure must stay visible beside the latest deployment,
+      // whether Deployment is opened by address or after another tab already saw the failure.
+      await page.route(
+        fixture.origin + snapshotPath,
+        (route) =>
+          route.fulfill(
+            apiErrorResponse(
+              503,
+              "DEPENDENCY_UNAVAILABLE",
+              "A required platform dependency is unavailable.",
+            ),
+          ),
+        { times: 1 },
+      );
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, first.revision.id, openingTab),
+      );
+      if (openingTab === "configuration") {
+        await page
+          .getByRole("heading", { name: "Configuration unavailable", exact: true })
+          .waitFor();
+        await page.getByRole("tab", { name: "Deployment", exact: true }).click();
+      }
+      const panel = page.getByRole("tabpanel", { name: "Deployment", exact: true });
+      const error = panel.getByRole("alert").filter({
+        has: page.getByRole("heading", { name: "Configuration unavailable", exact: true }),
+      });
+      await error.waitFor();
+      await error.getByRole("button", { name: "Retry", exact: true }).click();
+      await page
+        .getByRole("tabpanel", { name: "Deployment", exact: true })
+        .locator(".version-evidence")
+        .getByRole("heading", { name: "This version’s deployment record", exact: true })
+        .waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("revision"), first.revision.id);
+      assert.equal(new URL(page.url()).searchParams.get("tab"), "deployment");
+      assert.equal(
+        await page.getByRole("heading", { name: "Configuration unavailable", exact: true }).count(),
+        0,
+      );
+    });
+  }
+});
+
 test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -356,8 +415,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
       .getAttribute("value"),
   );
   await page
-    .getByLabel("Viewing version", { exact: true })
-    .locator("option:checked")
+    .locator(".agent-version-metadata .resource-id")
+    .filter({ hasText: pending.id })
     .waitFor({ state: "attached" });
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
   await page.getByLabel("Viewing version", { exact: true }).selectOption(
@@ -370,12 +429,12 @@ test("Agent detail separates the current version, viewed version, and latest dep
     .getByLabel("Viewing version", { exact: true })
     .locator("option:checked")
     .waitFor({ state: "attached" });
-  await activity.getByText("Most recent visible deployment · v2").waitFor();
   await page
     .locator(".agent-version-metadata .resource-id")
     .filter({ hasText: current.revision.id })
     .waitFor({ state: "attached" });
   await page.getByRole("tab", { name: "Deployment", exact: true }).click();
+  await activity.getByText("Most recent visible deployment · v2").waitFor();
   await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v3"));
   const newer = await fixture.deployAgent(namespace.id, agent.id);
   let newerStatus = "queued";

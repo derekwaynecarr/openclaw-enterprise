@@ -3823,6 +3823,13 @@ test("a Workspace reread restores a reloaded missing file's notice and reports a
   await identity.getByText(missingNotice, { exact: true }).waitFor();
   assert.equal(await identityError.textContent(), "");
 
+  const identityTab = page.getByRole("tab", { name: "Identity · IDENTITY.md", exact: true });
+  const identityOption = page
+    .getByLabel("Workspace file", { exact: true })
+    .locator('option[value="IDENTITY.md"]');
+  await identityTab.getByText("Missing", { exact: true }).waitFor();
+  assert.equal(await identityOption.textContent(), "Identity · IDENTITY.md — Missing");
+
   // IDENTITY.md cannot be reread. SOUL.md is deleted, and its missing answer is reported as a
   // failed reread, since the editor still shows its last text.
   contents.delete("SOUL.md");
@@ -3830,6 +3837,8 @@ test("a Workspace reread restores a reloaded missing file's notice and reports a
   assert.equal(await workspaceStatus(identity), rereadFailed("IDENTITY.md"));
   assert.equal(await workspaceStatus(soul), rereadFailed("SOUL.md"));
   assert.equal(await soulEditor.inputValue(), "# SOUL.md\n");
+  await identityTab.getByText("Needs attention", { exact: true }).waitFor();
+  assert.equal(await identityOption.textContent(), "Identity · IDENTITY.md — Needs attention");
 
   // IDENTITY.md is confirmed missing again, so its notice returns; SOUL.md still reports that
   // its text may be out of date.
@@ -3837,6 +3846,8 @@ test("a Workspace reread restores a reloaded missing file's notice and reports a
   assert.equal(await workspaceStatus(identity), missingNotice);
   assert.equal(await identityError.textContent(), "");
   assert.equal(await page.getByLabel("IDENTITY.md", { exact: true }).inputValue(), "");
+  await identityTab.getByText("Missing", { exact: true }).waitFor();
+  assert.equal(await identityOption.textContent(), "Identity · IDENTITY.md — Missing");
   assert.equal(await workspaceStatus(soul), rereadFailed("SOUL.md"));
   assert.equal(await soulEditor.inputValue(), "# SOUL.md\n");
 

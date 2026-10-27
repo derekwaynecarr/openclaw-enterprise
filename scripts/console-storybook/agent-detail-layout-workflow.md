@@ -12,6 +12,9 @@ simulated API state; they do not prove persistence or live runtime behavior.
 2. Open **Deployment**. Expand **Deployment details**, read the viewed version's
    record, and run diagnostics. Switch to Configuration and back: the record and
    results remain. **Logs** still opens the viewed version's output.
+   Check **Pages / Agent detail / Deployment snapshot unavailable**. The viewed
+   version's error and **Retry** appear inside Deployment. Retry restores its
+   record and diagnostics without changing the viewed version or tab.
 3. Open **Pages / Agent detail / Long version history**. Load older pages. The
    viewed version stays selected; the last page returns focus to its picker.
 4. Open **Components / Native admin / Available**. **Open Agent UI** opens the
@@ -26,3 +29,7 @@ simulated API state; they do not prove persistence or live runtime behavior.
    fits the screen. Check Missing file, Save needs Agent operate, Write outcome
    unknown, and Reread keeps a focused editor's caret. A deployment poll must
    preserve the selected file, caret, and unsaved content.
+   Check **Components / Workspace / Reread after a version change**: a confirmed
+   missing file shows **Missing** in the tabs and phone picker. The browser
+   regression also checks that a later missing-file response clears a previous
+   **Needs attention** indicator.

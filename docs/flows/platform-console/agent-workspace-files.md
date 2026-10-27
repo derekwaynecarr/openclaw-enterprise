@@ -1,7 +1,7 @@
 ---
 created: 2026-10-25
 updated: 2026-10-27
-last_updated_session: authoring-run/f3434faa-8624-4f34-83a2-521047f80329
+last_updated_session: authoring-run/99997d03-9533-4cff-b942-8fe773c472db
 ---
 
 # Console Agent workspace files
@@ -29,6 +29,10 @@ graph TD
   R -->|denied or unavailable| D["Editor and Save disabled"]
   E -->|text differs| S["PUT file content"]
   M --> S
+  M -->|version changes| V["Reread missing file"]
+  V -->|still missing| M
+  V -->|read fails| F["Needs attention; keep editor"]
+  F -->|later confirmed missing| M
   S -->|filename confirmed| E
   S -->|outcome unknown| L["Save disabled until Reload"]
   L --> R
@@ -48,6 +52,9 @@ the file's role. Selection uses the Agent-scoped draft store, so returning to th
 restores it. Switching files sends no write and keeps each file's unsaved text.
 Per-file indicators show unsaved, loading, missing, denied, and uncertain-save states;
 Save and Reload apply only to the selected file.
+`workspace.mts:renderWorkspaceFiles` updates both indicators when a reread confirms
+that a file is still missing after a transient failure. **Needs attention** returns
+to **Missing**, while the editor stays empty and ready to create the file.
 
 The editor reads each supported file by name; the response must name that file and
 include its contents. For an existing file, **Save** becomes available
@@ -97,6 +104,8 @@ deployment.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 13:55: Document missing-file indicator recovery after a failed reread. Accompanying uncommitted changes. (authoring-run/99997d03-9533-4cff-b942-8fe773c472db - b1e6d83d1cde4741d6f0b857e30e473ec1f97a18)
 
 - 2026-10-27 09:30: Document file selection, role descriptions, and per-file state. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
 

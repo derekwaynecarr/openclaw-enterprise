@@ -619,6 +619,7 @@ export function renderWorkspaceFiles(
           if (rereadFailed) {
             rereadFailed = false;
             status.textContent = errorNotice.textContent ? "" : missingText();
+            updateControls();
           }
           return;
         }
