@@ -3589,7 +3589,10 @@ async function openWorkspaceVersions(t, name, workspaceFilesAccess, count = 2) {
   );
   await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]);
   await expectDeploymentOutcome(page, "Queued", { reveal: false });
-  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now())));
+  // Allow time for the pause command to reach the browser: the sampled time can already be
+  // in the past when it arrives. Stay short of the five-second deployment polling interval.
+  const now = await page.evaluate(() => Date.now());
+  await page.clock.pauseAt(new Date(now + 1000));
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   let current = 0;
   return {
