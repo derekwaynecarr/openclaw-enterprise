@@ -1,7 +1,7 @@
 ---
 created: 2026-10-25
-updated: 2026-10-25
-last_updated_session: fix-postland-1025j
+updated: 2026-10-27
+last_updated_session: authoring-run/f3434faa-8624-4f34-83a2-521047f80329
 ---
 
 # Console Agent workspace files
@@ -42,6 +42,12 @@ graph TD
 `tab=workspace` after an exact Agent read. Contents belong to the live Agent, not Configuration or version history.
 With no selected version, files stay unavailable and no file request is sent. Another current version
 keeps the editors, focus and caret, rereading unedited files in place; gaining or losing one rebuilds them.
+
+The desktop tab list or phone **Workspace file** picker selects one editor and shows
+the file's role. Selection uses the Agent-scoped draft store, so returning to the tab
+restores it. Switching files sends no write and keeps each file's unsaved text.
+Per-file indicators show unsaved, loading, missing, denied, and uncertain-save states;
+Save and Reload apply only to the selected file.
 
 The editor reads each supported file by name; the response must name that file and
 include its contents. For an existing file, **Save** becomes available
@@ -91,5 +97,7 @@ deployment.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 09:30: Document file selection, role descriptions, and per-file state. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
 
 - 2026-10-25: Move step 6 from [Agent editing](agent-editing.md) unchanged. (finding 2488)

@@ -5,6 +5,8 @@ export const PluginsOAuthRevision = story("pluginsOAuthRevision");
 export default { title: "Pages/Agent detail" };
 
 export const Draft = story("draft");
+export const Layout = story("agentDetailLayout");
+export const EmptyDeployment = story("deploymentEmpty");
 export const NewVersion = story("newVersion");
 export const FailedFirstVersion = story("failedFirstVersion");
 export const EditCurrentConfiguration = story("editCurrentConfiguration");

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-26
-last_updated_session: fix-dogfood-r48
+updated: 2026-10-27
+last_updated_session: authoring-run/f3434faa-8624-4f34-83a2-521047f80329
 ---
 
 # Console Agent editing and runtime requests
@@ -67,21 +67,26 @@ The page reads Agent, readable versions, and current Configuration
 payload-decode failures into metadata plus `configurationReadError`; queries
 and operational reads remain strict. Drafts and versions decode independently.
 Navigation stays; unreadable drafts refuse editing and deployment without defaults.
-**Selected version** uses `activeRevisionId`; **View version vN** opens read-only
-details without activating it. **Deployment activity** in `agents/deployment-evidence.mts`
-shows the newest readable version's recorded status, not live health. The Versions list
+**Selected for service** uses `activeRevisionId`; **Viewing version** opens read-only
+details without activating it. Its picker includes the saved draft and loaded versions.
+**Load older versions** appends another page, keeps the viewed version, and returns focus
+to the picker when no more pages remain. **Deployment** contains the newest readable
+version's activity (`agents/deployment-evidence.mts`), the viewed version's record, and diagnostics.
+These panels stay mounted while hidden so polling continues across tabs. The picker
 marks failed versions from listed `deploymentStatus` and `deploymentErrorCode`, surviving
 reloads; superseded or stopped endings stay unmarked.
-Routine completion folds; pending work, read errors, warnings, and cleanup stay visible.
+Routine completion folds. Pending work, startup warnings, and incomplete cleanup also
+show an attention message outside Deployment, linking to the affected version.
+Deployment recovery remains above the summary when a deployment fails.
 A first read landing after the `FIRST_ACTIVITY_WAIT_MS` reveal shows its outcome with
 the details folded, unless cleanup, warnings, or an overview error open them. If an
-overview refresh cannot identify this Agent, the page keeps the outcome and says so.
+overview refresh fails, the page keeps the outcome and an attention notice outside Deployment.
 
 On failure, `agents/deployment-recovery.mts` shows the API's message, which names the next
 step. OCC's `deployment-failure-steps.ts` table, served at `/console/deployment-failure-steps.mjs`,
 gives each code's step kind: `deploy-again`, `logs` or `change`. It hides the Logs link if the
 caller was denied the log text or version during this sign-in. **Open Configuration** needs Configuration `update`,
-bound Secret `operate` and no known read denial. **Open version draft** (read-only Configuration) and
+bound Secret `operate` and no known read denial. **Open draft** (read-only Configuration) and
 **Deploy again** (`deploy-again` codes) need `deploy` and a readable Configuration; Deploy again focuses
 **Deploy new version**. Credentials recovery needs Agent saves. Hidden or unlisted
 current versions suppress recovery; viewed versions show results. Activity polls every
@@ -92,7 +97,7 @@ result rows before the first attempt; the details keep their tallest height unti
 **Current observations** in `agents/deployment-diagnostics.mts` requests timestamped
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
 Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.
-**Create new version** opens the saved draft; **Deploy new version** admits its
+**Open draft** opens the saved draft; **Deploy new version** admits its
 Configuration/plugins. **Edit current Configuration** never copies historical
 values. Deploy stays disabled while the Secret permission answer names a bound
 Secret the caller may not `operate`, or counts one the caller may neither `read`
@@ -160,7 +165,7 @@ Like Escape, cancellation discards channel drafts, clears Secret inputs, and
 retains plugin selections. Pending channel saves and Secret creation prevent dismissal.
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders Slack settings;
-only **Create new version** permits editing. The
+only **Open draft** permits editing. The
 [console reference](../../reference/console/versions-and-channel-drafts.md)
 owns Slack requirements and rejected native shapes; Teams remains native JSON.
 
@@ -273,7 +278,7 @@ generic deploy `403` rereads the answer and names them in its alert. A caller wi
 requiring readable version history and an unchanged draft. API authorization and
 Driver compatibility remain authoritative.
 
-**Create new version** shows bound Slack Secrets without proving live health.
+**Open draft** shows bound Slack Secrets without proving live health.
 
 `OpenClawController.deployAgent` checks transport credentials before admission.
 Before the first version, Agent `read`/`operate` plus `deploy` authorize Compute
@@ -290,12 +295,14 @@ Only a confirmed grant or confirmed removal of its reference clears the pending 
 
 ### 6. Read and replace live workspace files
 
+`apps/controller/src/console/agents/workspace.mts:renderWorkspaceFiles`.
 Moved to [Agent workspace files](agent-workspace-files.md#6-read-and-replace-live-workspace-files).
 
 <span id="stop-agent"></span>
 
 ### 7. Request a stop and read back the Agent
 
+`apps/controller/src/console/agents/stop.mts:createAgentStop`.
 Moved to [Agent stop and deletion](agent-stop-and-deletion.md#7-request-a-stop-and-read-back-the-agent).
 
 <span id="7-confirm-deletion-and-read-back-the-agent"></span>
@@ -303,6 +310,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#7-request-a-stop-a
 
 ### 8. Confirm deletion and read back the Agent
 
+`apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`.
 Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion-and-read-back-the-agent).
 
 ## Debugging and Verification
@@ -327,6 +335,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-27 09:30: Document the Agent detail version picker, Deployment tab, and direct Agent UI access. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
 
 - 2026-10-25: Move step 6 (workspace files) to [its own trace](agent-workspace-files.md); move older entries to history. (finding 2488)
 
