@@ -4079,6 +4079,7 @@ export const scenarios = {
       "Edit and save the current Configuration before deploying a new immutable version. The selected version stays unchanged until activation.",
     steps: [
       "Review the selected version and saved draft settings.",
+      "Check the new-version notice has an even, neutral border without a blue stripe. Its message stays visible when Configuration opens for editing, including at phone width.",
       "Turn off Gateway managed mode and confirm the current version still requests it on.",
       "Return to the draft, edit and save Configuration, then deploy the new version.",
       "Inspect the admitted version and its deployment activity.",

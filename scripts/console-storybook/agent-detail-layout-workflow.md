@@ -6,6 +6,9 @@ simulated API state; they do not prove persistence or live runtime behavior.
 1. Open **Pages / Agent detail / New version activated**. Check the compact
    summary separates Selected for service, Latest visible deployment, and Live
    serving. Choose another **Viewing version**; the service target stays the same.
+   Choose **Open draft**. Check the new-version notice has an even, neutral border
+   without a blue stripe. Open **Edit Configuration**; the notice stays visible.
+   Repeat this check at phone width.
 2. Open **Deployment**. Expand **Deployment details**, read the viewed version's
    record, and run diagnostics. Switch to Configuration and back: the record and
    results remain. **Logs** still opens the viewed version's output.

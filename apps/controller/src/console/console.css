@@ -2168,6 +2168,9 @@ select:not([multiple])[size="1"] {
     text-align: left;
   }
 }
+.version-selection-notice {
+  border-left: 1px solid var(--color-border);
+}
 .agent-card {
   background: var(--surface);
   border: 1px solid var(--line);
